@@ -72,6 +72,9 @@ pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
     // Stealth: disable automation detection (makes navigator.webdriver natively undefined)
     args.push("disable-blink-features=AutomationControlled".to_string());
 
+    // Realistic window size (avoids small headless default)
+    args.push("window-size=1920,1080".to_string());
+
     // NOTE: Do NOT add --no-sandbox! It causes Chrome to re-launch on Windows
     // in headed mode, which loses the pipe handles.
 
