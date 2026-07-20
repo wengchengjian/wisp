@@ -1,94 +1,119 @@
+//! Browser process management. Launches Chrome directly with stealth args.
+
 pub mod launch;
 
 use std::sync::Arc;
+use std::path::PathBuf;
 use std::process::Stdio;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 
-use crate::cdp::pipe::PipeTransport;
-use crate::cdp::session::CdpSession;
+use serde_json::json;
+use tokio::process::Child;
+
+use crate::cdp::CdpSession;
 use crate::config::LaunchOptions;
 use crate::error::{PatchrightError, Result};
 use crate::page::Page;
 
-/// The Node.js helper script that spawns Chrome with proper pipe handles.
-const HELPER_SCRIPT: &str = include_str!("../helper/patchright-helper.js");
 
 pub struct Browser {
-    pub session: Arc<CdpSession>,
-    process: std::process::Child,
+    session: Arc<CdpSession>,
+    process: Child,
     #[allow(dead_code)]
-    options: LaunchOptions,
+    user_data_dir: PathBuf,
+    headless: bool,
 }
 
 impl Browser {
+    /// Launch browser with anti-detection patches.
     pub async fn launch(options: LaunchOptions) -> Result<Self> {
         let executable = launch::resolve_executable(&options)?;
+        let user_data_dir = options.user_data_dir.clone()
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("patchright-rs-{}-{}", std::process::id(), rand_suffix())));
+
+        // Clean up stale DevToolsActivePort from previous runs
+        let port_file = user_data_dir.join("DevToolsActivePort");
+        let _ = std::fs::remove_file(&port_file);
+
         let mut args = launch::build_stealth_args(&options);
-        args.push("remote-debugging-pipe".to_string());
+        args.push("remote-debugging-port=0".to_string());
         if options.headless {
             args.push("headless=new".to_string());
         }
+        args.push(format!("user-data-dir={}", user_data_dir.display()));
 
-        let chrome_args: Vec<String> = args.iter()
-            .map(|a| format!("--{a}"))
-            .collect();
+        let chrome_args: Vec<String> = args.iter().map(|a| format!("--{a}")).collect();
 
-        // Write helper script to temp file
-        let helper_path = std::env::temp_dir().join("patchright-helper.js");
-        std::fs::write(&helper_path, HELPER_SCRIPT)
-            .map_err(|e| PatchrightError::LaunchFailed(format!("write helper: {e}")))?;
-
-        // Find node executable
-        let node = which::which("node")
-            .map_err(|_| PatchrightError::LaunchFailed("Node.js not found. Install Node.js for pipe-based CDP.".into()))?;
-
-        // Spawn helper using std::process::Command (tokio's version causes pipe issues on Windows)
-        let mut cmd_args = vec![helper_path.to_string_lossy().to_string()];
-        cmd_args.push(executable.to_string_lossy().to_string());
-        cmd_args.extend(chrome_args);
-
-        let mut cmd = std::process::Command::new(&node);
-        cmd.args(&cmd_args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+        let mut cmd = tokio::process::Command::new(&executable);
+        cmd.args(&chrome_args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        // On Windows, set creation flags for headed/headless mode.
+        // On Windows: control window visibility via creation flags
         #[cfg(windows)]
-        if options.headless {
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        } else {
-            cmd.creation_flags(0x00000010); // CREATE_NEW_CONSOLE
+        {
+            use std::os::windows::process::CommandExt;
+            if options.headless {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            } else {
+                cmd.creation_flags(0x00000000); // Explicitly clear to prevent auto CREATE_NO_WINDOW
+            }
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| PatchrightError::LaunchFailed(e.to_string()))?;
+        let child = cmd.spawn()
+            .map_err(|e| PatchrightError::LaunchFailed(format!("spawn chrome: {e}")))?;
 
-        let std_stdin = child.stdin.take()
-            .ok_or_else(|| PatchrightError::LaunchFailed("failed to get stdin".into()))?;
-        let std_stdout = child.stdout.take()
-            .ok_or_else(|| PatchrightError::LaunchFailed("failed to get stdout".into()))?;
+        // Wait for DevToolsActivePort file (contains random port + ws path)
+        let ws_url = Self::wait_for_devtools_url(&user_data_dir).await?;
+        tracing::info!("Chrome DevTools: {}", ws_url);
 
-        let (transport, msg_rx) = PipeTransport::new(std_stdin, std_stdout);
-        let session = CdpSession::new(transport, msg_rx);
-        session.spawn_reader();
-
-        // Wait for Chrome to initialize via helper
-        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
-
-        Ok(Self { session, process: child, options })
+        let session = CdpSession::connect(&ws_url).await?;
+        Ok(Self { session, process: child, user_data_dir, headless: options.headless })
     }
 
+    async fn wait_for_devtools_url(user_data_dir: &PathBuf) -> Result<String> {
+        let port_file = user_data_dir.join("DevToolsActivePort");
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+
+        loop {
+            if port_file.exists() {
+                // Small delay to ensure file is fully written
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let content = tokio::fs::read_to_string(&port_file).await
+                    .map_err(|e| PatchrightError::LaunchFailed(format!("read DevToolsActivePort: {e}")))?;
+                let mut lines = content.lines();
+                let port = lines.next().ok_or_else(|| PatchrightError::LaunchFailed("empty DevToolsActivePort".into()))?.trim();
+                let ws_path = lines.next().unwrap_or("/devtools/browser");
+                return Ok(format!("ws://127.0.0.1:{}{}", port, ws_path));
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(PatchrightError::LaunchFailed("Chrome did not start within 15s".into()));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Create a new page (tab).
     pub async fn new_page(&self) -> Result<Page> {
-        Page::create(Arc::clone(&self.session)).await
+        Page::create(Arc::clone(&self.session), self.headless).await
     }
 
-    pub async fn close(mut self) -> Result<()> {
-        let _ = self.session.execute("Browser.close", serde_json::json!({})).await;
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+    /// Close the browser.
+    pub async fn close(self) -> Result<()> {
+        let _ = self.session.execute("Browser.close", json!({})).await;
         Ok(())
     }
+}
+
+impl Drop for Browser {
+    fn drop(&mut self) {
+        let _ = self.process.start_kill();
+    }
+}
+
+/// Generate a short random suffix for unique temp dirs.
+fn rand_suffix() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+    format!("{:x}", nanos)
 }

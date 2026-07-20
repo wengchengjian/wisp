@@ -59,33 +59,38 @@ pub fn build_default_args(options: &LaunchOptions) -> Vec<String> {
         .collect()
 }
 
-/// Build stealth launch args WITHOUT "--" prefix (for chromiumoxide's Arg system).
-/// These are carefully curated to avoid detection vectors.
-/// Corresponds to patchright's chromiumSwitches.js patch.
+/// Build stealth launch args WITHOUT "--" prefix.
+/// Aligned with patchright's chromiumSwitches.ts for maximum stealth.
 pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
+    let mut args: Vec<String> = vec![
+        // patchright chromiumSwitches (verified from source)
+        "disable-field-trial-config".into(),
+        "disable-background-networking".into(),
+        "disable-background-timer-throttling".into(),
+        "disable-backgrounding-occluded-windows".into(),
+        "disable-breakpad".into(),
+        "no-default-browser-check".into(),
+        "disable-dev-shm-usage".into(),
+        "disable-hang-monitor".into(),
+        "disable-prompt-on-repost".into(),
+        "disable-renderer-backgrounding".into(),
+        "force-color-profile=srgb".into(),
+        "no-first-run".into(),
+        "password-store=basic".into(),
+        "use-mock-keychain".into(),
+        "no-service-autorun".into(),
+        "export-tagged-pdf".into(),
+        "disable-search-engine-choice-screen".into(),
+        "disable-infobars".into(),
+        "disable-sync".into(),
+        // Core anti-detection flag
+        "disable-blink-features=AutomationControlled".into(),
+        // Disabled features (from patchright)
+        "disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding".into(),
+    ];
 
-    // Core args needed for pipe CDP to work
-    args.push("no-first-run".to_string());
-    args.push("disable-background-networking".to_string());
-
-    // Stealth: disable automation detection (makes navigator.webdriver natively undefined)
-    args.push("disable-blink-features=AutomationControlled".to_string());
-
-    // Realistic window size (avoids small headless default)
-    args.push("window-size=1920,1080".to_string());
-
-    // NOTE: Do NOT add --no-sandbox! It causes Chrome to re-launch on Windows
-    // in headed mode, which loses the pipe handles.
-
-    // NOTE: We intentionally DO NOT add:
-    // - "enable-automation" (reveals automation)
-    // - "disable-popup-blocking" (reveals automation)
-    // - "disable-component-update" (reveals stealth driver)
-    // - "disable-default-apps" (reveals automation)
-    // - "disable-extensions" (reveals automation)
-    // - "disable-gpu" (can cause issues with pipe)
-    // - "window-size" (let Chrome use default)
+    // NOTE: Do NOT add --no-sandbox (causes Chrome re-launch on Windows headed mode)
+    // NOTE: Do NOT add --enable-automation, --disable-popup-blocking, etc.
 
     // Proxy
     if let Some(ref proxy) = options.proxy {

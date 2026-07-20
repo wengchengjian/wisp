@@ -1,8 +1,8 @@
 [package]
 name = "patchright-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Undetected browser automation for Rust - pipe-based CDP"
+description = "Undetected browser automation for Rust - pure CDP implementation"
 license = "Apache-2.0"
 
 [dependencies]
@@ -16,16 +16,12 @@ futures = "0.3"
 which = "7"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
-zip = "2"
-tokio-util = { version = "0.7", features = ["io"] }
-tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }
-tungstenite = "0.30"
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+tungstenite = "0.26"
 anyhow = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[bin]]
 name = "patchright"

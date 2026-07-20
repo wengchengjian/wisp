@@ -1,6 +1,10 @@
+//! patchright-rs: Undetected browser automation for Rust.
+//!
+//! Pure Rust implementation using CDP (Chrome DevTools Protocol) over WebSocket
+//! with anti-detection patches equivalent to patchright.
+
 pub mod cdp;
 pub mod browser;
-pub mod driver;
 pub mod element;
 pub mod page;
 pub mod patches;

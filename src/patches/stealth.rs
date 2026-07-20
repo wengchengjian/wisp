@@ -1,3 +1,155 @@
+//! Stealth JavaScript patches.
+//!
+//! Two modes:
+//! - HEADED: Minimal injection (matches patchright behavior - no webdriver override)
+//! - HEADLESS: Full patches (UA, WebGL, screen, plugins, etc.)
+//!
+//! Key insight from patchright source: it does NOT override navigator.webdriver via JS.
+//! It relies solely on --disable-blink-features=AutomationControlled.
+//! Overriding the property CREATES a detectable descriptor that Browserscan flags.
+
+/// Minimal stealth script for HEADED mode.
+/// Only injects what's absolutely necessary (chrome.runtime for extension detection).
+/// Does NOT touch navigator.webdriver, UA, or any prototype.
+pub const HEADED_STEALTH_SCRIPT: &str = r#"
+(() => {
+    // Ensure chrome.runtime exists (some detectors check for it)
+    if (!window.chrome) { window.chrome = {}; }
+    if (!window.chrome.runtime) {
+        window.chrome.runtime = {
+            connect: function() { return {}; },
+            sendMessage: function() {},
+        };
+    }
+})();
+"#;
+
+/// Full stealth script for HEADLESS mode.
+/// Includes all patches needed to hide headless-specific signals.
+/// Still does NOT override navigator.webdriver (relies on --disable-blink-features).
+pub const HEADLESS_STEALTH_SCRIPT: &str = r#"
+(() => {
+    // chrome.runtime + chrome.app
+    if (!window.chrome) { window.chrome = {}; }
+    if (!window.chrome.runtime) {
+        window.chrome.runtime = {
+            OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+            OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+            PlatformArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+            PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+            RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
+            connect: function() { return {}; },
+            sendMessage: function() {},
+        };
+    }
+    if (!window.chrome.app) {
+        window.chrome.app = {
+            isInstalled: false,
+            InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+            RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+            getDetails: () => null,
+            getIsInstalled: () => false,
+        };
+    }
+
+    // Fix plugins (headless has 0 plugins)
+    try {
+        if (navigator.plugins.length === 0) {
+            const makePlugin = (name, filename, description) => {
+                const p = Object.create(Plugin.prototype);
+                Object.defineProperties(p, {
+                    name: { get: () => name, enumerable: true },
+                    filename: { get: () => filename, enumerable: true },
+                    description: { get: () => description, enumerable: true },
+                    length: { get: () => 1, enumerable: true },
+                });
+                return p;
+            };
+            const plugins = [
+                makePlugin('Chrome PDF Plugin', 'internal-pdf-viewer', 'Portable Document Format'),
+                makePlugin('Chrome PDF Viewer', 'mhjfbmdgcfjbbpaeojofohoefgiehjai', ''),
+                makePlugin('Native Client', 'internal-nacl-plugin', ''),
+            ];
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => {
+                    const list = Object.create(PluginArray.prototype);
+                    plugins.forEach((p, i) => { Object.defineProperty(list, i, { get: () => p, enumerable: true }); });
+                    Object.defineProperty(list, 'length', { get: () => plugins.length, enumerable: true });
+                    list.item = (i) => plugins[i] || null;
+                    list.namedItem = (n) => plugins.find(p => p.name === n) || null;
+                    list.refresh = () => {};
+                    list[Symbol.iterator] = function* () { yield* plugins; };
+                    return list;
+                },
+                configurable: true,
+            });
+        }
+    } catch(e) {}
+
+    // Fix languages
+    try {
+        if (!navigator.languages || navigator.languages.length === 0) {
+            Object.defineProperty(navigator, 'languages', {
+                get: () => Object.freeze(['en-US', 'en']),
+                configurable: true,
+            });
+        }
+    } catch(e) {}
+
+    // Fix Notification.permission (headless = 'denied')
+    try {
+        if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+            Object.defineProperty(Notification, 'permission', { get: () => 'default', configurable: true });
+        }
+    } catch(e) {}
+
+    // Fix window dimensions (headless: outerHeight === innerHeight)
+    try {
+        if (window.outerHeight === window.innerHeight) {
+            Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 85, configurable: true });
+        }
+        if (window.outerWidth === window.innerWidth) {
+            Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth, configurable: true });
+        }
+    } catch(e) {}
+
+    // Fix screen dimensions (headless defaults to 800x600)
+    try {
+        if (screen.width <= 800 && screen.height <= 600) {
+            Object.defineProperty(screen, 'width', { get: () => 1920, configurable: true });
+            Object.defineProperty(screen, 'height', { get: () => 1080, configurable: true });
+            Object.defineProperty(screen, 'availWidth', { get: () => 1920, configurable: true });
+            Object.defineProperty(screen, 'availHeight', { get: () => 1040, configurable: true });
+        }
+    } catch(e) {}
+
+    // Fix colorDepth
+    try {
+        if (screen.colorDepth !== 24) {
+            Object.defineProperty(screen, 'colorDepth', { get: () => 24, configurable: true });
+            Object.defineProperty(screen, 'pixelDepth', { get: () => 24, configurable: true });
+        }
+    } catch(e) {}
+
+    // Fix WebGL renderer (headless uses SwiftShader)
+    try {
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(param) {
+            if (param === 37445) return 'Google Inc. (NVIDIA)';
+            if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            return getParameter.call(this, param);
+        };
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(param) {
+                if (param === 37445) return 'Google Inc. (NVIDIA)';
+                if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                return getParameter2.call(this, param);
+            };
+        }
+    } catch(e) {}
+})();
+"#;
 /// JavaScript that hides all automation traces from the page.
 /// Injected before any page scripts run via Page.addScriptToEvaluateOnNewDocument.
 ///
