@@ -2,59 +2,115 @@ pub mod evaluate;
 pub mod navigate;
 pub mod screenshot;
 
-use crate::error::Result;
+use std::sync::Arc;
+use serde_json::json;
+use crate::cdp::session::CdpSession;
+use crate::error::{PatchrightError, Result};
 
-/// A browser page (tab) with anti-detection patches.
-pub struct Page;
+pub struct Page {
+    session: Arc<CdpSession>,
+    frame_id: String,
+}
 
 impl Page {
-    /// Navigate to a URL and wait for load.
+    /// Create a new page via CDP Target domain.
+    /// Flow: createTarget → attachToTarget → Page.enable → inject stealth scripts
+    /// CRITICAL: Does NOT send Runtime.enable
+    pub(crate) async fn create(session: Arc<CdpSession>) -> Result<Self> {
+        // 1. Create a new target (tab)
+        let result = session.execute("Target.createTarget", json!({
+            "url": "about:blank"
+        })).await?;
+        let target_id = result.get("targetId")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| PatchrightError::CdpError("no targetId in response".into()))?
+            .to_string();
+
+        // 2. Attach to the target
+        let result = session.execute("Target.attachToTarget", json!({
+            "targetId": target_id,
+            "flatten": true
+        })).await?;
+        let _session_id = result.get("sessionId")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+
+        // 3. Enable Page domain
+        session.execute("Page.enable", json!({})).await?;
+
+        // 4. Enable lifecycle events (for navigation waiting)
+        session.execute("Page.setLifecycleEventsEnabled", json!({
+            "enabled": true
+        })).await?;
+
+        // 5. Get frame tree to find main frame ID
+        let frame_tree = session.execute("Page.getFrameTree", json!({})).await?;
+        let frame_id = frame_tree
+            .pointer("/frameTree/frame/id")
+            .and_then(|f| f.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // 6. Inject stealth scripts (addScriptToEvaluateOnNewDocument)
+        // These run before any page scripts on every new document
+        let stealth_script = crate::patches::stealth::STEALTH_SCRIPT;
+        session.execute("Page.addScriptToEvaluateOnNewDocument", json!({
+            "source": stealth_script
+        })).await?;
+
+        let shadow_dom_script = crate::patches::shadow_dom::SHADOW_DOM_PATCH_SCRIPT;
+        session.execute("Page.addScriptToEvaluateOnNewDocument", json!({
+            "source": shadow_dom_script
+        })).await?;
+
+        // NOTE: We do NOT send Runtime.enable here!
+
+        Ok(Self { session, frame_id })
+    }
+
     pub async fn goto(&self, url: &str) -> Result<()> {
-        todo!("Task 4: pipe-based navigation")
+        navigate::goto(&self.session, url).await
     }
 
-    /// Reload the current page.
     pub async fn reload(&self) -> Result<()> {
-        todo!("Task 4: pipe-based reload")
+        navigate::reload(&self.session).await
     }
 
-    /// Evaluate JavaScript in the page context.
     pub async fn evaluate(&self, expression: &str) -> Result<serde_json::Value> {
-        todo!("Task 4: pipe-based evaluation")
+        evaluate::evaluate(&self.session, &self.frame_id, expression).await
     }
 
-    /// Evaluate JavaScript and return result as String.
     pub async fn evaluate_as_string(&self, expression: &str) -> Result<String> {
-        todo!("Task 4: pipe-based evaluation")
+        let value = self.evaluate(expression).await?;
+        Ok(match value {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Null => "null".to_string(),
+            other => other.to_string(),
+        })
     }
 
-    /// Click an element matching the CSS selector.
     pub async fn click(&self, selector: &str) -> Result<()> {
-        todo!("Task 4: pipe-based click")
+        crate::element::click(&self.session, &self.frame_id, selector).await
     }
 
-    /// Type text into an input element.
     pub async fn fill(&self, selector: &str, value: &str) -> Result<()> {
-        todo!("Task 4: pipe-based fill")
+        crate::element::fill(&self.session, &self.frame_id, selector, value).await
     }
 
-    /// Wait for an element to appear in the DOM.
     pub async fn wait_for_selector(&self, selector: &str, timeout: Option<std::time::Duration>) -> Result<()> {
-        todo!("Task 4: pipe-based wait")
+        let ms = timeout.unwrap_or(std::time::Duration::from_secs(30)).as_millis() as u64;
+        crate::element::wait_for_selector(&self.session, &self.frame_id, selector, ms).await
     }
 
-    /// Get text content of an element.
     pub async fn text_content(&self, selector: &str) -> Result<String> {
-        todo!("Task 4: pipe-based text_content")
+        crate::element::text_content(&self.session, &self.frame_id, selector).await
     }
 
-    /// Capture a full-page screenshot and save to file.
     pub async fn screenshot(&self, path: &str) -> Result<()> {
-        todo!("Task 4: pipe-based screenshot")
+        screenshot::screenshot(&self.session, path).await
     }
 
-    /// Capture a screenshot and return raw PNG bytes.
     pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> {
-        todo!("Task 4: pipe-based screenshot")
+        screenshot::screenshot_bytes(&self.session).await
     }
 }

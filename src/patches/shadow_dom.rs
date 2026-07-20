@@ -1,7 +1,5 @@
-use crate::error::Result;
-
 /// JavaScript that forces all shadow roots to be created as 'open'.
-const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
+pub const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
 (() => {
     const originalAttachShadow = Element.prototype.attachShadow;
     Element.prototype.attachShadow = function(init) {
@@ -12,10 +10,3 @@ const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
     };
 })();
 "#;
-
-/// Inject the shadow DOM patch so it runs before any page scripts.
-///
-/// Will be properly reimplemented in Task 5 with pipe-based CDP.
-pub async fn inject(_session: &crate::cdp::session::CdpSession) -> Result<()> {
-    todo!("Task 5: inject via pipe-based CDP Page.addScriptToEvaluateOnNewDocument")
-}

@@ -1,5 +1,6 @@
 pub mod cdp;
 pub mod browser;
+pub mod element;
 pub mod page;
 pub mod patches;
 pub mod config;

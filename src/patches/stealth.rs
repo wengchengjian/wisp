@@ -1,5 +1,3 @@
-use crate::error::Result;
-
 /// JavaScript that hides all automation traces from the page.
 /// Injected before any page scripts run via Page.addScriptToEvaluateOnNewDocument.
 ///
@@ -9,7 +7,7 @@ use crate::error::Result;
 /// 3. navigator.plugins (non-empty for headed Chrome)
 /// 4. navigator.permissions query fix
 /// 5. navigator.languages fix
-const STEALTH_SCRIPT: &str = r#"
+pub const STEALTH_SCRIPT: &str = r#"
 (() => {
     // Patch 1: Override navigator.webdriver at PROTOTYPE level
     // This is more robust than instance-level override because detection scripts
@@ -238,11 +236,3 @@ const STEALTH_SCRIPT: &str = r#"
     } catch(e) {}
 })();
 "#;
-
-/// Inject the stealth script so it runs before any page scripts.
-/// This handles navigator.webdriver and other JS-level detection vectors.
-///
-/// Will be properly reimplemented in Task 5 with pipe-based CDP.
-pub async fn inject(_session: &crate::cdp::session::CdpSession) -> Result<()> {
-    todo!("Task 5: inject via pipe-based CDP Page.addScriptToEvaluateOnNewDocument")
-}
