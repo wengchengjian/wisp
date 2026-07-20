@@ -13,6 +13,8 @@ pub struct Driver {
     reader_handle: tokio::task::JoinHandle<()>,
     /// The root Playwright object guid
     playwright_guid: Option<String>,
+    /// The chromium BrowserType guid
+    chromium_guid: Option<String>,
     /// Pre-launched browser guid (if any)
     prelaunched_browser: Option<String>,
 }
@@ -46,18 +48,19 @@ impl Driver {
         let ws_url = Self::read_ws_url(stdout)?;
         tracing::info!("Driver WebSocket URL: {}", ws_url);
 
-        // Add browser parameter to URL
+        // Connect with browser parameters for pre-launched browser
+        // headless=false + channel=chrome for maximum stealth
         let ws_url = if ws_url.ends_with('/') {
-            format!("{}?browser={}", ws_url, browser)
+            format!("{}?browser={}&headless=false&channel=chrome", ws_url, browser)
         } else {
-            format!("{}/?browser={}", ws_url, browser)
+            format!("{}/?browser={}&headless=false&channel=chrome", ws_url, browser)
         };
         tracing::info!("Connecting to: {}", ws_url);
 
         // Connect via WebSocket
         let (conn, reader_handle) = PlaywrightConnection::connect(&ws_url).await?;
 
-        Ok(Self { conn, process: child, reader_handle, playwright_guid: None, prelaunched_browser: None })
+        Ok(Self { conn, process: child, reader_handle, playwright_guid: None, chromium_guid: None, prelaunched_browser: None })
     }
 
     fn find_cli() -> Result<String> {
@@ -107,14 +110,24 @@ impl Driver {
 
         tracing::info!("Playwright guid: {}", playwright_guid);
 
-        // Check for pre-launched browser in the __create__ events
-        // The Playwright __create__ event contains the initializer with preLaunchedBrowser
+        // Check for pre-launched browser and chromium guid in the __create__ events
         let event = self.conn.wait_for_event(|e| {
             e.method == "__create__"
                 && e.params.get("type").and_then(|t| t.as_str()) == Some("Playwright")
         }, 5000).await;
 
         if let Ok(event) = event {
+            // Store chromium BrowserType guid
+            if let Some(chromium) = event.params
+                .get("initializer")
+                .and_then(|i| i.get("chromium"))
+                .and_then(|c| c.get("guid"))
+                .and_then(|g| g.as_str())
+            {
+                tracing::info!("Chromium BrowserType guid: {}", chromium);
+                self.chromium_guid = Some(chromium.to_string());
+            }
+            // Check for pre-launched browser
             if let Some(pre_browser) = event.params
                 .get("initializer")
                 .and_then(|i| i.get("preLaunchedBrowser"))
@@ -141,32 +154,23 @@ impl Driver {
         self.prelaunched_browser.as_deref()
     }
 
+    /// Debug: get chromium guid
+    pub fn chromium_guid_debug(&self) -> Option<&str> {
+        self.chromium_guid.as_deref()
+    }
+
     /// Launch a browser (chromium with chrome channel)
-    /// Note: When using run-server, a browser is pre-launched. Use prelaunched_browser() to get it.
     pub async fn launch_browser(&self, headless: bool, channel: &str) -> Result<String> {
-        // Ensure we're initialized
-        let _pw_guid = self.playwright_guid()?;
+        let chromium_guid = self.chromium_guid.as_deref()
+            .ok_or_else(|| PatchrightError::CdpError("no chromium guid, call initialize() first".into()))?;
 
-        // Get the chromium browser type guid from the Playwright initializer
-        // We need to find it from the __create__ events
-        let event = self.conn.wait_for_event(|e| {
-            e.method == "__create__"
-                && e.params.get("type").and_then(|t| t.as_str()) == Some("Playwright")
-        }, 5000).await?;
-
-        let chromium_guid = event.params
-            .get("initializer")
-            .and_then(|i| i.get("chromium"))
-            .and_then(|c| c.get("guid"))
-            .and_then(|g| g.as_str())
-            .ok_or_else(|| PatchrightError::CdpError("no chromium guid in Playwright initializer".into()))?;
-
-        tracing::info!("Chromium BrowserType guid: {}", chromium_guid);
+        tracing::info!("Launching browser via BrowserType: {}", chromium_guid);
 
         // Launch browser using the BrowserType
         let result = self.conn.send_command(chromium_guid, "launch", json!({
             "headless": headless,
             "channel": channel,
+            "timeout": 30000.0,
             "handleSIGINT": false,
             "handleSIGTERM": false,
             "handleSIGHUP": false
