@@ -18,8 +18,11 @@ const STEALTH_SCRIPT: &str = r#"
     // This is more robust than instance-level override because detection scripts
     // may use Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver')
     try {
+        const wdGetter = function() { return undefined; };
+        // Native Chrome getter name is 'get webdriver', not 'webdriver'
+        Object.defineProperty(wdGetter, 'name', { value: 'get webdriver', configurable: true });
         Object.defineProperty(Navigator.prototype, 'webdriver', {
-            get: function webdriver() { return undefined; },
+            get: wdGetter,
             configurable: true,
             enumerable: true,
         });
@@ -27,8 +30,10 @@ const STEALTH_SCRIPT: &str = r#"
 
     // Also override at instance level as backup
     try {
+        const wdGetter2 = function() { return undefined; };
+        Object.defineProperty(wdGetter2, 'name', { value: 'get webdriver', configurable: true });
         Object.defineProperty(navigator, 'webdriver', {
-            get: function webdriver() { return undefined; },
+            get: wdGetter2,
             configurable: true,
             enumerable: true,
         });
@@ -123,8 +128,10 @@ const STEALTH_SCRIPT: &str = r#"
     // We make our overridden functions return native-looking strings.
     try {
         const nativeToString = Function.prototype.toString;
-        const webdriverGetter = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver').get;
-        const instanceWebdriverGetter = Object.getOwnPropertyDescriptor(navigator, 'webdriver') ? Object.getOwnPropertyDescriptor(navigator, 'webdriver').get : null;
+        const protoWdDesc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver');
+        const webdriverGetter = protoWdDesc ? protoWdDesc.get : null;
+        const instWdDesc = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
+        const instanceWebdriverGetter = instWdDesc ? instWdDesc.get : null;
         const permissionsQuery = window.navigator.permissions.query;
         const customToString = function() {
             if (this === webdriverGetter || this === instanceWebdriverGetter) {
