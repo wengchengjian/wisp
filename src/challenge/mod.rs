@@ -92,14 +92,32 @@ impl<'a> ChallengeSolver<'a> {
     }
 
     /// Detect and automatically solve any Cloudflare challenge.
-    /// Waits up to `timeout` for the challenge to resolve.
+    /// Loops: re-detects challenge type and handles transitions (e.g., JS shield -> Turnstile).
     pub async fn solve(&self, timeout: Duration) -> Result<()> {
-        let challenge = self.detect().await?;
-        match challenge {
-            ChallengeType::None => Ok(()),
-            ChallengeType::JsChallenge => self.wait_js_challenge(timeout).await,
-            ChallengeType::Turnstile => turnstile::solve_turnstile(self.page, timeout).await,
-            ChallengeType::ManagedChallenge => self.wait_managed(timeout).await,
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                return Err(WispError::Timeout("Cloudflare challenge did not resolve in time".into()));
+            }
+
+            let challenge = self.detect().await?;
+            match challenge {
+                ChallengeType::None => return Ok(()),
+                ChallengeType::JsChallenge => {
+                    // JS challenge: wait a bit, it may auto-solve or transition to Turnstile
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                ChallengeType::Turnstile => {
+                    // Turnstile: use CDP pierce + click solver
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    return turnstile::solve_turnstile(self.page, remaining).await;
+                }
+                ChallengeType::ManagedChallenge => {
+                    // Managed: wait, may transition to Turnstile
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
         }
     }
 

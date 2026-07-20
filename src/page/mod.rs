@@ -54,7 +54,8 @@ impl Page {
             crate::patches::stealth::HEADED_STEALTH_SCRIPT
         };
         page.cmd("Page.addScriptToEvaluateOnNewDocument", json!({"source": stealth_script})).await?;
-        page.cmd("Page.addScriptToEvaluateOnNewDocument", json!({"source": crate::patches::shadow_dom::SHADOW_DOM_PATCH_SCRIPT})).await?;
+        // NOTE: shadow_dom patch removed - it overrides Element.prototype.attachShadow
+        // which Turnstile detects. We use CDP DOM.getDocument(pierce=true) instead.
 
         // Override User-Agent ONLY in headless mode (headed UA is already clean)
         if headless {

@@ -8,19 +8,27 @@
 //! It relies solely on --disable-blink-features=AutomationControlled.
 //! Overriding the property CREATES a detectable descriptor that Browserscan flags.
 
-/// Minimal stealth script for HEADED mode.
-/// Only injects what's absolutely necessary (chrome.runtime for extension detection).
-/// Does NOT touch navigator.webdriver, UA, or any prototype.
+/// Stealth script for HEADED mode.
+/// Full navigator property injection (matching banzhu-rs proven approach).
+/// Does NOT override attachShadow (Turnstile detects it).
 pub const HEADED_STEALTH_SCRIPT: &str = r#"
 (() => {
-    // Ensure chrome.runtime exists (some detectors check for it)
-    if (!window.chrome) { window.chrome = {}; }
-    if (!window.chrome.runtime) {
-        window.chrome.runtime = {
-            connect: function() { return {}; },
-            sendMessage: function() {},
-        };
+    const o = (obj, prop, value) => Object.defineProperty(obj, prop, {
+        get: () => value, enumerable: true, configurable: true
+    });
+    o(navigator, 'webdriver', false);
+    o(navigator, 'plugins', [1,2,3,4,5]);
+    o(navigator, 'languages', ['zh-CN','zh','en']);
+    o(navigator, 'hardwareConcurrency', 8);
+    o(navigator, 'deviceMemory', 8);
+    o(navigator, 'platform', 'Win32');
+    if (!window.chrome) { window.chrome = { runtime: {} }; }
+    if (!navigator.connection) {
+        o(navigator, 'connection', {
+            downlink: 10, effectiveType: '4g', rtt: 50, saveData: false
+        });
     }
+    delete navigator.__proto__.webdriver;
 })();
 "#;
 
