@@ -129,6 +129,98 @@ const STEALTH_SCRIPT: &str = r#"
         };
         Function.prototype.toString = customToString;
     } catch(e) {}
+
+    // Patch 7: Fix headless-specific WebGL detection
+    // Headless Chrome uses SwiftShader which is a strong detection signal
+    try {
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(param) {
+            // UNMASKED_VENDOR_WEBGL
+            if (param === 37445) {
+                return 'Google Inc. (NVIDIA)';
+            }
+            // UNMASKED_RENDERER_WEBGL
+            if (param === 37446) {
+                return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            }
+            return getParameter.call(this, param);
+        };
+        // Also patch WebGL2
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(param) {
+                if (param === 37445) {
+                    return 'Google Inc. (NVIDIA)';
+                }
+                if (param === 37446) {
+                    return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                }
+                return getParameter2.call(this, param);
+            };
+        }
+    } catch(e) {}
+
+    // Patch 8: Ensure window.chrome.app exists
+    try {
+        if (window.chrome && !window.chrome.app) {
+            window.chrome.app = {
+                isInstalled: false,
+                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+                getDetails: () => null,
+                getIsInstalled: () => false,
+            };
+        }
+    } catch(e) {}
+
+    // Patch 9: Fix Notification.permission for headless
+    // In headless Chrome, Notification.permission is 'denied' immediately
+    try {
+        if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+            Object.defineProperty(Notification, 'permission', {
+                get: () => 'default',
+                configurable: true,
+            });
+        }
+    } catch(e) {}
+
+    // Patch 10: Fix window dimensions for headless
+    // Headless Chrome has outerHeight === innerHeight (no browser chrome)
+    try {
+        if (window.outerHeight === window.innerHeight) {
+            Object.defineProperty(window, 'outerHeight', {
+                get: () => window.innerHeight + 85,
+                configurable: true,
+            });
+        }
+        if (window.outerWidth === window.innerWidth) {
+            Object.defineProperty(window, 'outerWidth', {
+                get: () => window.innerWidth,
+                configurable: true,
+            });
+        }
+    } catch(e) {}
+
+    // Patch 11: Fix screen dimensions for headless
+    // Headless Chrome defaults to 800x600 screen which is a strong detection signal
+    try {
+        if (screen.width === 800 && screen.height === 600) {
+            Object.defineProperty(screen, 'width', { get: () => 1920, configurable: true });
+            Object.defineProperty(screen, 'height', { get: () => 1080, configurable: true });
+            Object.defineProperty(screen, 'availWidth', { get: () => 1920, configurable: true });
+            Object.defineProperty(screen, 'availHeight', { get: () => 1040, configurable: true });
+            Object.defineProperty(screen, 'availLeft', { get: () => 0, configurable: true });
+            Object.defineProperty(screen, 'availTop', { get: () => 0, configurable: true });
+        }
+    } catch(e) {}
+
+    // Patch 12: Fix colorDepth/pixelDepth for headless
+    try {
+        if (screen.colorDepth !== 24) {
+            Object.defineProperty(screen, 'colorDepth', { get: () => 24, configurable: true });
+            Object.defineProperty(screen, 'pixelDepth', { get: () => 24, configurable: true });
+        }
+    } catch(e) {}
 })();
 "#;
 

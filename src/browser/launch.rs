@@ -80,6 +80,8 @@ pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
     args.push("metrics-recording-only".to_string());
     args.push("no-first-run".to_string());
     args.push("no-default-browser-check".to_string());
+    // Realistic window size (avoids 800x600 headless default)
+    args.push("window-size=1920,1080".to_string());
 
     // NOTE: We intentionally DO NOT add:
     // - "enable-automation" (reveals automation)
