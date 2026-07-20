@@ -13,7 +13,9 @@ pub struct Page {
 
 impl Page {
     pub(crate) async fn new(inner: CdpPage) -> Result<Self> {
-        // Inject shadow DOM patch before any page content loads
+        // Inject stealth patches before any page content loads
+        // Order matters: stealth first (navigator.webdriver etc), then shadow DOM
+        crate::patches::stealth::inject(&inner).await?;
         crate::patches::shadow_dom::inject(&inner).await?;
         Ok(Self { inner })
     }

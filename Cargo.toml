@@ -19,3 +19,7 @@ base64 = "0.22"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tracing-subscriber = "0.3"
+
+# Use locally patched chromiumoxide (removes Runtime.enable from page init)
+[patch.crates-io]
+chromiumoxide = { path = "vendor/chromiumoxide" }

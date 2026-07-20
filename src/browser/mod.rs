@@ -18,29 +18,36 @@ pub struct Browser {
 
 impl Browser {
     /// Launch a new browser instance with anti-detection patches applied.
+    ///
+    /// Key stealth measures:
+    /// - Disables chromiumoxide's default args (which include --enable-automation)
+    /// - Uses .hide() to add --disable-blink-features=AutomationControlled
+    /// - Applies patchright launch arg patches
+    /// - Never sends Runtime.enable or Console.enable (patched chromiumoxide)
     pub async fn launch(options: LaunchOptions) -> Result<Self> {
         let executable = launch::resolve_executable(&options)?;
-        let args = launch::build_default_args(&options);
 
-        // Strip "--" prefix from args for chromiumoxide builder
-        let stripped_args: Vec<String> = args
-            .iter()
-            .map(|a| a.strip_prefix("--").unwrap_or(a).to_string())
-            .collect();
+        // Build our own stealth args (without -- prefix, chromiumoxide adds it)
+        let stealth_args = launch::build_stealth_args(&options);
 
         let mut builder = BrowserConfig::builder()
             .chrome_executable(executable)
-            .args(stripped_args)
+            // CRITICAL: disable chromiumoxide's default args which include --enable-automation
+            .disable_default_args()
+            // Add our stealth-friendly args
+            .args(stealth_args)
+            // Add --disable-blink-features=AutomationControlled
+            .hide()
             .no_sandbox();
 
-        // Set headless mode based on options
+        // Set headless mode
         if options.headless {
             builder = builder.new_headless_mode();
         } else {
             builder = builder.with_head();
         }
 
-        // Set user data dir if specified
+        // Set user data dir if specified (avoids temp dir locking issues)
         if let Some(ref user_data_dir) = options.user_data_dir {
             builder = builder.user_data_dir(user_data_dir);
         }
@@ -59,7 +66,7 @@ impl Browser {
         // Spawn the handler in a background task
         let handle = tokio::spawn(async move {
             while let Some(_event) = handler.next().await {
-                // Process events (currently just draining them)
+                // Process events (drain them to keep connection alive)
             }
         });
 

@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use crate::config::LaunchOptions;
 use crate::error::{PatchrightError, Result};
-use crate::patches;
 
 /// Resolve the browser executable path from options.
 pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
@@ -52,37 +51,53 @@ pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
 }
 
 /// Build default Chrome launch arguments from options, with patches applied.
+/// These args include the "--" prefix (for testing/verification).
 pub fn build_default_args(options: &LaunchOptions) -> Vec<String> {
-    let mut args = Vec::new();
+    build_stealth_args(options)
+        .iter()
+        .map(|a| format!("--{a}"))
+        .collect()
+}
 
-    if options.headless {
-        args.push("--headless=new".to_string());
-    }
+/// Build stealth launch args WITHOUT "--" prefix (for chromiumoxide's Arg system).
+/// These are carefully curated to avoid detection vectors.
+/// Corresponds to patchright's chromiumSwitches.js patch.
+pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
 
-    if !options.no_viewport {
-        args.push("--window-size=1280,720".to_string());
-    }
+    // Core stealth args (safe defaults that don't reveal automation)
+    args.push("disable-background-networking".to_string());
+    args.push("disable-background-timer-throttling".to_string());
+    args.push("disable-backgrounding-occluded-windows".to_string());
+    args.push("disable-breakpad".to_string());
+    args.push("disable-client-side-phishing-detection".to_string());
+    args.push("disable-dev-shm-usage".to_string());
+    args.push("disable-hang-monitor".to_string());
+    args.push("disable-ipc-flooding-protection".to_string());
+    args.push("disable-prompt-on-repost".to_string());
+    args.push("disable-renderer-backgrounding".to_string());
+    args.push("disable-sync".to_string());
+    args.push("metrics-recording-only".to_string());
+    args.push("no-first-run".to_string());
+    args.push("no-default-browser-check".to_string());
 
-    if let Some(ref user_data_dir) = options.user_data_dir {
-        args.push(format!("--user-data-dir={}", user_data_dir.display()));
-    }
+    // NOTE: We intentionally DO NOT add:
+    // - "enable-automation" (reveals automation)
+    // - "disable-popup-blocking" (reveals automation)
+    // - "disable-component-update" (reveals stealth driver)
+    // - "disable-default-apps" (reveals automation)
+    // - "disable-extensions" (reveals automation)
 
+    // Proxy
     if let Some(ref proxy) = options.proxy {
-        args.push(format!("--proxy-server={}", proxy.server));
+        args.push(format!("proxy-server={}", proxy.server));
     }
 
-    args.push("--no-first-run".to_string());
-    args.push("--no-default-browser-check".to_string());
-    args.push("--disable-background-networking".to_string());
-    args.push("--disable-sync".to_string());
-    args.push("--disable-translate".to_string());
-    args.push("--metrics-recording-only".to_string());
-    args.push("--safebrowsing-disable-auto-update".to_string());
-
-    args.extend(options.args.clone());
-
-    // Apply patchright patches
-    patches::args::patch_launch_args(&mut args);
+    // User-provided extra args (strip -- prefix if present)
+    for arg in &options.args {
+        let stripped = arg.strip_prefix("--").unwrap_or(arg);
+        args.push(stripped.to_string());
+    }
 
     args
 }
@@ -92,32 +107,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_default_args_headless() {
-        let opts = LaunchOptions { headless: true, ..Default::default() };
-        let args = build_default_args(&opts);
-        assert!(args.contains(&"--headless=new".to_string()));
+    fn test_stealth_args_no_automation() {
+        let opts = LaunchOptions::default();
+        let args = build_stealth_args(&opts);
+        assert!(!args.contains(&"enable-automation".to_string()));
+        assert!(!args.contains(&"disable-popup-blocking".to_string()));
+        assert!(!args.contains(&"disable-component-update".to_string()));
+        assert!(!args.contains(&"disable-default-apps".to_string()));
+        assert!(!args.contains(&"disable-extensions".to_string()));
     }
 
     #[test]
-    fn test_build_default_args_no_automation_flag() {
+    fn test_stealth_args_has_safe_defaults() {
+        let opts = LaunchOptions::default();
+        let args = build_stealth_args(&opts);
+        assert!(args.contains(&"no-first-run".to_string()));
+        assert!(args.contains(&"disable-sync".to_string()));
+        assert!(args.contains(&"disable-background-networking".to_string()));
+    }
+
+    #[test]
+    fn test_build_default_args_has_prefix() {
         let opts = LaunchOptions::default();
         let args = build_default_args(&opts);
+        assert!(args.iter().all(|a| a.starts_with("--")));
         assert!(!args.contains(&"--enable-automation".to_string()));
-        assert!(args.contains(&"--disable-blink-features=AutomationControlled".to_string()));
     }
 
     #[test]
-    fn test_build_default_args_user_data_dir() {
-        let opts = LaunchOptions {
-            user_data_dir: Some(PathBuf::from("./test-profile")),
-            ..Default::default()
-        };
-        let args = build_default_args(&opts);
-        assert!(args.iter().any(|a| a.starts_with("--user-data-dir=")));
-    }
-
-    #[test]
-    fn test_build_default_args_proxy() {
+    fn test_stealth_args_proxy() {
         let opts = LaunchOptions {
             proxy: Some(crate::config::ProxyConfig {
                 server: "http://127.0.0.1:8080".into(),
@@ -126,7 +144,18 @@ mod tests {
             }),
             ..Default::default()
         };
-        let args = build_default_args(&opts);
-        assert!(args.contains(&"--proxy-server=http://127.0.0.1:8080".to_string()));
+        let args = build_stealth_args(&opts);
+        assert!(args.contains(&"proxy-server=http://127.0.0.1:8080".to_string()));
+    }
+
+    #[test]
+    fn test_stealth_args_user_extra_args() {
+        let opts = LaunchOptions {
+            args: vec!["--custom-flag".to_string(), "another-flag".to_string()],
+            ..Default::default()
+        };
+        let args = build_stealth_args(&opts);
+        assert!(args.contains(&"custom-flag".to_string()));
+        assert!(args.contains(&"another-flag".to_string()));
     }
 }
