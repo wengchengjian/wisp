@@ -7,7 +7,6 @@
 
 const { spawn } = require('child_process');
 
-// Parse args: node patchright-helper.js <chrome_path> [args...]
 const args = process.argv.slice(2);
 const chromePath = args[0];
 const chromeArgs = args.slice(1);
@@ -18,73 +17,55 @@ if (!chromePath) {
 }
 
 // Spawn Chrome with 5 stdio entries (fd 3 and fd 4 for pipe CDP)
+// windowsHide: false allows Chrome to create its window in headed mode
 const chrome = spawn(chromePath, chromeArgs, {
-  stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe']
-});
-
-let chromeAlive = true;
-
-chrome.on('exit', (code) => {
-  // In headed mode, Chrome's launcher process may exit after spawning
-  // the real browser process. Don't exit immediately - wait to see if
-  // the pipe is still active.
-  process.stderr.write('[helper] chrome process exited with code ' + code + '\n');
-  chromeAlive = false;
-  // Give time for any remaining pipe data to arrive
-  setTimeout(() => {
-    process.exit(code || 0);
-  }, 2000);
-});
-
-chrome.stderr.on('data', (d) => {
-  // Forward Chrome stderr to our stderr (for debugging)
-  process.stderr.write(d);
+  stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+  windowsHide: false
 });
 
 // Forward CDP messages from parent (stdin) to Chrome (fd 3)
-// Chrome reads commands from fd 3
+// Always forward regardless of Chrome's exit state - the pipe might still be open
 process.stdin.on('data', (data) => {
-  process.stderr.write('[helper] stdin recv ' + data.length + ' bytes\n');
-  if (chromeAlive && chrome.stdio[3] && chrome.stdio[3].writable) {
-    chrome.stdio[3].write(data);
-    process.stderr.write('[helper] forwarded to chrome fd3\n');
-  } else {
-    process.stderr.write('[helper] chrome fd3 not writable!\n');
-  }
+  try {
+    if (chrome.stdio[3] && chrome.stdio[3].writable) {
+      chrome.stdio[3].write(data);
+    }
+  } catch(e) {}
 });
 
 process.stdin.on('end', () => {
-  // Parent closed stdin - wait a bit before killing Chrome
-  // (might be a temporary state)
-  process.stderr.write('[helper] stdin ended\n');
-  setTimeout(() => {
-    if (chromeAlive) chrome.kill();
-    process.exit(0);
-  }, 1000);
+  // Parent closed stdin - kill Chrome and exit
+  try { chrome.kill(); } catch(e) {}
+  process.exit(0);
 });
 
-// Keep the process alive
+// Keep stdin flowing
 process.stdin.resume();
 
 // Forward CDP messages from Chrome (fd 4) to parent (stdout)
-// Chrome writes responses to fd 4
-if (chrome.stdio[4] && chrome.stdio[4].readable) {
+if (chrome.stdio[4]) {
   chrome.stdio[4].on('data', (data) => {
-    process.stderr.write('[helper] chrome fd4 recv ' + data.length + ' bytes\n');
     try { process.stdout.write(data); } catch(e) {}
   });
 }
 
 // Also listen on fd 3 for any data Chrome might send there
-if (chrome.stdio[3] && chrome.stdio[3].readable) {
+if (chrome.stdio[3]) {
   chrome.stdio[3].on('data', (data) => {
-    process.stderr.write('[helper] chrome fd3 recv ' + data.length + ' bytes\n');
     try { process.stdout.write(data); } catch(e) {}
   });
 }
 
-// Keep the process alive
+// When Chrome exits, do NOT exit the helper.
+// In headed mode, Chrome's launcher process may exit while the browser
+// process keeps the pipe handles open. We stay alive until stdin closes.
+chrome.on('exit', (code) => {
+  // Log but don't exit
+  process.stderr.write('[helper] chrome exited code=' + code + ', staying alive\n');
+});
+
+// Handle termination
 process.on('SIGTERM', () => {
-  if (chromeAlive) chrome.kill();
+  try { chrome.kill(); } catch(e) {}
   process.exit(0);
 });

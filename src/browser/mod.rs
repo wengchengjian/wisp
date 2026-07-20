@@ -2,6 +2,8 @@ pub mod launch;
 
 use std::sync::Arc;
 use std::process::Stdio;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use crate::cdp::pipe::PipeTransport;
 use crate::cdp::session::CdpSession;
@@ -46,11 +48,21 @@ impl Browser {
         cmd_args.push(executable.to_string_lossy().to_string());
         cmd_args.extend(chrome_args);
 
-        let mut child = std::process::Command::new(&node)
-            .args(&cmd_args)
+        let mut cmd = std::process::Command::new(&node);
+        cmd.args(&cmd_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+
+        // On Windows, set creation flags for headed/headless mode.
+        #[cfg(windows)]
+        if options.headless {
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        } else {
+            cmd.creation_flags(0x00000010); // CREATE_NEW_CONSOLE
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| PatchrightError::LaunchFailed(e.to_string()))?;
 
@@ -64,7 +76,7 @@ impl Browser {
         session.spawn_reader();
 
         // Wait for Chrome to initialize via helper
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
 
         Ok(Self { session, process: child, options })
     }
