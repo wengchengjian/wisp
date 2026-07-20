@@ -67,11 +67,13 @@ pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
 
     // Core args needed for pipe CDP to work
     args.push("no-first-run".to_string());
-    args.push("no-sandbox".to_string());
     args.push("disable-background-networking".to_string());
 
     // Stealth: disable automation detection (makes navigator.webdriver natively undefined)
     args.push("disable-blink-features=AutomationControlled".to_string());
+
+    // NOTE: Do NOT add --no-sandbox! It causes Chrome to re-launch on Windows
+    // in headed mode, which loses the pipe handles.
 
     // NOTE: We intentionally DO NOT add:
     // - "enable-automation" (reveals automation)
