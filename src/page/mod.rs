@@ -79,18 +79,237 @@ impl Page {
         Ok(page)
     }
 
-    // --- Public API ---
+    // --- Public API: Navigation ---
 
     pub async fn goto(&self, url: &str) -> Result<()> { navigate::goto(self, url).await }
     pub async fn reload(&self) -> Result<()> { navigate::reload(self).await }
+    pub async fn go_back(&self) -> Result<()> {
+        self.cmd("Page.navigate", json!({"url": "javascript:history.back()"})).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        Ok(())
+    }
+    pub async fn go_forward(&self) -> Result<()> {
+        self.cmd("Page.navigate", json!({"url": "javascript:history.forward()"})).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        Ok(())
+    }
+
+    // --- Public API: Page Info ---
+
+    /// Get the current page URL.
+    pub async fn url(&self) -> Result<String> {
+        self.evaluate_as_string("window.location.href").await
+    }
+
+    /// Get the page title.
+    pub async fn title(&self) -> Result<String> {
+        self.evaluate_as_string("document.title").await
+    }
+
+    /// Get the full page HTML.
+    pub async fn content(&self) -> Result<String> {
+        self.evaluate_as_string("document.documentElement.outerHTML").await
+    }
+
+    /// Set the page HTML content.
+    pub async fn set_content(&self, html: &str) -> Result<()> {
+        let escaped = serde_json::to_string(html).unwrap();
+        self.evaluate(&format!("document.documentElement.innerHTML = {}", escaped)).await?;
+        Ok(())
+    }
+
+    // --- Public API: JavaScript ---
+
     pub async fn evaluate(&self, expression: &str) -> Result<Value> { evaluate::evaluate(self, expression).await }
     pub async fn evaluate_as_string(&self, expression: &str) -> Result<String> {
         let value = self.evaluate(expression).await?;
         Ok(match value { Value::String(s) => s, Value::Null => "null".to_string(), other => other.to_string() })
     }
+
+    // --- Public API: Cookies ---
+
+    /// Get all cookies (including httpOnly) via CDP.
+    pub async fn cookies(&self) -> Result<Vec<Value>> {
+        let resp = self.cmd("Network.getCookies", json!({})).await?;
+        Ok(resp.get("cookies").and_then(|c| c.as_array()).cloned().unwrap_or_default())
+    }
+
+    /// Get a specific cookie value by name (including httpOnly).
+    pub async fn get_cookie(&self, name: &str) -> Result<Option<String>> {
+        let cookies = self.cookies().await?;
+        Ok(cookies.iter()
+            .find(|c| c.get("name").and_then(|n| n.as_str()) == Some(name))
+            .and_then(|c| c.get("value").and_then(|v| v.as_str()))
+            .map(|v| v.to_string()))
+    }
+
+    /// Add/set cookies.
+    pub async fn add_cookies(&self, cookies: &[Value]) -> Result<()> {
+        for cookie in cookies {
+            self.cmd("Network.setCookie", cookie.clone()).await?;
+        }
+        Ok(())
+    }
+
+    /// Clear all cookies.
+    pub async fn clear_cookies(&self) -> Result<()> {
+        self.cmd("Network.clearBrowserCookies", json!({})).await?;
+        Ok(())
+    }
+
+    // --- Public API: Elements ---
+
     pub async fn click(&self, selector: &str) -> Result<()> { crate::element::click(self, selector).await }
     pub async fn fill(&self, selector: &str, value: &str) -> Result<()> { crate::element::fill(self, selector, value).await }
     pub async fn wait_for_selector(&self, selector: &str, timeout_ms: u64) -> Result<()> { crate::element::wait_for_selector(self, selector, timeout_ms).await }
     pub async fn text_content(&self, selector: &str) -> Result<String> { crate::element::text_content(self, selector).await }
+
+    /// Get inner text of an element.
+    pub async fn inner_text(&self, selector: &str) -> Result<String> {
+        let js = format!("document.querySelector({})?.innerText || ''", serde_json::to_string(selector).unwrap());
+        self.evaluate_as_string(&js).await
+    }
+
+    /// Get inner HTML of an element.
+    pub async fn inner_html(&self, selector: &str) -> Result<String> {
+        let js = format!("document.querySelector({})?.innerHTML || ''", serde_json::to_string(selector).unwrap());
+        self.evaluate_as_string(&js).await
+    }
+
+    /// Get an attribute value from an element.
+    pub async fn get_attribute(&self, selector: &str, attr: &str) -> Result<Option<String>> {
+        let js = format!(
+            "document.querySelector({})?.getAttribute({})",
+            serde_json::to_string(selector).unwrap(),
+            serde_json::to_string(attr).unwrap()
+        );
+        let val = self.evaluate(&js).await?;
+        Ok(val.as_str().map(|s| s.to_string()))
+    }
+
+    /// Check if an element exists on the page.
+    pub async fn query_selector(&self, selector: &str) -> Result<bool> {
+        let js = format!("!!document.querySelector({})", serde_json::to_string(selector).unwrap());
+        let val = self.evaluate(&js).await?;
+        Ok(val.as_bool().unwrap_or(false))
+    }
+
+    /// Check if an element is visible.
+    pub async fn is_visible(&self, selector: &str) -> Result<bool> {
+        let js = format!(r#"(() => {{
+            const el = document.querySelector({});
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetHeight > 0;
+        }})()"#, serde_json::to_string(selector).unwrap());
+        let val = self.evaluate(&js).await?;
+        Ok(val.as_bool().unwrap_or(false))
+    }
+
+    /// Hover over an element.
+    pub async fn hover(&self, selector: &str) -> Result<()> {
+        let js = format!(r#"(() => {{
+            const el = document.querySelector({});
+            if (!el) throw new Error('Element not found');
+            const r = el.getBoundingClientRect();
+            return {{x: r.x + r.width/2, y: r.y + r.height/2}};
+        }})()"#, serde_json::to_string(selector).unwrap());
+        let pos = self.evaluate(&js).await?;
+        let x = pos.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y = pos.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        self.cmd("Input.dispatchMouseEvent", json!({"type": "mouseMoved", "x": x, "y": y})).await?;
+        Ok(())
+    }
+
+    /// Select an option in a <select> element.
+    pub async fn select_option(&self, selector: &str, value: &str) -> Result<()> {
+        let js = format!(r#"(() => {{
+            const el = document.querySelector({});
+            if (!el) throw new Error('Element not found');
+            el.value = {};
+            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+        }})()"#, serde_json::to_string(selector).unwrap(), serde_json::to_string(value).unwrap());
+        self.evaluate(&js).await?;
+        Ok(())
+    }
+
+    // --- Public API: Input ---
+
+    /// Press a keyboard key (e.g., "Enter", "Tab", "Escape").
+    pub async fn press_key(&self, key: &str) -> Result<()> {
+        self.cmd("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": key})).await?;
+        self.cmd("Input.dispatchKeyEvent", json!({"type": "keyUp", "key": key})).await?;
+        Ok(())
+    }
+
+    /// Type text character by character (fast, no human simulation).
+    pub async fn type_text(&self, text: &str) -> Result<()> {
+        for ch in text.chars() {
+            self.cmd("Input.dispatchKeyEvent", json!({"type": "keyDown", "text": ch.to_string()})).await?;
+            self.cmd("Input.dispatchKeyEvent", json!({"type": "keyUp", "text": ch.to_string()})).await?;
+        }
+        Ok(())
+    }
+
+    // --- Public API: Viewport & Display ---
+
+    /// Set the viewport size.
+    pub async fn set_viewport(&self, width: u32, height: u32) -> Result<()> {
+        self.cmd("Emulation.setDeviceMetricsOverride", json!({
+            "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false
+        })).await?;
+        Ok(())
+    }
+
+    /// Set extra HTTP headers for all requests.
+    pub async fn set_extra_http_headers(&self, headers: std::collections::HashMap<String, String>) -> Result<()> {
+        self.cmd("Network.setExtraHTTPHeaders", json!({"headers": headers})).await?;
+        Ok(())
+    }
+
+    // --- Public API: Output ---
+
     pub async fn screenshot(&self, path: &str) -> Result<()> { screenshot::screenshot(self, path).await }
+    pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> { screenshot::screenshot_bytes(self).await }
+
+    /// Generate a PDF (headless only).
+    pub async fn pdf(&self, path: &str) -> Result<()> {
+        let result = self.cmd("Page.printToPDF", json!({"printBackground": true})).await?;
+        let data = result.get("data").and_then(|d| d.as_str())
+            .ok_or_else(|| WispError::CdpError("no PDF data".into()))?;
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data)
+            .map_err(|e| WispError::CdpError(format!("decode PDF: {e}")))?;
+        tokio::fs::write(path, &bytes).await
+            .map_err(|e| WispError::CdpError(format!("write PDF: {e}")))?;
+        Ok(())
+    }
+
+    // --- Public API: Wait ---
+
+    /// Wait for a specific URL pattern (substring match).
+    pub async fn wait_for_url(&self, url_pattern: &str, timeout_ms: u64) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            let current = self.url().await?;
+            if current.contains(url_pattern) { return Ok(()); }
+            if tokio::time::Instant::now() > deadline {
+                return Err(WispError::Timeout(format!("wait_for_url: {url_pattern}")));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Wait for the page to reach a specific ready state.
+    pub async fn wait_for_load_state(&self, timeout_ms: u64) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            let state = self.evaluate_as_string("document.readyState").await?;
+            if state == "complete" { return Ok(()); }
+            if tokio::time::Instant::now() > deadline {
+                return Err(WispError::Timeout("wait_for_load_state".into()));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
 }
