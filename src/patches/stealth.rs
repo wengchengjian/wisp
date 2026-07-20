@@ -7,21 +7,32 @@ use crate::error::{PatchrightError, Result};
 /// Injected before any page scripts run via Page.addScriptToEvaluateOnNewDocument.
 ///
 /// Patches:
-/// 1. navigator.webdriver → undefined (not false, not true)
-/// 2. Removes CDP/automation artifacts from Error.stack
-/// 3. Hides automation-related window properties
+/// 1. navigator.webdriver → undefined (at prototype level for robustness)
+/// 2. chrome.runtime object (normal Chrome has it)
+/// 3. navigator.plugins (non-empty for headed Chrome)
+/// 4. navigator.permissions query fix
+/// 5. navigator.languages fix
 const STEALTH_SCRIPT: &str = r#"
 (() => {
-    // Patch 1: Make navigator.webdriver return undefined
-    // With --disable-blink-features=AutomationControlled, Chrome sets it to false.
-    // Normal browsers have it as undefined. We override to match normal behavior.
-    Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-        configurable: true,
-    });
+    // Patch 1: Override navigator.webdriver at PROTOTYPE level
+    // This is more robust than instance-level override because detection scripts
+    // may use Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver')
+    try {
+        Object.defineProperty(Navigator.prototype, 'webdriver', {
+            get: () => undefined,
+            configurable: true,
+        });
+    } catch(e) {}
+
+    // Also override at instance level as backup
+    try {
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined,
+            configurable: true,
+        });
+    } catch(e) {}
 
     // Patch 2: Ensure chrome.runtime exists (normal Chrome has it)
-    // Automation browsers sometimes lack this or have it in a detectable state.
     if (!window.chrome) {
         window.chrome = {};
     }
@@ -48,40 +59,76 @@ const STEALTH_SCRIPT: &str = r#"
     }
 
     // Patch 3: Fix permissions query for notifications
-    // In automation, Notification.permission can be 'denied' by default.
-    // Override Permissions.query to return 'prompt' for notifications.
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => {
-        if (parameters.name === 'notifications') {
-            return Promise.resolve({ state: Notification.permission });
-        }
-        return originalQuery(parameters);
-    };
+    try {
+        const originalQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+        window.navigator.permissions.query = (parameters) => {
+            if (parameters.name === 'notifications') {
+                return Promise.resolve({ state: Notification.permission });
+            }
+            return originalQuery(parameters);
+        };
+    } catch(e) {}
 
     // Patch 4: Ensure plugins array looks normal
     // Headless Chrome has 0 plugins, real Chrome has at least a few.
-    if (navigator.plugins.length === 0) {
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => {
-                const plugins = [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-                ];
-                plugins.length = 3;
-                return plugins;
-            },
-            configurable: true,
-        });
-    }
+    try {
+        if (navigator.plugins.length === 0) {
+            const makePlugin = (name, filename, description) => {
+                const p = Object.create(Plugin.prototype);
+                Object.defineProperties(p, {
+                    name: { get: () => name, enumerable: true },
+                    filename: { get: () => filename, enumerable: true },
+                    description: { get: () => description, enumerable: true },
+                    length: { get: () => 1, enumerable: true },
+                });
+                return p;
+            };
+            const plugins = [
+                makePlugin('Chrome PDF Plugin', 'internal-pdf-viewer', 'Portable Document Format'),
+                makePlugin('Chrome PDF Viewer', 'mhjfbmdgcfjbbpaeojofohoefgiehjai', ''),
+                makePlugin('Native Client', 'internal-nacl-plugin', ''),
+            ];
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => {
+                    const list = Object.create(PluginArray.prototype);
+                    plugins.forEach((p, i) => {
+                        Object.defineProperty(list, i, { get: () => p, enumerable: true });
+                    });
+                    Object.defineProperty(list, 'length', { get: () => plugins.length, enumerable: true });
+                    list.item = (i) => plugins[i] || null;
+                    list.namedItem = (n) => plugins.find(p => p.name === n) || null;
+                    list.refresh = () => {};
+                    list[Symbol.iterator] = function* () { yield* plugins; };
+                    return list;
+                },
+                configurable: true,
+            });
+        }
+    } catch(e) {}
 
     // Patch 5: Ensure languages are set
-    if (!navigator.languages || navigator.languages.length === 0) {
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['en-US', 'en'],
-            configurable: true,
-        });
-    }
+    try {
+        if (!navigator.languages || navigator.languages.length === 0) {
+            Object.defineProperty(navigator, 'languages', {
+                get: () => Object.freeze(['en-US', 'en']),
+                configurable: true,
+            });
+        }
+    } catch(e) {}
+
+    // Patch 6: Fix toString for overridden functions
+    // Detection scripts may check Function.prototype.toString.call(navigator.permissions.query)
+    // to see if it's been modified. We make our functions return native-looking strings.
+    try {
+        const nativeToString = Function.prototype.toString;
+        const customToString = function() {
+            if (this === window.navigator.permissions.query) {
+                return 'function query() { [native code] }';
+            }
+            return nativeToString.call(this);
+        };
+        Function.prototype.toString = customToString;
+    } catch(e) {}
 })();
 "#;
 
