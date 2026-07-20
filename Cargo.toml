@@ -1,8 +1,8 @@
 [package]
-name = "patchright-rs"
-version = "0.3.0"
+name = "wisp"
+version = "0.1.0"
 edition = "2021"
-description = "Undetected browser automation for Rust - pure CDP implementation"
+description = "Lightweight undetected browser automation for Rust - built for scraping"
 license = "Apache-2.0"
 
 [dependencies]
@@ -24,5 +24,5 @@ anyhow = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
 
 [[bin]]
-name = "patchright"
-path = "src/bin/patchright.rs"
+name = "wisp"
+path = "src/bin/wisp.rs"

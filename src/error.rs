@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum PatchrightError {
+pub enum WispError {
     #[error("Browser launch failed: {0}")]
     LaunchFailed(String),
 
@@ -27,4 +27,4 @@ pub enum PatchrightError {
     CdpProtocol(String),
 }
 
-pub type Result<T> = std::result::Result<T, PatchrightError>;
+pub type Result<T> = std::result::Result<T, WispError>;

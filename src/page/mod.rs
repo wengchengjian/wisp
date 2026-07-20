@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::cdp::CdpSession;
-use crate::error::{PatchrightError, Result};
+use crate::error::{WispError, Result};
 
 pub struct Page {
     pub(crate) session: Arc<CdpSession>,
@@ -27,12 +27,12 @@ impl Page {
         // Create target
         let result = session.execute("Target.createTarget", json!({"url": "about:blank"})).await?;
         let target_id = result.get("targetId").and_then(|t| t.as_str())
-            .ok_or_else(|| PatchrightError::CdpError("no targetId".into()))?.to_string();
+            .ok_or_else(|| WispError::CdpError("no targetId".into()))?.to_string();
 
         // Attach to target
         let result = session.execute("Target.attachToTarget", json!({"targetId": target_id, "flatten": true})).await?;
         let session_id = result.get("sessionId").and_then(|s| s.as_str())
-            .ok_or_else(|| PatchrightError::CdpError("no sessionId".into()))?.to_string();
+            .ok_or_else(|| WispError::CdpError("no sessionId".into()))?.to_string();
 
         // Page init sequence (matches patchright):
         // Page.enable -> Page.getFrameTree -> Log.enable -> Page.setLifecycleEventsEnabled
@@ -40,7 +40,7 @@ impl Page {
         session.execute_with_session("Page.enable", json!({}), Some(&session_id)).await?;
         let frame_tree = session.execute_with_session("Page.getFrameTree", json!({}), Some(&session_id)).await?;
         let frame_id = frame_tree.get("frameTree").and_then(|ft| ft.get("frame")).and_then(|f| f.get("id")).and_then(|id| id.as_str())
-            .ok_or_else(|| PatchrightError::CdpError("no frame id".into()))?.to_string();
+            .ok_or_else(|| WispError::CdpError("no frame id".into()))?.to_string();
         let _ = session.execute_with_session("Log.enable", json!({}), Some(&session_id)).await;
         session.execute_with_session("Page.setLifecycleEventsEnabled", json!({"enabled": true}), Some(&session_id)).await?;
 

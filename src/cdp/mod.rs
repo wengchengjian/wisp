@@ -11,7 +11,7 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio::net::TcpStream;
 use tungstenite::Message;
 
-use crate::error::{PatchrightError, Result};
+use crate::error::{WispError, Result};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -36,7 +36,7 @@ impl CdpSession {
     /// Connect to Chrome's DevTools WebSocket endpoint.
     pub async fn connect(ws_url: &str) -> Result<Arc<Self>> {
         let (ws, _) = connect_async(ws_url).await
-            .map_err(|e| PatchrightError::CdpError(format!("ws connect: {e}")))?;
+            .map_err(|e| WispError::CdpError(format!("ws connect: {e}")))?;
 
         let (writer, mut reader) = ws.split();
         let writer = Arc::new(Mutex::new(writer));
@@ -96,15 +96,15 @@ impl CdpSession {
 
         let text = serde_json::to_string(&msg).unwrap();
         self.writer.lock().await.send(Message::Text(text.into())).await
-            .map_err(|e| PatchrightError::CdpError(format!("ws send: {e}")))?;
+            .map_err(|e| WispError::CdpError(format!("ws send: {e}")))?;
 
         let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx).await
-            .map_err(|_| PatchrightError::Timeout(format!("CDP: {method}")))?
-            .map_err(|_| PatchrightError::CdpError("channel closed".into()))?;
+            .map_err(|_| WispError::Timeout(format!("CDP: {method}")))?
+            .map_err(|_| WispError::CdpError("channel closed".into()))?;
 
         if let Some(error) = response.get("error") {
             let msg = error.get("message").and_then(|m| m.as_str()).unwrap_or("CDP error");
-            return Err(PatchrightError::CdpError(msg.to_string()));
+            return Err(WispError::CdpError(msg.to_string()));
         }
 
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
@@ -123,12 +123,12 @@ impl CdpSession {
             }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                return Err(PatchrightError::Timeout("waiting for CDP event".into()));
+                return Err(WispError::Timeout("waiting for CDP event".into()));
             }
             tokio::select! {
                 _ = self.event_notify.notified() => {}
                 _ = tokio::time::sleep(remaining) => {
-                    return Err(PatchrightError::Timeout("waiting for CDP event".into()));
+                    return Err(WispError::Timeout("waiting for CDP event".into()));
                 }
             }
         }

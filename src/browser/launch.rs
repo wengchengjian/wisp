@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::config::LaunchOptions;
-use crate::error::{PatchrightError, Result};
+use crate::error::{WispError, Result};
 
 /// Resolve the browser executable path from options.
 pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
@@ -9,7 +9,7 @@ pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
         if path.exists() {
             return Ok(path.clone());
         }
-        return Err(PatchrightError::LaunchFailed(format!(
+        return Err(WispError::LaunchFailed(format!(
             "Executable not found: {}",
             path.display()
         )));
@@ -45,7 +45,7 @@ pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
         }
     }
 
-    Err(PatchrightError::LaunchFailed(
+    Err(WispError::LaunchFailed(
         "No Chromium-based browser found. Install Chrome/Chromium/Edge or set executable_path.".into(),
     ))
 }

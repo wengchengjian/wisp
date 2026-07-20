@@ -11,7 +11,7 @@ use tokio::process::Child;
 
 use crate::cdp::CdpSession;
 use crate::config::LaunchOptions;
-use crate::error::{PatchrightError, Result};
+use crate::error::{WispError, Result};
 use crate::page::Page;
 
 
@@ -28,7 +28,7 @@ impl Browser {
     pub async fn launch(options: LaunchOptions) -> Result<Self> {
         let executable = launch::resolve_executable(&options)?;
         let user_data_dir = options.user_data_dir.clone()
-            .unwrap_or_else(|| std::env::temp_dir().join(format!("patchright-rs-{}-{}", std::process::id(), rand_suffix())));
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("wisp-{}-{}", std::process::id(), rand_suffix())));
 
         // Clean up stale DevToolsActivePort from previous runs
         let port_file = user_data_dir.join("DevToolsActivePort");
@@ -61,7 +61,7 @@ impl Browser {
         }
 
         let child = cmd.spawn()
-            .map_err(|e| PatchrightError::LaunchFailed(format!("spawn chrome: {e}")))?;
+            .map_err(|e| WispError::LaunchFailed(format!("spawn chrome: {e}")))?;
 
         // Wait for DevToolsActivePort file (contains random port + ws path)
         let ws_url = Self::wait_for_devtools_url(&user_data_dir).await?;
@@ -80,14 +80,14 @@ impl Browser {
                 // Small delay to ensure file is fully written
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 let content = tokio::fs::read_to_string(&port_file).await
-                    .map_err(|e| PatchrightError::LaunchFailed(format!("read DevToolsActivePort: {e}")))?;
+                    .map_err(|e| WispError::LaunchFailed(format!("read DevToolsActivePort: {e}")))?;
                 let mut lines = content.lines();
-                let port = lines.next().ok_or_else(|| PatchrightError::LaunchFailed("empty DevToolsActivePort".into()))?.trim();
+                let port = lines.next().ok_or_else(|| WispError::LaunchFailed("empty DevToolsActivePort".into()))?.trim();
                 let ws_path = lines.next().unwrap_or("/devtools/browser");
                 return Ok(format!("ws://127.0.0.1:{}{}", port, ws_path));
             }
             if tokio::time::Instant::now() > deadline {
-                return Err(PatchrightError::LaunchFailed("Chrome did not start within 15s".into()));
+                return Err(WispError::LaunchFailed("Chrome did not start within 15s".into()));
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }

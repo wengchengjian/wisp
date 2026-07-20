@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "patchright", version, about = "Undetected browser automation CLI")]
+#[command(name = "wisp", version, about = "Lightweight undetected browser automation")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -23,14 +23,14 @@ enum Commands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("patchright_rs=warn".parse().unwrap()))
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("wisp=warn".parse().unwrap()))
         .with_target(false)
         .init();
 
     let cli = Cli::parse();
     match cli.command {
         Commands::Open { url, headless } => {
-            use patchright_rs::{Browser, LaunchOptions};
+            use wisp::{Browser, LaunchOptions};
             println!("Opening {url}...");
             let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await?;
             let page = browser.new_page().await?;
@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
             browser.close().await?;
         }
         Commands::Screenshot { url, output, headed, wait } => {
-            use patchright_rs::{Browser, LaunchOptions};
+            use wisp::{Browser, LaunchOptions};
             println!("Screenshot: {url}");
             let browser = Browser::launch(LaunchOptions { headless: !headed, ..Default::default() }).await?;
             let page = browser.new_page().await?;
@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
             browser.close().await?;
         }
         Commands::Eval { expression, url, headless } => {
-            use patchright_rs::{Browser, LaunchOptions};
+            use wisp::{Browser, LaunchOptions};
             let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await?;
             let page = browser.new_page().await?;
             if url != "about:blank" { page.goto(&url).await?; }
@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
             browser.close().await?;
         }
         Commands::Dump { url, headless, wait } => {
-            use patchright_rs::{Browser, LaunchOptions};
+            use wisp::{Browser, LaunchOptions};
             let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await?;
             let page = browser.new_page().await?;
             page.goto(&url).await?;

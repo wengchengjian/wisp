@@ -575,25 +575,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "patchright-rs"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "base64",
- "clap",
- "futures",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "tungstenite",
- "which",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1141,6 +1122,25 @@ name = "winsafe"
 version = "0.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
+
+[[package]]
+name = "wisp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "tungstenite",
+ "which",
+]
 
 [[package]]
 name = "wit-bindgen"

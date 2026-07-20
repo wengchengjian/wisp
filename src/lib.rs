@@ -1,7 +1,7 @@
-//! patchright-rs: Undetected browser automation for Rust.
+//! wisp: Lightweight undetected browser automation for Rust.
 //!
-//! Pure Rust implementation using CDP (Chrome DevTools Protocol) over WebSocket
-//! with anti-detection patches equivalent to patchright.
+//! Pure Rust CDP (Chrome DevTools Protocol) over WebSocket with anti-detection
+//! patches. Built for scraping — passes Browserscan 4/4 in both headed and headless.
 
 pub mod cdp;
 pub mod browser;
@@ -13,5 +13,5 @@ pub mod error;
 
 pub use browser::Browser;
 pub use config::{LaunchOptions, ProxyConfig};
-pub use error::{PatchrightError, Result};
+pub use error::{WispError, Result};
 pub use page::Page;
