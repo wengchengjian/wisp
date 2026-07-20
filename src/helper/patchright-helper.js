@@ -25,11 +25,15 @@ const chrome = spawn(chromePath, chromeArgs, {
 let chromeAlive = true;
 
 chrome.on('exit', (code) => {
+  // In headed mode, Chrome's launcher process may exit after spawning
+  // the real browser process. Don't exit immediately - wait to see if
+  // the pipe is still active.
+  process.stderr.write('[helper] chrome process exited with code ' + code + '\n');
   chromeAlive = false;
-  // Notify parent that Chrome exited
-  const msg = JSON.stringify({ method: '__chrome_exited__', params: { code } }) + '\0';
-  try { process.stdout.write(msg); } catch(e) {}
-  process.exit(code || 0);
+  // Give time for any remaining pipe data to arrive
+  setTimeout(() => {
+    process.exit(code || 0);
+  }, 2000);
 });
 
 chrome.stderr.on('data', (d) => {
