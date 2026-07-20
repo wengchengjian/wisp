@@ -1,7 +1,4 @@
-use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
-use chromiumoxide::Page as CdpPage;
-
-use crate::error::{PatchrightError, Result};
+use crate::error::Result;
 
 /// JavaScript that hides all automation traces from the page.
 /// Injected before any page scripts run via Page.addScriptToEvaluateOnNewDocument.
@@ -244,9 +241,8 @@ const STEALTH_SCRIPT: &str = r#"
 
 /// Inject the stealth script so it runs before any page scripts.
 /// This handles navigator.webdriver and other JS-level detection vectors.
-pub async fn inject(page: &CdpPage) -> Result<()> {
-    page.execute(AddScriptToEvaluateOnNewDocumentParams::new(STEALTH_SCRIPT))
-        .await
-        .map_err(|e| PatchrightError::CdpError(format!("Stealth script injection: {e}")))?;
-    Ok(())
+///
+/// Will be properly reimplemented in Task 5 with pipe-based CDP.
+pub async fn inject(_session: &crate::cdp::session::CdpSession) -> Result<()> {
+    todo!("Task 5: inject via pipe-based CDP Page.addScriptToEvaluateOnNewDocument")
 }

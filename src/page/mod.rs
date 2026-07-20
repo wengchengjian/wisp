@@ -2,79 +2,59 @@ pub mod evaluate;
 pub mod navigate;
 pub mod screenshot;
 
-use chromiumoxide::Page as CdpPage;
-
 use crate::error::Result;
 
 /// A browser page (tab) with anti-detection patches.
-pub struct Page {
-    pub(crate) inner: CdpPage,
-}
+pub struct Page;
 
 impl Page {
-    pub(crate) async fn new(inner: CdpPage) -> Result<Self> {
-        // Inject stealth patches before any page content loads
-        // Order matters: stealth first (navigator.webdriver etc), then shadow DOM
-        crate::patches::stealth::inject(&inner).await?;
-        crate::patches::shadow_dom::inject(&inner).await?;
-        Ok(Self { inner })
-    }
-
     /// Navigate to a URL and wait for load.
     pub async fn goto(&self, url: &str) -> Result<()> {
-        navigate::goto(&self.inner, url).await
+        todo!("Task 4: pipe-based navigation")
     }
 
     /// Reload the current page.
     pub async fn reload(&self) -> Result<()> {
-        navigate::reload(&self.inner).await
+        todo!("Task 4: pipe-based reload")
     }
 
-    /// Evaluate JavaScript in an isolated ExecutionContext.
-    ///
-    /// Does NOT send `Runtime.enable` (core anti-detection patch).
+    /// Evaluate JavaScript in the page context.
     pub async fn evaluate(&self, expression: &str) -> Result<serde_json::Value> {
-        evaluate::evaluate(&self.inner, expression).await
+        todo!("Task 4: pipe-based evaluation")
     }
 
     /// Evaluate JavaScript and return result as String.
     pub async fn evaluate_as_string(&self, expression: &str) -> Result<String> {
-        let value = evaluate::evaluate(&self.inner, expression).await?;
-        Ok(match value {
-            serde_json::Value::String(s) => s,
-            serde_json::Value::Null => "null".to_string(),
-            other => other.to_string(),
-        })
+        todo!("Task 4: pipe-based evaluation")
     }
 
     /// Click an element matching the CSS selector.
     pub async fn click(&self, selector: &str) -> Result<()> {
-        crate::element::click(&self.inner, selector).await
+        todo!("Task 4: pipe-based click")
     }
 
     /// Type text into an input element.
     pub async fn fill(&self, selector: &str, value: &str) -> Result<()> {
-        crate::element::fill(&self.inner, selector, value).await
+        todo!("Task 4: pipe-based fill")
     }
 
     /// Wait for an element to appear in the DOM.
     pub async fn wait_for_selector(&self, selector: &str, timeout: Option<std::time::Duration>) -> Result<()> {
-        let ms = timeout.unwrap_or(std::time::Duration::from_secs(30)).as_millis() as u64;
-        crate::element::wait_for_selector(&self.inner, selector, ms).await
+        todo!("Task 4: pipe-based wait")
     }
 
     /// Get text content of an element.
     pub async fn text_content(&self, selector: &str) -> Result<String> {
-        crate::element::text_content(&self.inner, selector).await
+        todo!("Task 4: pipe-based text_content")
     }
 
     /// Capture a full-page screenshot and save to file.
     pub async fn screenshot(&self, path: &str) -> Result<()> {
-        screenshot::screenshot(&self.inner, path).await
+        todo!("Task 4: pipe-based screenshot")
     }
 
     /// Capture a screenshot and return raw PNG bytes.
     pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> {
-        screenshot::screenshot_bytes(&self.inner).await
+        todo!("Task 4: pipe-based screenshot")
     }
 }

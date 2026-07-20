@@ -1,7 +1,4 @@
-use chromiumoxide::Page as CdpPage;
-use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
-
-use crate::error::{PatchrightError, Result};
+use crate::error::Result;
 
 /// JavaScript that forces all shadow roots to be created as 'open'.
 const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
@@ -17,9 +14,8 @@ const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
 "#;
 
 /// Inject the shadow DOM patch so it runs before any page scripts.
-pub async fn inject(page: &CdpPage) -> Result<()> {
-    page.execute(AddScriptToEvaluateOnNewDocumentParams::new(SHADOW_DOM_PATCH_SCRIPT))
-        .await
-        .map_err(|e| PatchrightError::CdpError(format!("Shadow DOM patch injection: {e}")))?;
-    Ok(())
+///
+/// Will be properly reimplemented in Task 5 with pipe-based CDP.
+pub async fn inject(_session: &crate::cdp::session::CdpSession) -> Result<()> {
+    todo!("Task 5: inject via pipe-based CDP Page.addScriptToEvaluateOnNewDocument")
 }
