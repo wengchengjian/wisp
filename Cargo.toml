@@ -19,6 +19,7 @@ clap = { version = "4", features = ["derive"] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 tungstenite = "0.26"
 anyhow = "1"
+rand = "0.9"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

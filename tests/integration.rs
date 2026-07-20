@@ -1,4 +1,4 @@
-use patchright_rs::{Browser, LaunchOptions};
+use wisp::{Browser, LaunchOptions};
 
 /// Helper: launch browser for tests. Returns None if no Chrome found.
 async fn launch_test_browser() -> Option<Browser> {

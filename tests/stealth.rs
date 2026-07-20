@@ -1,4 +1,4 @@
-use patchright_rs::{Browser, LaunchOptions};
+use wisp::{Browser, LaunchOptions};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -19,7 +19,7 @@ async fn launch_stealth_browser() -> Option<Browser> {
 /// Helper: evaluate JS in the MAIN world by writing results to DOM.
 /// Our page.evaluate() runs in an isolated world, but anti-bot scripts
 /// run in the main world. This helper bridges the gap.
-async fn eval_main_world(page: &patchright_rs::Page, js: &str) -> serde_json::Value {
+async fn eval_main_world(page: &wisp::Page, js: &str) -> serde_json::Value {
     // Write result to document.title from main world via inline script navigation
     let html = format!(
         "data:text/html,<script>document.title = JSON.stringify((() => {{ {} }})())</script>",
