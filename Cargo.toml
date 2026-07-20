@@ -18,6 +18,8 @@ clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
 zip = "2"
 tokio-util = { version = "0.7", features = ["io"] }
+tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }
+tungstenite = "0.30"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
