@@ -70,13 +70,16 @@ pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
     args.push("no-sandbox".to_string());
     args.push("disable-background-networking".to_string());
 
-    // Stealth: disable automation detection
+    // Stealth: disable automation detection (makes navigator.webdriver natively undefined)
     args.push("disable-blink-features=AutomationControlled".to_string());
 
     // Safe defaults that don't interfere with pipe CDP
     args.push("disable-sync".to_string());
     args.push("metrics-recording-only".to_string());
     args.push("no-default-browser-check".to_string());
+    args.push("disable-background-timer-throttling".to_string());
+    args.push("disable-backgrounding-occluded-windows".to_string());
+    args.push("disable-renderer-backgrounding".to_string());
 
     // NOTE: We intentionally DO NOT add:
     // - "enable-automation" (reveals automation)

@@ -62,6 +62,23 @@ impl Page {
         let shadow_dom_script = crate::patches::shadow_dom::SHADOW_DOM_PATCH_SCRIPT;
         page.cmd("Page.addScriptToEvaluateOnNewDocument", json!({"source": shadow_dom_script})).await?;
 
+        // 7. Override User-Agent to remove "HeadlessChrome" marker
+        page.cmd("Emulation.setUserAgentOverride", json!({
+            "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "platform": "Win32",
+            "userAgentMetadata": {
+                "brands": [{"brand": "Chromium", "version": "130"}, {"brand": "Google Chrome", "version": "130"}],
+                "fullVersionList": [{"brand": "Chromium", "version": "130.0.6723.92"}, {"brand": "Google Chrome", "version": "130.0.6723.92"}],
+                "platform": "Windows",
+                "platformVersion": "15.0.0",
+                "architecture": "x86",
+                "model": "",
+                "mobile": false,
+                "bitness": "64",
+                "wow64": false
+            }
+        })).await?;
+
         // NOTE: We do NOT send Runtime.enable!
 
         Ok(Self { frame_id, ..page })
