@@ -28,6 +28,13 @@ pub struct ScrapeResponse {
     pub cookies: Vec<String>,
 }
 
+impl ScrapeResponse {
+    /// Parse the HTML content into a queryable Node.
+    pub fn parse(&self) -> crate::parser::Node {
+        crate::parser::Node::from_html(&self.html)
+    }
+}
+
 /// Options for a scrape request.
 #[derive(Debug, Clone)]
 pub struct RequestOptions {
