@@ -18,7 +18,8 @@ pub struct Page {
 }
 
 impl Page {
-    pub(crate) async fn cmd(&self, method: &str, params: Value) -> Result<Value> {
+    /// Execute a raw CDP command on this page's target session.
+    pub async fn cmd(&self, method: &str, params: Value) -> Result<Value> {
         self.session.execute_with_session(method, params, Some(&self.session_id)).await
     }
 

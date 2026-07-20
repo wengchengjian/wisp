@@ -43,6 +43,7 @@ pub async fn solve_turnstile(page: &Page, timeout: Duration) -> Result<()> {
 }
 
 /// Wait for the Turnstile iframe to appear in the DOM.
+/// Searches through shadow roots since Turnstile renders inside a shadow DOM.
 async fn wait_for_turnstile_iframe(page: &Page, timeout: Duration) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
 
@@ -51,10 +52,20 @@ async fn wait_for_turnstile_iframe(page: &Page, timeout: Duration) -> Result<()>
             return Err(WispError::Timeout("Turnstile iframe did not appear".into()));
         }
 
+        // Search through shadow roots (Turnstile hides inside shadow DOM)
         let found = page.evaluate(r#"(() => {
-            return !!document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
-                   !!document.querySelector('.cf-turnstile iframe') ||
-                   !!document.querySelector('[id*="turnstile"]');
+            // Direct check
+            if (document.querySelector('iframe[src*="challenges.cloudflare.com"]')) return true;
+            // Search inside shadow roots
+            const allElements = document.querySelectorAll('*');
+            for (const el of allElements) {
+                if (el.shadowRoot) {
+                    const iframe = el.shadowRoot.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+                                   el.shadowRoot.querySelector('iframe[id*="cf-chl"]');
+                    if (iframe) return true;
+                }
+            }
+            return false;
         })()"#).await?;
 
         if found.as_bool().unwrap_or(false) {
@@ -86,10 +97,22 @@ async fn is_turnstile_solved(page: &Page) -> Result<bool> {
 /// Try to click the Turnstile checkbox via CDP.
 /// Returns true if a click was performed.
 async fn try_click_turnstile(page: &Page, _human: &HumanBehavior<'_>) -> Result<bool> {
-    // Get the Turnstile iframe bounding box
+    // Get the Turnstile iframe bounding box - search through shadow roots
     let iframe_info = page.evaluate(r#"(() => {
-        const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
-                       document.querySelector('.cf-turnstile iframe');
+        // Direct search
+        let iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+                     document.querySelector('iframe[id*="cf-chl"]');
+        // Search inside shadow roots
+        if (!iframe) {
+            const allElements = document.querySelectorAll('*');
+            for (const el of allElements) {
+                if (el.shadowRoot) {
+                    iframe = el.shadowRoot.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+                             el.shadowRoot.querySelector('iframe[id*="cf-chl"]');
+                    if (iframe) break;
+                }
+            }
+        }
         if (!iframe) return null;
         const rect = iframe.getBoundingClientRect();
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };

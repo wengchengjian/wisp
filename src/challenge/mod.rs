@@ -38,10 +38,25 @@ impl<'a> ChallengeSolver<'a> {
             const title = document.title || '';
             const body = document.body ? document.body.innerHTML : '';
 
-            // Turnstile widget
+            // Helper: search shadow roots for Turnstile iframe
+            function findInShadows() {
+                const els = document.querySelectorAll('*');
+                for (const el of els) {
+                    if (el.shadowRoot) {
+                        if (el.shadowRoot.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+                            el.shadowRoot.querySelector('iframe[id*="cf-chl"]')) return true;
+                    }
+                }
+                return false;
+            }
+
+            // Turnstile widget (direct + shadow roots)
             if (document.querySelector('.cf-turnstile') ||
-                document.querySelector('iframe[src*="challenges.cloudflare.com/turnstile"]') ||
-                body.includes('cf-turnstile')) {
+                document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+                document.querySelector('iframe[id*="cf-chl"]') ||
+                body.includes('cf-turnstile') ||
+                body.includes('cf-chl-widget') ||
+                findInShadows()) {
                 return 'turnstile';
             }
 
@@ -62,7 +77,6 @@ impl<'a> ChallengeSolver<'a> {
                 return 'managed';
             }
 
-            // Check for Cloudflare server but no active challenge
             return 'none';
         })()"#;
 
