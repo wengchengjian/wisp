@@ -67,5 +67,15 @@ fn bench_nodelist_iter(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_parse, bench_css_select, bench_text_extraction, bench_nodelist_iter);
+fn bench_xpath(c: &mut Criterion) {
+    let html = generate_html(100);
+    let doc = Node::from_html(&html);
+
+    let mut group = c.benchmark_group("xpath");
+    group.bench_function("simple", |b| b.iter(|| doc.xpath(black_box("//div"))));
+    group.bench_function("with_attr", |b| b.iter(|| doc.xpath(black_box("//div[@class='item']"))));
+    group.finish();
+}
+
+criterion_group!(benches, bench_parse, bench_css_select, bench_xpath, bench_text_extraction, bench_nodelist_iter);
 criterion_main!(benches);

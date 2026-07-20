@@ -3,6 +3,7 @@
 //! Wraps reqwest with builder pattern, proxy support, and HTML parsing.
 
 pub mod encoding;
+pub mod proxy;
 
 use std::collections::HashMap;
 use std::time::Duration;

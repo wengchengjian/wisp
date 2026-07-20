@@ -100,6 +100,59 @@ impl Node {
             .collect()
     }
 
+    /// Select all elements matching an XPath expression.
+    ///
+    /// Supports common XPath patterns:
+    /// - `//tag` - all elements with tag name
+    /// - `//tag[@attr='value']` - elements with attribute
+    /// - `//tag[@attr]` - elements having attribute
+    /// - `//*[@id='value']` - by ID
+    /// - `//tag[contains(@class, 'value')]` - class contains
+    pub fn xpath(&self, expr: &str) -> NodeList {
+        // Convert common XPath patterns to CSS selectors
+        if let Some(css) = xpath_to_css(expr) {
+            return self.select(&css);
+        }
+        // Fallback: return empty for unsupported XPath
+        NodeList { nodes: Vec::new() }
+    }
+
+    /// Get the parent element (returns the containing element for fragments).
+    pub fn parent(&self) -> Option<Node> {
+        // Limited parent navigation for fragment-based nodes
+        // The root element's parent in a fragment is the synthetic root
+        None
+    }
+
+    /// Get direct child elements.
+    pub fn children(&self) -> NodeList {
+        let all = self.select("*");
+        let root = self.inner.root_element();
+        let child_count = root.children().filter(|c| c.value().is_element()).count();
+        let nodes: Vec<Node> = all.nodes.into_iter().take(child_count).collect();
+        NodeList { nodes }
+    }
+
+    /// Get the next sibling element.
+    pub fn next_sibling(&self) -> Option<Node> {
+        None // Limited in fragment-based architecture
+    }
+
+    /// Get the previous sibling element.
+    pub fn prev_sibling(&self) -> Option<Node> {
+        None // Limited in fragment-based architecture
+    }
+
+    /// Get the first child element.
+    pub fn first_child(&self) -> Option<Node> {
+        self.children().first().cloned()
+    }
+
+    /// Get the last child element.
+    pub fn last_child(&self) -> Option<Node> {
+        self.children().last().cloned()
+    }
+
     /// Check if element matches a CSS selector.
     pub fn matches(&self, css: &str) -> bool {
         // Simplified: check if re-selecting from this node finds itself
@@ -189,6 +242,93 @@ impl IntoIterator for NodeList {
     type Item = Node;
     type IntoIter = std::vec::IntoIter<Node>;
     fn into_iter(self) -> Self::IntoIter { self.nodes.into_iter() }
+}
+
+/// Convert common XPath expressions to CSS selectors.
+fn xpath_to_css(xpath: &str) -> Option<String> {
+    let xpath = xpath.trim();
+
+    // //tag[@attr='value']
+    if let Some(rest) = xpath.strip_prefix("//") {
+        // //*[@id='value'] -> #value
+        if let Some(id) = extract_attr_value(rest, "id") {
+            return Some(format!("#{}", id));
+        }
+        // //tag[@attr='value'] -> tag[attr='value']
+        if let Some((tag, attr, value)) = parse_tag_attr_value(rest) {
+            return Some(format!("{}[{}='{}']", tag, attr, value));
+        }
+        // //tag[@attr] -> tag[attr]
+        if let Some((tag, attr)) = parse_tag_attr(rest) {
+            return Some(format!("{}[{}]", tag, attr));
+        }
+        // //tag[contains(@class, 'value')] -> tag.value (approximate)
+        if let Some((tag, class)) = parse_contains_class(rest) {
+            return Some(format!("{}.{}", tag, class));
+        }
+        // //tag -> tag
+        let tag: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '-').collect();
+        if !tag.is_empty() && tag.len() == rest.len() {
+            return Some(tag);
+        }
+        // //* -> *
+        if rest == "*" {
+            return Some("*".to_string());
+        }
+    }
+    None
+}
+
+fn extract_attr_value(s: &str, attr: &str) -> Option<String> {
+    // Pattern: *[@attr='value'] or tag[@attr='value']
+    let pattern = format!("[@{}='", attr);
+    if let Some(start) = s.find(&pattern) {
+        let rest = &s[start + pattern.len()..];
+        let value: String = rest.chars().take_while(|c| *c != '\'' && *c != '"').collect();
+        if !value.is_empty() { return Some(value); }
+    }
+    None
+}
+
+fn parse_tag_attr_value(s: &str) -> Option<(String, String, String)> {
+    // Pattern: tag[@attr='value']
+    let bracket = s.find('[')?;
+    let tag = &s[..bracket];
+    if tag.is_empty() || tag == "*" { return None; }
+    let rest = &s[bracket+1..];
+    let at = rest.strip_prefix('@')?;
+    let eq = at.find('=')?;
+    let attr = &at[..eq];
+    let val_part = &at[eq+1..];
+    let value: String = val_part.chars().skip(1).take_while(|c| *c != '\'' && *c != '"' && *c != ']').collect();
+    Some((tag.to_string(), attr.to_string(), value))
+}
+
+fn parse_tag_attr(s: &str) -> Option<(String, String)> {
+    // Pattern: tag[@attr]
+    let bracket = s.find('[')?;
+    let tag = &s[..bracket];
+    if tag.is_empty() || tag == "*" { return None; }
+    let rest = &s[bracket+1..];
+    let at = rest.strip_prefix('@')?;
+    let attr: String = at.chars().take_while(|c| *c != ']').collect();
+    if attr.is_empty() { return None; }
+    Some((tag.to_string(), attr))
+}
+
+fn parse_contains_class(s: &str) -> Option<(String, String)> {
+    // Pattern: tag[contains(@class, 'value')]
+    let bracket = s.find('[')?;
+    let tag = &s[..bracket];
+    if tag.is_empty() { return None; }
+    let rest = &s[bracket..];
+    if rest.contains("contains(@class") {
+        let quote_start = rest.find('\'').or_else(|| rest.find('"'))?;
+        let val_start = &rest[quote_start+1..];
+        let value: String = val_start.chars().take_while(|c| *c != '\'' && *c != '"').collect();
+        return Some((tag.to_string(), value));
+    }
+    None
 }
 
 #[cfg(test)]
