@@ -5,6 +5,8 @@ use std::io::{BufRead, BufReader};
 use serde_json::{json, Value};
 use crate::error::{PatchrightError, Result};
 use protocol::PlaywrightConnection;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 pub struct Driver {
     pub conn: PlaywrightConnection,
@@ -36,13 +38,25 @@ impl Driver {
         let cli_path = Self::find_cli()?;
 
         // Launch: node cli.js run-server --port=0
-        let mut child = Command::new("node")
-            .arg(&cli_path)
+        let mut cmd = Command::new("node");
+        cmd.arg(&cli_path)
             .arg("run-server")
             .arg("--port=0")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+
+        // On Windows, Rust auto-adds CREATE_NO_WINDOW when all stdio are non-inherit.
+        // For headed mode, we must NOT suppress the window or Chrome won't show UI.
+        #[cfg(windows)]
+        if headless {
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        } else {
+            // CREATE_NEW_CONSOLE allows Chrome to create its browser window
+            cmd.creation_flags(0x00000010); // CREATE_NEW_CONSOLE
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| PatchrightError::LaunchFailed(format!("spawn driver: {e}")))?;
 
