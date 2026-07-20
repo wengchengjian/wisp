@@ -19,16 +19,18 @@ const STEALTH_SCRIPT: &str = r#"
     // may use Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver')
     try {
         Object.defineProperty(Navigator.prototype, 'webdriver', {
-            get: () => undefined,
+            get: function webdriver() { return undefined; },
             configurable: true,
+            enumerable: true,
         });
     } catch(e) {}
 
     // Also override at instance level as backup
     try {
         Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined,
+            get: function webdriver() { return undefined; },
             configurable: true,
+            enumerable: true,
         });
     } catch(e) {}
 
@@ -117,13 +119,22 @@ const STEALTH_SCRIPT: &str = r#"
     } catch(e) {}
 
     // Patch 6: Fix toString for overridden functions
-    // Detection scripts may check Function.prototype.toString.call(navigator.permissions.query)
-    // to see if it's been modified. We make our functions return native-looking strings.
+    // Detection scripts check Function.prototype.toString.call() to detect modifications.
+    // We make our overridden functions return native-looking strings.
     try {
         const nativeToString = Function.prototype.toString;
+        const webdriverGetter = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver').get;
+        const instanceWebdriverGetter = Object.getOwnPropertyDescriptor(navigator, 'webdriver') ? Object.getOwnPropertyDescriptor(navigator, 'webdriver').get : null;
+        const permissionsQuery = window.navigator.permissions.query;
         const customToString = function() {
-            if (this === window.navigator.permissions.query) {
+            if (this === webdriverGetter || this === instanceWebdriverGetter) {
+                return 'function get webdriver() { [native code] }';
+            }
+            if (this === permissionsQuery) {
                 return 'function query() { [native code] }';
+            }
+            if (this === customToString) {
+                return 'function toString() { [native code] }';
             }
             return nativeToString.call(this);
         };
