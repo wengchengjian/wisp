@@ -23,7 +23,8 @@ tungstenite = "0.30"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
 
 [[bin]]
 name = "patchright"
