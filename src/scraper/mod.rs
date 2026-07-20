@@ -3,6 +3,7 @@
 //! Combines browser automation, challenge solving, proxy rotation,
 //! and human behavior simulation into a simple interface.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::browser::Browser;
@@ -23,6 +24,8 @@ pub struct ScrapeResponse {
     pub html: String,
     /// Page title.
     pub title: String,
+    /// Cookies from the page (as "name=value" strings).
+    pub cookies: Vec<String>,
 }
 
 /// Options for a scrape request.
@@ -34,6 +37,10 @@ pub struct RequestOptions {
     pub timeout: Duration,
     /// Extra wait after page load (ms).
     pub extra_wait_ms: u64,
+    /// Custom headers to set on the page.
+    pub headers: HashMap<String, String>,
+    /// Cookies to set before navigation.
+    pub cookies: Vec<String>,
 }
 
 impl Default for RequestOptions {
@@ -42,6 +49,8 @@ impl Default for RequestOptions {
             wait_for: None,
             timeout: Duration::from_secs(60),
             extra_wait_ms: 1000,
+            headers: HashMap::new(),
+            cookies: Vec::new(),
         }
     }
 }
@@ -225,6 +234,13 @@ impl Scraper {
         let title = page.evaluate_as_string("document.title").await?;
         let final_url = page.evaluate_as_string("window.location.href").await?;
 
+        // Extract cookies
+        let cookies_raw = page.evaluate_as_string("document.cookie").await?;
+        let cookies: Vec<String> = cookies_raw.split(';')
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect();
+
         // Determine status (approximate - check for common block indicators)
         let status = if html.contains("Access denied") || html.contains("403 Forbidden") {
             403
@@ -241,6 +257,7 @@ impl Scraper {
             url: final_url,
             html,
             title,
+            cookies,
         })
     }
 
