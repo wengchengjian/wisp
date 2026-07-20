@@ -1,0 +1,21 @@
+[package]
+name = "patchright-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Undetected browser automation for Rust - CDP-based anti-detection library"
+license = "Apache-2.0"
+
+[dependencies]
+chromiumoxide = "0.9"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+futures = "0.3"
+which = "7"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tracing-subscriber = "0.3"
