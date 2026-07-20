@@ -121,8 +121,8 @@ mod tests {
         let opts = LaunchOptions::default();
         let args = build_stealth_args(&opts);
         assert!(args.contains(&"no-first-run".to_string()));
-        assert!(args.contains(&"disable-sync".to_string()));
         assert!(args.contains(&"disable-background-networking".to_string()));
+        assert!(args.contains(&"disable-blink-features=AutomationControlled".to_string()));
     }
 
     #[test]

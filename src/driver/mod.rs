@@ -22,11 +22,16 @@ pub struct Driver {
 impl Driver {
     /// Launch the patchright driver and connect via WebSocket
     pub async fn launch() -> Result<Self> {
-        Self::launch_with_browser("chromium").await
+        Self::launch_with_options(false, "chrome").await
     }
 
     /// Launch the patchright driver with a specific browser
-    pub async fn launch_with_browser(browser: &str) -> Result<Self> {
+    pub async fn launch_with_browser(_browser: &str) -> Result<Self> {
+        Self::launch_with_options(false, "chrome").await
+    }
+
+    /// Launch the patchright driver with full options
+    pub async fn launch_with_options(headless: bool, channel: &str) -> Result<Self> {
         // Find the patchright-core cli.js path
         let cli_path = Self::find_cli()?;
 
@@ -49,11 +54,10 @@ impl Driver {
         tracing::info!("Driver WebSocket URL: {}", ws_url);
 
         // Connect with browser parameters for pre-launched browser
-        // headless=false + channel=chrome for maximum stealth
         let ws_url = if ws_url.ends_with('/') {
-            format!("{}?browser={}&headless=false&channel=chrome", ws_url, browser)
+            format!("{}?browser=chromium&headless={}&channel={}", ws_url, headless, channel)
         } else {
-            format!("{}/?browser={}&headless=false&channel=chrome", ws_url, browser)
+            format!("{}/?browser=chromium&headless={}&channel={}", ws_url, headless, channel)
         };
         tracing::info!("Connecting to: {}", ws_url);
 
