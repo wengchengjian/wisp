@@ -65,23 +65,18 @@ pub fn build_default_args(options: &LaunchOptions) -> Vec<String> {
 pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
-    // Core stealth args (safe defaults that don't reveal automation)
+    // Core args needed for pipe CDP to work
+    args.push("no-first-run".to_string());
+    args.push("no-sandbox".to_string());
     args.push("disable-background-networking".to_string());
-    args.push("disable-background-timer-throttling".to_string());
-    args.push("disable-backgrounding-occluded-windows".to_string());
-    args.push("disable-breakpad".to_string());
-    args.push("disable-client-side-phishing-detection".to_string());
-    args.push("disable-dev-shm-usage".to_string());
-    args.push("disable-hang-monitor".to_string());
-    args.push("disable-ipc-flooding-protection".to_string());
-    args.push("disable-prompt-on-repost".to_string());
-    args.push("disable-renderer-backgrounding".to_string());
+
+    // Stealth: disable automation detection
+    args.push("disable-blink-features=AutomationControlled".to_string());
+
+    // Safe defaults that don't interfere with pipe CDP
     args.push("disable-sync".to_string());
     args.push("metrics-recording-only".to_string());
-    args.push("no-first-run".to_string());
     args.push("no-default-browser-check".to_string());
-    // Realistic window size (avoids 800x600 headless default)
-    args.push("window-size=1920,1080".to_string());
 
     // NOTE: We intentionally DO NOT add:
     // - "enable-automation" (reveals automation)
@@ -89,6 +84,8 @@ pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
     // - "disable-component-update" (reveals stealth driver)
     // - "disable-default-apps" (reveals automation)
     // - "disable-extensions" (reveals automation)
+    // - "disable-gpu" (can cause issues with pipe)
+    // - "window-size" (let Chrome use default)
 
     // Proxy
     if let Some(ref proxy) = options.proxy {
