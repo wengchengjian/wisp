@@ -1,17 +1,16 @@
-use std::sync::Arc;
 use serde_json::json;
 use base64::Engine;
-use crate::cdp::session::CdpSession;
 use crate::error::{PatchrightError, Result};
+use super::Page;
 
-pub async fn screenshot(session: &Arc<CdpSession>, path: &str) -> Result<()> {
-    let bytes = screenshot_bytes(session).await?;
+pub async fn screenshot(page: &Page, path: &str) -> Result<()> {
+    let bytes = screenshot_bytes(page).await?;
     std::fs::write(std::path::Path::new(path), &bytes)?;
     Ok(())
 }
 
-pub async fn screenshot_bytes(session: &Arc<CdpSession>) -> Result<Vec<u8>> {
-    let result = session.execute("Page.captureScreenshot", json!({
+pub async fn screenshot_bytes(page: &Page) -> Result<Vec<u8>> {
+    let result = page.cmd("Page.captureScreenshot", json!({
         "format": "png"
     })).await?;
 

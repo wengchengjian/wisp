@@ -1,28 +1,27 @@
-use std::sync::Arc;
 use serde_json::json;
-use crate::cdp::session::CdpSession;
 use crate::error::{PatchrightError, Result};
+use super::Page;
 
-pub async fn goto(session: &Arc<CdpSession>, url: &str) -> Result<()> {
-    let result = session.execute("Page.navigate", json!({ "url": url })).await?;
+pub async fn goto(page: &Page, url: &str) -> Result<()> {
+    let result = page.cmd("Page.navigate", json!({ "url": url })).await?;
     if let Some(error_text) = result.get("errorText").and_then(|e| e.as_str()) {
         if !error_text.is_empty() {
             return Err(PatchrightError::NavigationFailed(error_text.to_string()));
         }
     }
     // Wait for load event
-    wait_for_load(session).await?;
+    wait_for_load(page).await?;
     Ok(())
 }
 
-pub async fn reload(session: &Arc<CdpSession>) -> Result<()> {
-    session.execute("Page.reload", json!({})).await?;
-    wait_for_load(session).await?;
+pub async fn reload(page: &Page) -> Result<()> {
+    page.cmd("Page.reload", json!({})).await?;
+    wait_for_load(page).await?;
     Ok(())
 }
 
-async fn wait_for_load(session: &Arc<CdpSession>) -> Result<()> {
-    let mut events = session.events();
+async fn wait_for_load(page: &Page) -> Result<()> {
+    let mut events = page.session.events();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {

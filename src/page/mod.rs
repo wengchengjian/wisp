@@ -8,14 +8,18 @@ use crate::cdp::session::CdpSession;
 use crate::error::{PatchrightError, Result};
 
 pub struct Page {
-    session: Arc<CdpSession>,
-    frame_id: String,
+    pub(crate) session: Arc<CdpSession>,
+    pub(crate) session_id: String,
+    pub(crate) frame_id: String,
 }
 
 impl Page {
+    /// Execute a CDP command on this page's target session.
+    pub(crate) async fn cmd(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        self.session.execute_with_session(method, params, Some(&self.session_id)).await
+    }
+
     /// Create a new page via CDP Target domain.
-    /// Flow: createTarget → attachToTarget → Page.enable → inject stealth scripts
-    /// CRITICAL: Does NOT send Runtime.enable
     pub(crate) async fn create(session: Arc<CdpSession>) -> Result<Self> {
         // 1. Create a new target (tab)
         let result = session.execute("Target.createTarget", json!({
@@ -23,61 +27,56 @@ impl Page {
         })).await?;
         let target_id = result.get("targetId")
             .and_then(|t| t.as_str())
-            .ok_or_else(|| PatchrightError::CdpError("no targetId in response".into()))?
+            .ok_or_else(|| PatchrightError::CdpError("no targetId".into()))?
             .to_string();
 
-        // 2. Attach to the target
+        // 2. Attach to the target (flatten=true for multiplexed session)
         let result = session.execute("Target.attachToTarget", json!({
             "targetId": target_id,
             "flatten": true
         })).await?;
-        let _session_id = result.get("sessionId")
+        let session_id = result.get("sessionId")
             .and_then(|s| s.as_str())
-            .unwrap_or("");
+            .ok_or_else(|| PatchrightError::CdpError("no sessionId".into()))?
+            .to_string();
 
-        // 3. Enable Page domain
-        session.execute("Page.enable", json!({})).await?;
+        let page = Self { session, session_id, frame_id: String::new() };
 
-        // 4. Enable lifecycle events (for navigation waiting)
-        session.execute("Page.setLifecycleEventsEnabled", json!({
-            "enabled": true
-        })).await?;
+        // 3. Enable Page domain on this target
+        page.cmd("Page.enable", json!({})).await?;
 
-        // 5. Get frame tree to find main frame ID
-        let frame_tree = session.execute("Page.getFrameTree", json!({})).await?;
+        // 4. Enable lifecycle events
+        page.cmd("Page.setLifecycleEventsEnabled", json!({"enabled": true})).await?;
+
+        // 5. Get frame tree
+        let frame_tree = page.cmd("Page.getFrameTree", json!({})).await?;
         let frame_id = frame_tree
             .pointer("/frameTree/frame/id")
             .and_then(|f| f.as_str())
             .unwrap_or("")
             .to_string();
 
-        // 6. Inject stealth scripts (addScriptToEvaluateOnNewDocument)
-        // These run before any page scripts on every new document
+        // 6. Inject stealth scripts
         let stealth_script = crate::patches::stealth::STEALTH_SCRIPT;
-        session.execute("Page.addScriptToEvaluateOnNewDocument", json!({
-            "source": stealth_script
-        })).await?;
-
+        page.cmd("Page.addScriptToEvaluateOnNewDocument", json!({"source": stealth_script})).await?;
         let shadow_dom_script = crate::patches::shadow_dom::SHADOW_DOM_PATCH_SCRIPT;
-        session.execute("Page.addScriptToEvaluateOnNewDocument", json!({
-            "source": shadow_dom_script
-        })).await?;
+        page.cmd("Page.addScriptToEvaluateOnNewDocument", json!({"source": shadow_dom_script})).await?;
 
-        // NOTE: We do NOT send Runtime.enable here!
+        // NOTE: We do NOT send Runtime.enable!
 
-        Ok(Self { session, frame_id })
+        Ok(Self { frame_id, ..page })
     }
 
     pub async fn goto(&self, url: &str) -> Result<()> {
-        navigate::goto(&self.session, url).await
+        navigate::goto(self, url).await
     }
 
     pub async fn reload(&self) -> Result<()> {
-        navigate::reload(&self.session).await
+        navigate::reload(self).await
     }
 
     pub async fn evaluate(&self, expression: &str) -> Result<serde_json::Value> {
-        evaluate::evaluate(&self.session, &self.frame_id, expression).await
+        evaluate::evaluate(self, expression).await
     }
 
     pub async fn evaluate_as_string(&self, expression: &str) -> Result<String> {
@@ -90,27 +89,27 @@ impl Page {
     }
 
     pub async fn click(&self, selector: &str) -> Result<()> {
-        crate::element::click(&self.session, &self.frame_id, selector).await
+        crate::element::click(self, selector).await
     }
 
     pub async fn fill(&self, selector: &str, value: &str) -> Result<()> {
-        crate::element::fill(&self.session, &self.frame_id, selector, value).await
+        crate::element::fill(self, selector, value).await
     }
 
     pub async fn wait_for_selector(&self, selector: &str, timeout: Option<std::time::Duration>) -> Result<()> {
         let ms = timeout.unwrap_or(std::time::Duration::from_secs(30)).as_millis() as u64;
-        crate::element::wait_for_selector(&self.session, &self.frame_id, selector, ms).await
+        crate::element::wait_for_selector(self, selector, ms).await
     }
 
     pub async fn text_content(&self, selector: &str) -> Result<String> {
-        crate::element::text_content(&self.session, &self.frame_id, selector).await
+        crate::element::text_content(self, selector).await
     }
 
     pub async fn screenshot(&self, path: &str) -> Result<()> {
-        screenshot::screenshot(&self.session, path).await
+        screenshot::screenshot(self, path).await
     }
 
     pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> {
-        screenshot::screenshot_bytes(&self.session).await
+        screenshot::screenshot_bytes(self).await
     }
 }

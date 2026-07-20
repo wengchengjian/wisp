@@ -1,14 +1,13 @@
-use std::sync::Arc;
 use serde_json::{json, Value};
-use crate::cdp::session::CdpSession;
 use crate::error::{PatchrightError, Result};
+use super::Page;
 
 /// Evaluate JavaScript in an isolated ExecutionContext.
 /// Does NOT send Runtime.enable (core anti-detection patch).
-pub async fn evaluate(session: &Arc<CdpSession>, frame_id: &str, expression: &str) -> Result<Value> {
+pub async fn evaluate(page: &Page, expression: &str) -> Result<Value> {
     // 1. Create isolated world (does NOT require Runtime.enable)
-    let world = session.execute("Page.createIsolatedWorld", json!({
-        "frameId": frame_id,
+    let world = page.cmd("Page.createIsolatedWorld", json!({
+        "frameId": page.frame_id,
         "worldName": "patchright",
         "grantUniveralAccess": true
     })).await?;
@@ -18,7 +17,7 @@ pub async fn evaluate(session: &Arc<CdpSession>, frame_id: &str, expression: &st
         .ok_or_else(|| PatchrightError::EvalError("no executionContextId".into()))?;
 
     // 2. Evaluate in that context
-    let result = session.execute("Runtime.evaluate", json!({
+    let result = page.cmd("Runtime.evaluate", json!({
         "expression": expression,
         "contextId": context_id,
         "returnByValue": true,

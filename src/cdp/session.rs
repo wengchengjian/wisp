@@ -38,11 +38,19 @@ impl CdpSession {
 
     /// Send a CDP command and wait for its response.
     pub async fn execute(self: &Arc<Self>, method: &str, params: Value) -> Result<Value> {
+        self.execute_with_session(method, params, None).await
+    }
+
+    /// Send a CDP command with an optional sessionId (for target-specific commands).
+    pub async fn execute_with_session(self: &Arc<Self>, method: &str, params: Value, session_id: Option<&str>) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        let msg = json!({ "id": id, "method": method, "params": params });
+        let mut msg = json!({ "id": id, "method": method, "params": params });
+        if let Some(sid) = session_id {
+            msg["sessionId"] = json!(sid);
+        }
         self.transport.send(&msg).await?;
 
         let response = rx.await
