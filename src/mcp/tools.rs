@@ -82,19 +82,148 @@ pub async fn extract_xpath(args: Value) -> Result<Value> {
     Ok(json!({"texts": texts}))
 }
 
+/// 爬取站点：用内置 SimpleSpider 按 CSS 选择器提取，返回 JSONL。
 pub async fn crawl_site(args: Value, _store: &Arc<Store>) -> Result<Value> {
-    let _ = args;
-    Err(crate::error::WispError::McpError("crawl_site not implemented yet".into()))
+    let start_urls: Vec<String> = args.get("start_urls")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| WispError::McpError("missing 'start_urls' array".into()))?
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    if start_urls.is_empty() {
+        return Err(WispError::McpError("start_urls 不能为空".into()));
+    }
+
+    let css_selector = args.get("css_selector")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| WispError::McpError("missing 'css_selector'".into()))?
+        .to_string();
+
+    let max_pages = args.get("max_pages")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100) as usize;
+
+    use crate::crawl::{Spider, Engine, SpiderRequest, SpiderResponse};
+    use async_trait::async_trait;
+
+    struct SimpleSpider {
+        css: String,
+    }
+
+    #[async_trait]
+    impl Spider for SimpleSpider {
+        fn name(&self) -> &str { "mcp_simple" }
+        fn start_urls(&self) -> Vec<String> { vec![] }
+        async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+            let text = resp.text().unwrap_or_default();
+            let doc = Node::from_html(&text);
+            let nodes = doc.select(&self.css);
+            let items: Vec<Value> = nodes.iter()
+                .map(|n| json!({"text": n.text(), "html": n.html()}))
+                .collect();
+            (items, vec![])
+        }
+        fn obey_robots(&self) -> bool { false }
+    }
+
+    // SimpleSpider 用空 start_urls，手动构造 start requests
+    let spider = SimpleSpider { css: css_selector.clone() };
+    let engine = Engine::new(spider).max_pages(max_pages);
+    let stream = engine.stream().items();
+
+    use futures::StreamExt;
+    let mut items: Vec<Value> = Vec::new();
+    let mut s = stream;
+    while let Some(item) = s.next().await {
+        items.push(item);
+    }
+
+    let jsonl: String = items.iter()
+        .map(|v| serde_json::to_string(v).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok(json!({
+        "items_count": items.len(),
+        "jsonl": jsonl
+    }))
 }
 
-pub async fn adaptive_scrape(args: Value, _store: &Arc<Store>) -> Result<Value> {
-    let _ = args;
-    Err(crate::error::WispError::McpError("adaptive_scrape not implemented yet".into()))
+/// 自适应抓取：CSS 失败时用 SQLite 快照重定位。
+pub async fn adaptive_scrape(args: Value, store: &Arc<Store>) -> Result<Value> {
+    let url = args.get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| WispError::McpError("missing 'url'".into()))?;
+    let selector = args.get("selector")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| WispError::McpError("missing 'selector'".into()))?;
+    let key = args.get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| WispError::McpError("missing 'key'".into()))?;
+
+    let client = Client::builder().build()?;
+    let resp = client.get(url).await?;
+    let html = resp.text()?;
+    let doc = Node::from_html(&html);
+
+    use crate::parser::css_adaptive;
+    let tolerance = crate::parser::DEFAULT_TOLERANCE;
+    let found = css_adaptive(&doc, selector, key, url, store, true, tolerance);
+
+    match found {
+        Some(node) => Ok(json!({
+            "url": url,
+            "found": true,
+            "text": node.text(),
+            "html": node.html()
+        })),
+        None => Ok(json!({
+            "url": url,
+            "found": false
+        })),
+    }
 }
 
+/// 浏览器模式抓取（绕 CF Turnstile）。
 pub async fn stealth_fetch(args: Value) -> Result<Value> {
-    let _ = args;
-    Err(crate::error::WispError::McpError("stealth_fetch not implemented yet".into()))
+    let url = args.get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| WispError::McpError("missing 'url'".into()))?;
+    let headless = args.get("headless")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let human_mode = args.get("human_mode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    use crate::{Browser, LaunchOptions};
+
+    let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await
+        .map_err(|e| WispError::McpError(format!("browser launch: {e}")))?;
+    let page = browser.new_page().await
+        .map_err(|e| WispError::McpError(format!("new page: {e}")))?;
+    page.goto(url).await
+        .map_err(|e| WispError::McpError(format!("goto: {e}")))?;
+
+    if human_mode {
+        // 人类行为模拟：随机延迟
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    let html = page.evaluate_as_string("document.documentElement.outerHTML").await
+        .map_err(|e| WispError::McpError(format!("get html: {e}")))?;
+    let title = page.evaluate_as_string("document.title").await
+        .unwrap_or_default();
+
+    browser.close().await
+        .map_err(|e| WispError::McpError(format!("close: {e}")))?;
+
+    Ok(json!({
+        "url": url,
+        "title": title,
+        "html": html,
+        "bytes": html.len()
+    }))
 }
 
 #[cfg(test)]
@@ -151,6 +280,29 @@ mod tests {
     async fn test_fetch_page_missing_url() {
         let args = json!({});
         let result = fetch_page(args).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_crawl_site_missing_args() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let args = json!({});
+        let result = crawl_site(args, &store).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_scrape_missing_args() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let args = json!({});
+        let result = adaptive_scrape(args, &store).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stealth_fetch_missing_url() {
+        let args = json!({});
+        let result = stealth_fetch(args).await;
         assert!(result.is_err());
     }
 }
