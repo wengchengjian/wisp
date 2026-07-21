@@ -37,6 +37,9 @@ pub enum WispError {
 
     #[error("MCP error: {0}")]
     McpError(String),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
 }
 
 pub type Result<T> = std::result::Result<T, WispError>;
