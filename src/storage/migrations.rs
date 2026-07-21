@@ -1,7 +1,9 @@
 //! SQLite schema migrations for the unified storage layer.
 
-/// SQL statements to create all tables for stage 1 (adaptive + checkpoint).
-/// Session/cache tables are added in stage 4.
+/// SQL statements to create all tables for schema v1.
+///
+/// 包含：element_snapshots（自适应定位）、crawl_checkpoints（断点续爬）、
+/// response_cache（开发模式 replay 缓存）。
 pub const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS element_snapshots (
     url TEXT NOT NULL,
@@ -22,5 +24,15 @@ CREATE TABLE IF NOT EXISTS crawl_checkpoints (
     spider_name TEXT PRIMARY KEY,
     state BLOB NOT NULL,
     saved_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS response_cache (
+    url TEXT NOT NULL,
+    method TEXT NOT NULL,
+    status INTEGER,
+    headers TEXT,            -- JSON
+    body BLOB,
+    cached_at INTEGER,
+    PRIMARY KEY (url, method)
 );
 "#;

@@ -131,6 +131,8 @@ pub struct CrawlStats {
     pub status_code_counts: HashMap<u16, usize>,
     /// 因域名过滤被拒绝的请求数
     pub offsite_requests_count: usize,
+    /// 缓存命中次数（development_mode replay 模式）
+    pub cache_hits: usize,
 }
 
 impl CrawlStats {
@@ -199,6 +201,9 @@ pub struct Engine<S: Spider> {
     config: EngineConfig,
     checkpoint_store: Option<Arc<crate::storage::Store>>,
     checkpoint_interval: usize,
+    /// 开发模式：缓存响应到 SQLite，后续 replay 避免网络
+    cache_store: Option<Arc<crate::storage::Store>>,
+    development_mode: bool,
 }
 
 impl<S: Spider> Engine<S> {
@@ -212,6 +217,8 @@ impl<S: Spider> Engine<S> {
             },
             checkpoint_store: None,
             checkpoint_interval: 100,
+            cache_store: None,
+            development_mode: false,
         }
     }
 
@@ -225,6 +232,13 @@ impl<S: Spider> Engine<S> {
 
     pub fn checkpoint_interval(mut self, n: usize) -> Self {
         self.checkpoint_interval = n;
+        self
+    }
+
+    /// 启用开发模式：缓存响应到指定 Store，后续运行 replay 避免网络
+    pub fn development_mode(mut self, store: Arc<crate::storage::Store>) -> Self {
+        self.cache_store = Some(store);
+        self.development_mode = true;
         self
     }
 
@@ -303,6 +317,8 @@ impl<S: Spider> Engine<S> {
         let fetcher_config = self.spider.fetcher_config();
         let checkpoint_store = self.checkpoint_store.clone();
         let checkpoint_interval = self.checkpoint_interval;
+        let cache_store = self.cache_store.clone();
+        let development_mode = self.development_mode;
         let spider_name = self.spider.name().to_string();
 
         let client = Client::builder()
@@ -351,6 +367,7 @@ impl<S: Spider> Engine<S> {
         let stats_blocked = Arc::new(AtomicUsize::new(0));
         let stats_retries = Arc::new(AtomicUsize::new(0));
         let stats_offsite = Arc::new(AtomicUsize::new(0));
+        let stats_cache_hits = Arc::new(AtomicUsize::new(0));
         let stats_status_codes: Arc<Mutex<HashMap<u16, usize>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -374,11 +391,14 @@ impl<S: Spider> Engine<S> {
             let stats_blocked = stats_blocked.clone();
             let stats_retries = stats_retries.clone();
             let stats_offsite = stats_offsite.clone();
+            let stats_cache_hits = stats_cache_hits.clone();
             let stats_status_codes = stats_status_codes.clone();
             let domain_sems = domain_sems.clone();
             let robots_cache = robots_cache.clone();
             let allowed = allowed.clone();
             let in_flight = in_flight.clone();
+            let cache_store = cache_store.clone();
+            let dev_mode = development_mode;
             let tx = tx.clone();
 
             stream::unfold((), move |_| {
@@ -393,11 +413,14 @@ impl<S: Spider> Engine<S> {
                 let stats_blocked = stats_blocked.clone();
                 let stats_retries = stats_retries.clone();
                 let stats_offsite = stats_offsite.clone();
+                let stats_cache_hits = stats_cache_hits.clone();
                 let stats_status_codes = stats_status_codes.clone();
                 let domain_sems = domain_sems.clone();
                 let robots_cache = robots_cache.clone();
                 let allowed = allowed.clone();
                 let in_flight = in_flight.clone();
+                let cache_store = cache_store.clone();
+                let dev_mode = dev_mode;
                 let tx = tx.clone();
 
                 async move {
@@ -435,6 +458,7 @@ impl<S: Spider> Engine<S> {
                         let stats_blocked_c = stats_blocked.clone();
                         let stats_retries_c = stats_retries.clone();
                         let stats_offsite_c = stats_offsite.clone();
+                        let stats_cache_hits_c = stats_cache_hits.clone();
                         let stats_status_codes_c = stats_status_codes.clone();
                         let follow_tx_c = follow_tx.clone();
                         let client_c = client.clone();
@@ -442,6 +466,8 @@ impl<S: Spider> Engine<S> {
                         let robots_cache_c = robots_cache.clone();
                         let allowed_c = allowed.clone();
                         let in_flight_c = in_flight.clone();
+                        let cache_store_c = cache_store.clone();
+                        let dev_mode_c = dev_mode;
                         let tx_c = tx.clone();
 
                         let fut = async move {
@@ -458,64 +484,121 @@ impl<S: Spider> Engine<S> {
                                 }
                             }
 
-                            if obey_robots {
-                                let url_clone = req.url.clone();
-                                let client_r = client_c.clone();
-                                let allowed_flag = {
-                                    let mut rc = robots_cache_c.lock().await;
-                                    rc.is_allowed(&client_r, &url_clone).await
-                                };
-                                if !allowed_flag {
-                                    return;
-                                }
-                            }
-
-                            let domain = url::Url::parse(&req.url)
-                                .ok()
-                                .and_then(|u| u.host_str().map(|s| s.to_string()))
-                                .unwrap_or_default();
-                            let sem = {
-                                let mut sems = domain_sems_c.lock().await;
-                                sems.entry(domain)
-                                    .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
-                                    .clone()
+                            // development_mode: 先检查缓存，命中则跳过 robots/sem/delay/retry
+                            let method_str = match req.method {
+                                Method::Get => "GET",
+                                Method::Post => "POST",
+                                Method::Put => "PUT",
+                                Method::Delete => "DELETE",
                             };
-                            let _permit = sem.acquire_owned().await.unwrap();
-
-                            // 取 download_delay 与 robots crawl_delay 的最大值
-                            let mut delay = spider_clone.download_delay();
-                            if obey_robots {
-                                let robots_delay = {
-                                    let mut rc = robots_cache_c.lock().await;
-                                    rc.crawl_delay(&client_c, &req.url).await
-                                };
-                                if let Some(secs) = robots_delay {
-                                    let robots_dur = Duration::from_secs_f64(secs);
-                                    if robots_dur > delay {
-                                        delay = robots_dur;
-                                    }
-                                }
-                            }
-                            if delay > Duration::ZERO {
-                                tokio::time::sleep(delay).await;
-                            }
+                            let cached_resp: Option<crate::storage::CachedResponse> = if dev_mode_c {
+                                cache_store_c.as_ref().and_then(|s| {
+                                    s.load_cached_response(&req.url, method_str).ok().flatten()
+                                })
+                            } else {
+                                None
+                            };
 
                             let max_retries = spider_clone.max_retries();
                             let mut attempt: u32 = 0;
                             let mut last_error: Option<String> = None;
                             let mut final_resp: Option<SpiderResponse> = None;
 
-                            loop {
-                                attempt += 1;
-                                match fetch_page(&client_c, &req).await {
-                                    Ok(resp) => {
-                                        // 记录状态码分布
-                                        {
-                                            let mut codes = stats_status_codes_c.lock().await;
-                                            *codes.entry(resp.status).or_insert(0) += 1;
+                            if let Some(cached) = cached_resp {
+                                // 命中缓存：直接构造 SpiderResponse，不触发网络
+                                let resp = SpiderResponse {
+                                    url: req.url.clone(),
+                                    status: cached.status,
+                                    headers: cached.headers,
+                                    body: cached.body,
+                                    request: req.clone(),
+                                };
+                                stats_cache_hits_c.fetch_add(1, Ordering::SeqCst);
+                                {
+                                    let mut codes = stats_status_codes_c.lock().await;
+                                    *codes.entry(resp.status).or_insert(0) += 1;
+                                }
+                                final_resp = Some(resp);
+                            } else {
+                                // 未命中缓存（或非 dev_mode）：原 robots/sem/delay/retry 逻辑
+                                if obey_robots {
+                                    let url_clone = req.url.clone();
+                                    let client_r = client_c.clone();
+                                    let allowed_flag = {
+                                        let mut rc = robots_cache_c.lock().await;
+                                        rc.is_allowed(&client_r, &url_clone).await
+                                    };
+                                    if !allowed_flag {
+                                        return;
+                                    }
+                                }
+
+                                let domain = url::Url::parse(&req.url)
+                                    .ok()
+                                    .and_then(|u| u.host_str().map(|s| s.to_string()))
+                                    .unwrap_or_default();
+                                let sem = {
+                                    let mut sems = domain_sems_c.lock().await;
+                                    sems.entry(domain)
+                                        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
+                                        .clone()
+                                };
+                                let _permit = sem.acquire_owned().await.unwrap();
+
+                                // 取 download_delay 与 robots crawl_delay 的最大值
+                                let mut delay = spider_clone.download_delay();
+                                if obey_robots {
+                                    let robots_delay = {
+                                        let mut rc = robots_cache_c.lock().await;
+                                        rc.crawl_delay(&client_c, &req.url).await
+                                    };
+                                    if let Some(secs) = robots_delay {
+                                        let robots_dur = Duration::from_secs_f64(secs);
+                                        if robots_dur > delay {
+                                            delay = robots_dur;
                                         }
-                                        if spider_clone.is_blocked(&resp) {
-                                            stats_blocked_c.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                }
+                                if delay > Duration::ZERO {
+                                    tokio::time::sleep(delay).await;
+                                }
+
+                                loop {
+                                    attempt += 1;
+                                    match fetch_page(&client_c, &req).await {
+                                        Ok(resp) => {
+                                            // 记录状态码分布
+                                            {
+                                                let mut codes = stats_status_codes_c.lock().await;
+                                                *codes.entry(resp.status).or_insert(0) += 1;
+                                            }
+                                            if spider_clone.is_blocked(&resp) {
+                                                stats_blocked_c.fetch_add(1, Ordering::SeqCst);
+                                                if attempt <= max_retries {
+                                                    stats_retries_c.fetch_add(1, Ordering::SeqCst);
+                                                    let delay = spider_clone.download_delay();
+                                                    if delay > Duration::ZERO {
+                                                        tokio::time::sleep(delay).await;
+                                                    }
+                                                    tracing::warn!(
+                                                        "blocked (status={}, attempt={}/{}), retrying: {}",
+                                                        resp.status, attempt, max_retries, req.url
+                                                    );
+                                                    continue;
+                                                }
+                                                // 重试次数耗尽
+                                                stats_errors_c.fetch_add(1, Ordering::SeqCst);
+                                                last_error = Some(format!(
+                                                    "blocked after {} retries (status={})",
+                                                    max_retries, resp.status
+                                                ));
+                                                break;
+                                            }
+                                            // 成功
+                                            final_resp = Some(resp);
+                                            break;
+                                        }
+                                        Err(e) => {
                                             if attempt <= max_retries {
                                                 stats_retries_c.fetch_add(1, Ordering::SeqCst);
                                                 let delay = spider_clone.download_delay();
@@ -523,40 +606,31 @@ impl<S: Spider> Engine<S> {
                                                     tokio::time::sleep(delay).await;
                                                 }
                                                 tracing::warn!(
-                                                    "blocked (status={}, attempt={}/{}), retrying: {}",
-                                                    resp.status, attempt, max_retries, req.url
+                                                    "fetch error (attempt={}/{}): {} - {}",
+                                                    attempt, max_retries, e, req.url
                                                 );
                                                 continue;
                                             }
-                                            // 重试次数耗尽
                                             stats_errors_c.fetch_add(1, Ordering::SeqCst);
-                                            last_error = Some(format!(
-                                                "blocked after {} retries (status={})",
-                                                max_retries, resp.status
-                                            ));
+                                            spider_clone.on_error(&req, &e.to_string()).await;
+                                            last_error = Some(e.to_string());
                                             break;
                                         }
-                                        // 成功
-                                        final_resp = Some(resp);
-                                        break;
                                     }
-                                    Err(e) => {
-                                        if attempt <= max_retries {
-                                            stats_retries_c.fetch_add(1, Ordering::SeqCst);
-                                            let delay = spider_clone.download_delay();
-                                            if delay > Duration::ZERO {
-                                                tokio::time::sleep(delay).await;
-                                            }
-                                            tracing::warn!(
-                                                "fetch error (attempt={}/{}): {} - {}",
-                                                attempt, max_retries, e, req.url
-                                            );
-                                            continue;
+                                }
+
+                                // 若 dev_mode 且成功，保存到缓存
+                                if dev_mode_c {
+                                    if let Some(ref store) = cache_store_c {
+                                        if let Some(ref resp) = final_resp {
+                                            let cached = crate::storage::CachedResponse {
+                                                status: resp.status,
+                                                headers: resp.headers.clone(),
+                                                body: resp.body.clone(),
+                                                cached_at: chrono::Utc::now().timestamp(),
+                                            };
+                                            let _ = store.save_cached_response(&req.url, method_str, &cached);
                                         }
-                                        stats_errors_c.fetch_add(1, Ordering::SeqCst);
-                                        spider_clone.on_error(&req, &e.to_string()).await;
-                                        last_error = Some(e.to_string());
-                                        break;
                                     }
                                 }
                             }
@@ -590,6 +664,7 @@ impl<S: Spider> Engine<S> {
                                             retry_count: stats_retries_c.load(Ordering::SeqCst),
                                             status_code_counts: status_codes_snapshot,
                                             offsite_requests_count: stats_offsite_c.load(Ordering::SeqCst),
+                                            cache_hits: stats_cache_hits_c.load(Ordering::SeqCst),
                                             ..Default::default()
                                         },
                                     }).await;
@@ -667,6 +742,7 @@ impl<S: Spider> Engine<S> {
             retry_count: stats_retries.load(Ordering::SeqCst),
             status_code_counts: final_status_codes,
             offsite_requests_count: stats_offsite.load(Ordering::SeqCst),
+            cache_hits: stats_cache_hits.load(Ordering::SeqCst),
             ..Default::default()
         })
     }

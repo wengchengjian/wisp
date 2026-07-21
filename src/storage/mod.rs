@@ -6,6 +6,7 @@
 
 pub mod migrations;
 
+use std::collections::HashMap;
 use std::path::Path;
 use rusqlite::{params, Connection};
 use serde_json;
@@ -155,5 +156,104 @@ impl Store {
         } else {
             Ok(None)
         }
+    }
+}
+
+/// 缓存的 HTTP 响应（replay 模式用）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedResponse {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+    pub cached_at: i64,
+}
+
+impl Store {
+    /// 保存响应缓存（replay 模式）
+    pub fn save_cached_response(&self, url: &str, method: &str, resp: &CachedResponse) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO response_cache (url, method, status, headers, body, cached_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                url, method, resp.status,
+                serde_json::to_string(&resp.headers).unwrap_or_default(),
+                resp.body,
+                resp.cached_at,
+            ],
+        ).map_err(|e| WispError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 加载响应缓存（replay 模式）
+    pub fn load_cached_response(&self, url: &str, method: &str) -> Result<Option<CachedResponse>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT status, headers, body, cached_at FROM response_cache WHERE url = ?1 AND method = ?2"
+        ).map_err(|e| WispError::Storage(e.to_string()))?;
+        let mut rows = stmt.query(params![url, method]).map_err(|e| WispError::Storage(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| WispError::Storage(e.to_string()))? {
+            let status: i64 = row.get(0).map_err(|e| WispError::Storage(e.to_string()))?;
+            let headers_str: String = row.get(1).map_err(|e| WispError::Storage(e.to_string()))?;
+            let body: Vec<u8> = row.get(2).map_err(|e| WispError::Storage(e.to_string()))?;
+            let cached_at: i64 = row.get(3).map_err(|e| WispError::Storage(e.to_string()))?;
+            Ok(Some(CachedResponse {
+                status: status as u16,
+                headers: serde_json::from_str(&headers_str).unwrap_or_default(),
+                body,
+                cached_at,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// 清空 response_cache（测试用）
+    pub fn clear_response_cache(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM response_cache", []).map_err(|e| WispError::Storage(e.to_string()))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cached_response_save_load_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        let resp = CachedResponse {
+            status: 200,
+            headers: {
+                let mut m = HashMap::new();
+                m.insert("content-type".to_string(), "text/html".to_string());
+                m
+            },
+            body: b"<html>test</html>".to_vec(),
+            cached_at: 1234567890,
+        };
+        store.save_cached_response("https://example.com", "GET", &resp).unwrap();
+        let loaded = store.load_cached_response("https://example.com", "GET").unwrap().unwrap();
+        assert_eq!(loaded.status, 200);
+        assert_eq!(loaded.body, b"<html>test</html>".to_vec());
+        assert_eq!(loaded.headers.get("content-type").unwrap(), "text/html");
+        assert_eq!(loaded.cached_at, 1234567890);
+    }
+
+    #[test]
+    fn test_cached_response_missing_returns_none() {
+        let store = Store::open_in_memory().unwrap();
+        let result = store.load_cached_response("https://nonexistent.com", "GET").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_cached_response_overwrite_on_resave() {
+        let store = Store::open_in_memory().unwrap();
+        let resp1 = CachedResponse { status: 200, headers: HashMap::new(), body: b"v1".to_vec(), cached_at: 1 };
+        let resp2 = CachedResponse { status: 200, headers: HashMap::new(), body: b"v2".to_vec(), cached_at: 2 };
+        store.save_cached_response("https://example.com", "GET", &resp1).unwrap();
+        store.save_cached_response("https://example.com", "GET", &resp2).unwrap();
+        let loaded = store.load_cached_response("https://example.com", "GET").unwrap().unwrap();
+        assert_eq!(loaded.body, b"v2".to_vec());
+        assert_eq!(loaded.cached_at, 2);
     }
 }
