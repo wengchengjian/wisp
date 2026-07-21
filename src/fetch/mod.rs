@@ -8,6 +8,8 @@ pub mod proxy;
 use std::collections::HashMap;
 use std::time::Duration;
 use serde_json::Value;
+use wreq::header::HeaderName;
+use wreq_util::Profile;
 
 use crate::error::{WispError, Result};
 use crate::parser::Node;
@@ -20,6 +22,10 @@ pub struct Config {
     pub headers: HashMap<String, String>,
     pub proxy: Option<String>,
     pub max_redirects: usize,
+    /// 浏览器 TLS 指纹模拟（默认 Chrome136，覆盖最广）
+    pub emulation: Option<Profile>,
+    /// 自定义 header 顺序（wreq 6.0.0-rc.29 已移除 headers_order 方法，字段保留供未来扩展）
+    pub header_order: Option<Vec<HeaderName>>,
 }
 
 impl Default for Config {
@@ -30,6 +36,9 @@ impl Default for Config {
             headers: HashMap::new(),
             proxy: None,
             max_redirects: 10,
+            // 默认 Chrome 136 指纹（覆盖最广）
+            emulation: Some(Profile::Chrome136),
+            header_order: None,
         }
     }
 }
@@ -47,6 +56,24 @@ impl ClientBuilder {
     pub fn header(mut self, key: &str, value: &str) -> Self { self.config.headers.insert(key.to_string(), value.to_string()); self }
     pub fn max_redirects(mut self, n: usize) -> Self { self.config.max_redirects = n; self }
 
+    /// 指定浏览器 TLS 指纹模拟（Chrome/Firefox/Safari/Edge/OkHttp，75 变体）
+    pub fn emulation(mut self, emu: Profile) -> Self {
+        self.config.emulation = Some(emu);
+        self
+    }
+
+    /// 关闭 TLS 指纹模拟（用 wreq 默认行为，用于调试）
+    pub fn no_emulation(mut self) -> Self {
+        self.config.emulation = None;
+        self
+    }
+
+    /// 自定义 header 顺序（wreq 6.0.0-rc.29 已移除 headers_order 方法，配置保留供未来扩展）
+    pub fn header_order(mut self, order: Vec<HeaderName>) -> Self {
+        self.config.header_order = Some(order);
+        self
+    }
+
     pub fn build(self) -> Result<Client> {
         let mut builder = wreq::Client::builder()
             .timeout(self.config.timeout)
@@ -61,6 +88,11 @@ impl ClientBuilder {
                 .map_err(|e| WispError::CdpError(format!("proxy error: {e}")))?;
             builder = builder.proxy(proxy);
         }
+        // 应用 TLS 指纹模拟（wreq 文档说明会覆盖现有 TLS/HTTP2 配置）
+        if let Some(emu) = self.config.emulation {
+            builder = builder.emulation(emu);
+        }
+        // 注：wreq 6.0.0-rc.29 已移除 headers_order 方法，header_order 字段暂不应用
 
         let http_client = builder.build()
             .map_err(|e| WispError::CdpError(format!("client build error: {e}")))?;
