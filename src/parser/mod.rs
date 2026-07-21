@@ -46,25 +46,61 @@ impl Node {
 
     /// Parse an HTML fragment.
     ///
-    /// 解析为完整文档后定位到 body 下第一个元素，保留旧 from_fragment 的语义
-    /// （返回代表片段首个元素的 Node，使其 attr()/text()/outer_html() 正确）。
+    /// 普通元素片段用 `Html::parse_fragment`（保留片段语义，不创建 `<html><head><body>` 结构）。
+    /// 表格元素片段（`<td>/<tr>/<th>/<thead>/<tbody>/<tfoot>/<caption>/<colgroup>/<col>`）
+    /// 需要包裹 `<table>` 后用 `Html::parse_document` 解析，因为 HTML5 规范下这些表格元素
+    /// 在 `<body>` context 中不合法，html5ever 会丢弃标签（只保留文本内容）。
+    /// 包裹 `<table>` 后 html5ever 会规范化为 `<table><tbody><tr><td>...</td></tr></tbody></table>`，
+    /// 保留表格元素标签，然后用选择器深入找到实际的片段元素。
+    ///
+    /// 注意：裸文本/注释片段在 `html > *` 不匹配元素时会回退到 root_element
+    /// （此时 `tag()` 返回 `<html>`，可能不是用户期望的结果）。
     pub fn from_fragment(html: &str) -> Self {
-        let doc = Document::from_html(html);
-        let selector = CssSelector::parse("body > *").unwrap_or_else(|_| CssSelector::parse("*").unwrap());
-        match doc.html.select(&selector).next() {
-            Some(el) => {
-                // 提取 NodeId 后再 move doc（el 借用 doc.html，需先释放借用）
-                let id = el.id();
-                Self { doc, node_id: id }
-            }
-            None => {
-                let root_id = doc.html.root_element().id();
-                Self { doc, node_id: root_id }
-            }
+        let trimmed_lower = html.trim_start().to_lowercase();
+        // 提取片段开头的标签名（如 `<td>...` → "td"）
+        let inner_tag: String = trimmed_lower
+            .trim_start_matches('<')
+            .chars()
+            .take_while(|c| c.is_alphanumeric())
+            .collect();
+
+        // 表格元素片段需要特殊处理
+        let is_table_fragment = matches!(
+            inner_tag.as_str(),
+            "td" | "tr" | "th" | "thead" | "tbody" | "tfoot"
+                | "caption" | "colgroup" | "col"
+        );
+
+        if is_table_fragment {
+            // 表格元素包裹 <table> 后用 parse_document（html5ever 会规范化表格结构），
+            // 然后用原始片段的标签名作为选择器，深入找到实际的片段元素。
+            let wrapped = format!("<table>{}</table>", html);
+            let doc = Document::from_html(&wrapped);
+            let selector = CssSelector::parse(&inner_tag)
+                .unwrap_or_else(|_| CssSelector::parse("*").unwrap());
+            let root_id = doc.html.select(&selector)
+                .next()
+                .map(|el| el.id())
+                .unwrap_or_else(|| doc.html.root_element().id());
+            Self { doc, node_id: root_id }
+        } else {
+            // 普通元素用 parse_fragment（保留片段语义，不创建 <html><head><body> 结构）。
+            // parse_fragment 创建 `<html>` root_element，片段内容直接在其下。
+            let doc = Document::from_fragment(html);
+            let selector = CssSelector::parse("html > *").unwrap();
+            let root_id = doc.html.select(&selector)
+                .next()
+                .map(|el| el.id())
+                .unwrap_or_else(|| doc.html.root_element().id());
+            Self { doc, node_id: root_id }
         }
     }
 
     /// Select all elements matching a CSS selector.
+    ///
+    /// 注意：当前实现搜索整个文档（`self.doc.html.select`），不 scope 到当前 Node 的子树。
+    /// 这是 Task 3 重构带来的语义变化（旧实现 scope 到子树）。Task 4 计划用
+    /// `element_ref().select()` 实现 scoped 查询。
     pub fn select(&self, css: &str) -> NodeList {
         let selector = CssSelector::parse(css).unwrap_or_else(|_| CssSelector::parse("*").unwrap());
         let nodes: Vec<Node> = self.doc.html.select(&selector)
@@ -466,5 +502,16 @@ mod tests {
     fn test_generate_xpath() {
         let node = Node::from_fragment(r#"<div id="unique">Content</div>"#);
         assert_eq!(node.generate_xpath(), "//*[@id=\"unique\"]");
+    }
+
+    #[test]
+    fn test_from_fragment_table_element() {
+        // 表格元素片段不应被强制包裹 <table>（Important 2 回归测试）
+        // 旧 Task 3 重构后用 parse_document 会让 tag() 返回 "table"；
+        // 修复后用 parse_fragment，tag() 应返回 "td"。
+        let node = Node::from_fragment("<td>cell</td>");
+        assert_eq!(node.tag(), "td");
+        assert!(node.text().contains("cell"));
+        assert!(node.outer_html().contains("<td>cell</td>"));
     }
 }

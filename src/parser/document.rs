@@ -19,8 +19,25 @@ pub struct Document {
 
 impl Document {
     /// 从 HTML 字符串创建文档。
+    ///
+    /// 用 `Html::parse_document` 解析，会应用 HTML5 结构规则
+    /// （如把 `<td>/<tr>` 等表格元素强制包裹 `<table><tbody><tr>`）。
+    /// 适合完整 HTML 文档；若需保留片段语义（不包裹 table），用 `from_fragment`。
     pub fn from_html(html: &str) -> Arc<Self> {
         let parsed = Html::parse_document(html);
+        Arc::new(Self {
+            html: Arc::new(parsed),
+            sxd: OnceLock::new(),
+        })
+    }
+
+    /// 从 HTML 片段创建文档（不应用 HTML5 结构规则）。
+    ///
+    /// 用 `Html::parse_fragment` 解析，避免 `<td>/<tr>/<thead>/<tbody>/<th>/<caption>`
+    /// 等表格元素被强制包裹 `<table><tbody><tr>`，保留片段语义。
+    /// 适合解析独立的元素片段（如 `<td>cell</td>` 应保持 tag 为 `td`）。
+    pub fn from_fragment(html: &str) -> Arc<Self> {
+        let parsed = Html::parse_fragment(html);
         Arc::new(Self {
             html: Arc::new(parsed),
             sxd: OnceLock::new(),
