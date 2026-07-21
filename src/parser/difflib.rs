@@ -21,7 +21,6 @@ pub struct SequenceMatcher<'a, T: PartialEq> {
     b: &'a [T],
     autojunk: bool,
     b2j: std::collections::HashMap<&'a T, Vec<usize>>,
-    fullbcount: std::collections::HashMap<&'a T, usize>,
     b_junk: Option<std::collections::HashSet<&'a T>>,
 }
 
@@ -48,7 +47,6 @@ impl<'a, T: PartialEq + std::hash::Hash + Eq> SequenceMatcher<'a, T> {
             b,
             autojunk: true,
             b2j,
-            fullbcount,
             b_junk: None,
         }
     }
