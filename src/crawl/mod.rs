@@ -173,6 +173,9 @@ impl<S: Spider> Engine<S> {
         let follow_rx = Arc::new(Mutex::new(follow_rx));
         let client = Arc::new(client);
         let allowed = Arc::new(allowed);
+        // C1 fix: track in-flight futures so unfold does not terminate while
+        // running futures may still emit follow requests into the channel.
+        let in_flight = Arc::new(AtomicUsize::new(0));
 
         let stream = {
             let sched = sched.clone();
@@ -186,6 +189,7 @@ impl<S: Spider> Engine<S> {
             let domain_sems = domain_sems.clone();
             let robots_cache = robots_cache.clone();
             let allowed = allowed.clone();
+            let in_flight = in_flight.clone();
 
             stream::unfold((), move |_| {
                 let sched = sched.clone();
@@ -199,99 +203,136 @@ impl<S: Spider> Engine<S> {
                 let domain_sems = domain_sems.clone();
                 let robots_cache = robots_cache.clone();
                 let allowed = allowed.clone();
+                let in_flight = in_flight.clone();
 
                 async move {
-                    // 1. Drain follow channel into scheduler
-                    let mut rx_guard = follow_rx.lock().await;
-                    while let Ok(req) = rx_guard.try_recv() {
-                        sched.push(req).await;
-                    }
-                    drop(rx_guard);
+                    loop {
+                        // 1. Drain follow channel into scheduler
+                        let mut rx_guard = follow_rx.lock().await;
+                        while let Ok(req) = rx_guard.try_recv() {
+                            sched.push(req).await;
+                        }
+                        drop(rx_guard);
 
-                    // 2. Check page budget
-                    if stats_pages.load(Ordering::SeqCst) >= max_pages {
-                        return None;
-                    }
+                        // 2. Check page budget
+                        if stats_pages.load(Ordering::SeqCst) >= max_pages {
+                            // Budget reached: don't start new fetches. Wait for all
+                            // in-flight futures to finish so their follow requests can
+                            // still be drained and counted (C1 fix).
+                            if in_flight.load(Ordering::SeqCst) == 0 {
+                                return None;
+                            }
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
 
-                    // 3. Pop next request
-                    let req = sched.pop().await?;
+                        // 3. Pop next request
+                        let req = match sched.pop().await {
+                            Some(req) => req,
+                            None => {
+                                // Scheduler empty: if no in-flight futures, truly done;
+                                // otherwise wait for them to emit follow requests (C1 fix).
+                                if in_flight.load(Ordering::SeqCst) == 0 {
+                                    return None;
+                                }
+                                tokio::task::yield_now().await;
+                                continue;
+                            }
+                        };
 
-                    // 4-7. All logic in a single async block (unified future type)
-                    let spider_clone = spider.clone();
-                    let stats_pages_c = stats_pages.clone();
-                    let stats_errors_c = stats_errors.clone();
-                    let stats_items_c = stats_items.clone();
-                    let follow_tx_c = follow_tx.clone();
-                    let client_c = client.clone();
-                    let domain_sems_c = domain_sems.clone();
-                    let robots_cache_c = robots_cache.clone();
-                    let allowed_c = allowed.clone();
+                        // 4-7. All logic in a single async block (unified future type)
+                        in_flight.fetch_add(1, Ordering::SeqCst);
+                        let spider_clone = spider.clone();
+                        let stats_pages_c = stats_pages.clone();
+                        let stats_errors_c = stats_errors.clone();
+                        let stats_items_c = stats_items.clone();
+                        let follow_tx_c = follow_tx.clone();
+                        let client_c = client.clone();
+                        let domain_sems_c = domain_sems.clone();
+                        let robots_cache_c = robots_cache.clone();
+                        let allowed_c = allowed.clone();
+                        let in_flight_c = in_flight.clone();
 
-                    let fut = async move {
-                        // 4. Domain filter
-                        if !allowed_c.is_empty() {
-                            if let Ok(parsed) = url::Url::parse(&req.url) {
-                                if let Some(host) = parsed.host_str() {
-                                    if !allowed_c.contains(host) {
-                                        return;  // skip
+                        let fut = async move {
+                            // RAII guard: ensures in_flight is decremented on every exit
+                            // path (early return, error, normal completion). Holds an Arc
+                            // clone to avoid self-referential async state machine.
+                            let _guard = InFlightGuard { counter: in_flight_c };
+
+                            // 4. Domain filter
+                            if !allowed_c.is_empty() {
+                                if let Ok(parsed) = url::Url::parse(&req.url) {
+                                    if let Some(host) = parsed.host_str() {
+                                        if !allowed_c.contains(host) {
+                                            return;  // skip
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        // 5. Robots check
-                        if obey_robots {
-                            let url_clone = req.url.clone();
-                            let client_r = client_c.clone();
-                            let allowed = {
-                                let mut rc = robots_cache_c.lock().await;
-                                rc.is_allowed(&client_r, &url_clone).await
-                            };
-                            if !allowed {
-                                return;
-                            }
-                        }
-
-                        // 6. Per-domain throttle
-                        let domain = url::Url::parse(&req.url)
-                            .ok()
-                            .and_then(|u| u.host_str().map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        let sem = {
-                            let mut sems = domain_sems_c.lock().await;
-                            sems.entry(domain.clone())
-                                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
-                                .clone()
-                        };
-                        let _permit = sem.acquire_owned().await.unwrap();
-
-                        // 7. Fetch
-                        match fetch_page(&client_c, &req).await {
-                            Ok(resp) => {
-                                if spider_clone.is_blocked(&resp) {
-                                    stats_errors_c.fetch_add(1, Ordering::SeqCst);
+                            // 5. Robots check
+                            // NOTE (I2): robots_cache 的全局 Mutex 在 is_allowed 的网络拉取
+                            // 期间被持有，序列化所有域的 robots 检查。阶段 1 接受此性能限制，
+                            // 后续可改为 per-domain 锁或在 RobotsCache 内部双检。
+                            if obey_robots {
+                                let url_clone = req.url.clone();
+                                let client_r = client_c.clone();
+                                let allowed = {
+                                    let mut rc = robots_cache_c.lock().await;
+                                    rc.is_allowed(&client_r, &url_clone).await
+                                };
+                                if !allowed {
                                     return;
                                 }
-                                stats_pages_c.fetch_add(1, Ordering::SeqCst);
-                                let (items, follows) = spider_clone.parse(resp).await;
-                                for item in items {
-                                    if let Some(_processed) = spider_clone.on_item(item).await {
-                                        stats_items_c.fetch_add(1, Ordering::SeqCst);
+                            }
+
+                            // 6. Per-domain throttle
+                            let domain = url::Url::parse(&req.url)
+                                .ok()
+                                .and_then(|u| u.host_str().map(|s| s.to_string()))
+                                .unwrap_or_default();
+                            let sem = {
+                                let mut sems = domain_sems_c.lock().await;
+                                sems.entry(domain.clone())
+                                    .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
+                                    .clone()
+                            };
+                            let _permit = sem.acquire_owned().await.unwrap();
+
+                            // I1 fix: download_delay - per-domain 信号量 acquire 后、fetch 前
+                            let delay = spider_clone.download_delay();
+                            if delay > Duration::ZERO {
+                                tokio::time::sleep(delay).await;
+                            }
+
+                            // 7. Fetch
+                            match fetch_page(&client_c, &req).await {
+                                Ok(resp) => {
+                                    if spider_clone.is_blocked(&resp) {
+                                        stats_errors_c.fetch_add(1, Ordering::SeqCst);
+                                        return;
+                                    }
+                                    stats_pages_c.fetch_add(1, Ordering::SeqCst);
+                                    let (items, follows) = spider_clone.parse(resp).await;
+                                    for item in items {
+                                        if let Some(_processed) = spider_clone.on_item(item).await {
+                                            stats_items_c.fetch_add(1, Ordering::SeqCst);
+                                        }
+                                    }
+                                    for f in follows {
+                                        let _ = follow_tx_c.send(f);
                                     }
                                 }
-                                for f in follows {
-                                    let _ = follow_tx_c.send(f);
+                                Err(e) => {
+                                    stats_errors_c.fetch_add(1, Ordering::SeqCst);
+                                    spider_clone.on_error(&req, &e.to_string()).await;
                                 }
                             }
-                            Err(e) => {
-                                stats_errors_c.fetch_add(1, Ordering::SeqCst);
-                                spider_clone.on_error(&req, &e.to_string()).await;
-                            }
-                        }
-                    };
+                        };
 
-                    // Return the future for buffer_unordered
-                    Some((fut, ()))
+                        // Return the future for buffer_unordered
+                        return Some((fut, ()));
+                    }
                 }
             })
             .buffer_unordered(max_concurrent)
@@ -309,6 +350,22 @@ impl<S: Spider> Engine<S> {
             errors: stats_errors.load(Ordering::SeqCst),
             duration: start.elapsed(),
         })
+    }
+}
+
+/// RAII guard for in-flight future counting (C1 fix).
+///
+/// Constructed after `in_flight.fetch_add(1, ...)`; `Drop` runs `fetch_sub(1, ...)`
+/// so the counter is always decremented regardless of how the future exits
+/// (early return, normal completion, or error). Holds an `Arc` clone rather than
+/// a `&AtomicUsize` reference to avoid a self-referential async state machine.
+struct InFlightGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

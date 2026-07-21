@@ -1,6 +1,5 @@
 //! Verify Spider Engine respects max_concurrent limit.
 
-use std::sync::Arc;
 use async_trait::async_trait;
 use wisp::crawl::{Spider, SpiderRequest, SpiderResponse, Engine};
 use serde_json::Value;
