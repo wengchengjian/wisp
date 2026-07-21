@@ -1,5 +1,6 @@
 //! HTML parsing with CSS/XPath selectors.
 
+pub mod difflib;
 pub mod adaptive;
 pub mod generate;
 
