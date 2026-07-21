@@ -28,51 +28,34 @@ pub struct ElementSnapshot {
 }
 
 impl ElementSnapshot {
-    /// Capture a snapshot from a wisp::Node.
-    ///
-    /// Stage 1: Re-parses the node's outer HTML to get an ElementRef with tree
-    /// context. This is wasteful but unblocks adaptive without waiting for
-    /// stage 2's Node refactor.
+    /// 从 Node 捕获快照（用 Node 导航 API，不再重复解析 outer_html）。
     pub fn capture(node: &Node) -> Self {
-        let outer_html = node.outer_html();
-        let full_doc_html = format!("<html><body>{}</body></html>", outer_html);
-        let doc = Html::parse_document(&full_doc_html);
+        let tag = node.tag();
+        let attrs = node.attrs();
+        let text_preview = node.text();
+        let text_preview = if text_preview.len() > 200 {
+            text_preview.chars().take(200).collect()
+        } else {
+            text_preview
+        };
 
-        // Find the first element in body (the captured node itself)
-        let body_sel = scraper::Selector::parse("body > *").unwrap();
-        let element_ref = doc.select(&body_sel).next();
-
-        match element_ref {
-            Some(el) => Self::capture_from_element_ref(&el),
-            None => Self::capture_from_node_only(node),
-        }
-    }
-
-    /// Capture from scraper::ElementRef (has tree context).
-    fn capture_from_element_ref(el: &ElementRef) -> Self {
-        let value = el.value();
-        let tag = value.name().to_string();
-        let attrs: HashMap<String, String> = value.attrs()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-
-        let text: String = el.text().collect::<Vec<_>>().join("");
-        let text_preview = text.chars().take(200).collect();
-
-        // Ancestor path from root to element (excluding #document and synthetic roots)
-        let ancestor_path: Vec<String> = el.ancestors()
-            .filter_map(|a| {
-                if let ScraperNode::Element(e) = a.value() {
-                    let name = e.name().to_string();
-                    if let Some(class) = e.attr("class") {
-                        let first_class = class.split_whitespace().next().unwrap_or("");
-                        if !first_class.is_empty() {
-                            return Some(format!("{}.{}", name, first_class));
-                        }
-                    }
-                    Some(name)
+        // ancestor_path: 从父节点到根，每级 "tag" 或 "tag.firstclass"，最后 rev() 使根在前
+        let ancestor_path: Vec<String> = node.ancestors()
+            .filter_map(|n| {
+                let t = n.tag();
+                if t.is_empty() {
+                    return None;
+                }
+                let class = n.attr("class").unwrap_or_default();
+                if class.is_empty() {
+                    Some(t)
                 } else {
-                    None
+                    let first_class: String = class.split_whitespace().next().unwrap_or("").to_string();
+                    if first_class.is_empty() {
+                        Some(t)
+                    } else {
+                        Some(format!("{}.{}", t, first_class))
+                    }
                 }
             })
             .collect::<Vec<_>>()
@@ -80,33 +63,27 @@ impl ElementSnapshot {
             .rev()
             .collect();
 
-        // Sibling tags + position in parent
-        let (sibling_tags, position_in_parent, parent_tag, parent_attrs) =
-            if let Some(parent) = el.parent().and_then(|p| ElementRef::wrap(p)) {
-                let siblings: Vec<String> = parent.children()
-                    .filter_map(|c| {
-                        if let ScraperNode::Element(e) = c.value() {
-                            Some(e.name().to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+        // parent context
+        let parent_node = node.parent();
+        let parent_tag = parent_node.as_ref().map(|p| p.tag()).unwrap_or_default();
+        let parent_attrs = parent_node.as_ref().map(|p| p.attrs()).unwrap_or_default();
 
-                // Position: index among element children
-                let pos = parent.children()
-                    .filter(|c| c.value().is_element())
-                    .position(|c| ElementRef::wrap(c) == Some(*el))
-                    .unwrap_or(0);
+        // sibling_tags: 父节点的所有元素子节点的 tag 列表
+        let sibling_tags: Vec<String> = parent_node.as_ref()
+            .map(|p| p.children().iter().map(|c| c.tag()).collect())
+            .unwrap_or_default();
 
-                let pval = parent.value();
-                let pattrs: HashMap<String, String> = pval.attrs()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect();
-                (siblings, pos, pval.name().to_string(), pattrs)
-            } else {
-                (Vec::new(), 0, String::new(), HashMap::new())
-            };
+        // position_in_parent: 当前节点在父节点子元素中的索引
+        // 用 outer_html 比较身份（比 tag+text 更准确，避免相同 tag+text 的兄弟节点误匹配）
+        let position_in_parent = match &parent_node {
+            Some(p) => {
+                let target_html = node.outer_html();
+                p.children().iter()
+                    .position(|c| c.outer_html() == target_html)
+                    .unwrap_or(0)
+            }
+            None => 0,
+        };
 
         Self {
             tag,
@@ -117,23 +94,6 @@ impl ElementSnapshot {
             position_in_parent,
             parent_tag,
             parent_attrs,
-        }
-    }
-
-    /// Fallback when ElementRef extraction fails.
-    fn capture_from_node_only(node: &Node) -> Self {
-        let attrs = node.attrs();
-        let tag = attrs.get("tag").cloned().unwrap_or_else(|| "div".to_string());
-        let text = node.text();
-        Self {
-            tag,
-            attrs,
-            text_preview: text.chars().take(200).collect(),
-            ancestor_path: Vec::new(),
-            sibling_tags: Vec::new(),
-            position_in_parent: 0,
-            parent_tag: String::new(),
-            parent_attrs: HashMap::new(),
         }
     }
 
