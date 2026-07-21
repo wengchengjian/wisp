@@ -12,6 +12,7 @@ fn test_checkpoint_save_load_roundtrip() {
         pages_crawled: 42,
         errors: 3,
         duration: std::time::Duration::from_millis(5678),
+        ..Default::default()
     };
     let pending = vec![SpiderRequest::get("https://example.com/pending")];
     let state = CrawlState::from_stats("test-spider".to_string(), &stats, pending);

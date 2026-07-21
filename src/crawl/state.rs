@@ -58,6 +58,7 @@ impl CrawlState {
             pages_crawled: self.pages_crawled,
             errors: self.errors,
             duration: std::time::Duration::from_millis(self.duration_ms as u64),
+            ..Default::default()
         }
     }
 }

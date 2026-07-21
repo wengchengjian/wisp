@@ -102,12 +102,33 @@ pub trait Spider: Send + Sync + 'static {
 }
 
 /// Crawling statistics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CrawlStats {
     pub items_scraped: usize,
     pub pages_crawled: usize,
     pub errors: usize,
     pub duration: Duration,
+    /// 总下载字节数（响应体累加）
+    pub bytes_downloaded: u64,
+    /// 平均响应时间
+    pub avg_response_time: Duration,
+    /// 每域名页数
+    pub domain_counts: HashMap<String, usize>,
+}
+
+impl CrawlStats {
+    /// 打印人类可读的统计摘要
+    pub fn summary(&self) -> String {
+        format!(
+            "爬取完成: {} 页 / {} items / {} 错误 / 耗时 {:?} / {:.1} KB / 平均响应 {:?}",
+            self.pages_crawled,
+            self.items_scraped,
+            self.errors,
+            self.duration,
+            self.bytes_downloaded as f64 / 1024.0,
+            self.avg_response_time
+        )
+    }
 }
 
 /// Engine configuration.
@@ -402,6 +423,7 @@ impl<S: Spider> Engine<S> {
                         pages_crawled: stats_pages.load(Ordering::SeqCst),
                         errors: stats_errors.load(Ordering::SeqCst),
                         duration: start.elapsed(),
+                        ..Default::default()
                     };
                     let state = CrawlState::from_stats(
                         spider_name.clone(),
@@ -441,6 +463,7 @@ impl<S: Spider> Engine<S> {
             pages_crawled: stats_pages.load(Ordering::SeqCst),
             errors: stats_errors.load(Ordering::SeqCst),
             duration: start.elapsed(),
+            ..Default::default()
         })
     }
 }
@@ -476,4 +499,41 @@ async fn fetch_page(client: &Client, req: &SpiderRequest) -> Result<SpiderRespon
         body: resp.body.clone(),
         request: req.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_crawl_stats_summary() {
+        let stats = CrawlStats {
+            items_scraped: 10,
+            pages_crawled: 5,
+            errors: 1,
+            duration: Duration::from_secs(30),
+            bytes_downloaded: 2048,
+            avg_response_time: Duration::from_millis(500),
+            domain_counts: {
+                let mut m = HashMap::new();
+                m.insert("example.com".to_string(), 5);
+                m
+            },
+        };
+        let s = stats.summary();
+        assert!(s.contains("5 页"), "summary 应含页数: {}", s);
+        assert!(s.contains("10 items"), "summary 应含 items: {}", s);
+        assert!(s.contains("1 错误"), "summary 应含错误数: {}", s);
+        assert!(s.contains("2.0 KB"), "summary 应含字节数: {}", s);
+    }
+
+    #[test]
+    fn test_crawl_stats_default() {
+        let stats = CrawlStats::default();
+        assert_eq!(stats.items_scraped, 0);
+        assert_eq!(stats.bytes_downloaded, 0);
+        assert!(stats.domain_counts.is_empty());
+        assert_eq!(stats.avg_response_time, Duration::ZERO);
+    }
 }
