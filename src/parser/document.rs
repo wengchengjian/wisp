@@ -4,7 +4,7 @@
 //! Node 通过 Arc<Document> 共享文档，select() 返回的 Node 引用同一文档的树中位置。
 
 use std::sync::Arc;
-use std::cell::OnceCell;
+use std::sync::OnceLock;
 use scraper::Html;
 use sxd_document::Package;
 
@@ -14,7 +14,7 @@ pub struct Document {
     /// scraper 解析的 HTML 树（html5ever 容错）
     pub(crate) html: Arc<Html>,
     /// 懒加载的 sxd-document 包（XPath 用）
-    sxd: OnceCell<Package>,
+    sxd: OnceLock<Package>,
 }
 
 impl Document {
@@ -23,7 +23,7 @@ impl Document {
         let parsed = Html::parse_document(html);
         Arc::new(Self {
             html: Arc::new(parsed),
-            sxd: OnceCell::new(),
+            sxd: OnceLock::new(),
         })
     }
 

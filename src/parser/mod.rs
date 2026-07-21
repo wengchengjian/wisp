@@ -10,45 +10,65 @@ pub use adaptive::{
     css_adaptive, DEFAULT_TOLERANCE,
 };
 
-use scraper::{Html, Selector as CssSelector};
+use scraper::{Html, Selector as CssSelector, ElementRef};
 use std::collections::HashMap;
+use std::sync::Arc;
+use ego_tree::NodeId;
+use document::Document;
 
 /// A parsed HTML document or element.
+///
+/// 内部通过 `Arc<Document>` 共享文档所有权，`node_id` 标识在 scraper 树中的位置。
+/// 所有 select() 返回的 Node 共享同一文档，使 parent/ancestors 等导航可工作。
 #[derive(Clone)]
 pub struct Node {
-    inner: Html,
-    /// For fragments, store the first element's HTML to extract attrs correctly
-    element_html: Option<String>,
+    doc: Arc<Document>,
+    node_id: NodeId,
 }
 
 impl Node {
+    /// 从 ElementRef 创建 Node（内部辅助方法）。
+    fn from_element_ref(doc: Arc<Document>, el: ElementRef) -> Self {
+        Self { doc, node_id: el.id() }
+    }
+
+    /// 获取当前节点对应的 ElementRef（在 scraper 树中查找）。
+    fn element_ref(&self) -> Option<ElementRef<'_>> {
+        ElementRef::wrap(self.doc.html.tree.get(self.node_id)?)
+    }
+
     /// Parse HTML string into a Node (document root).
     pub fn from_html(html: &str) -> Self {
-        Self { inner: Html::parse_document(html), element_html: None }
+        let doc = Document::from_html(html);
+        let root_id = doc.html.root_element().id();
+        Self { doc, node_id: root_id }
     }
 
     /// Parse an HTML fragment.
+    ///
+    /// 解析为完整文档后定位到 body 下第一个元素，保留旧 from_fragment 的语义
+    /// （返回代表片段首个元素的 Node，使其 attr()/text()/outer_html() 正确）。
     pub fn from_fragment(html: &str) -> Self {
-        let inner = Html::parse_fragment(html);
-        // Store the first element child's HTML for attribute access
-        let element_html = inner.root_element()
-            .select(&CssSelector::parse("*").unwrap())
-            .next()
-            .map(|el| el.html());
-        Self { inner, element_html }
+        let doc = Document::from_html(html);
+        let selector = CssSelector::parse("body > *").unwrap_or_else(|_| CssSelector::parse("*").unwrap());
+        match doc.html.select(&selector).next() {
+            Some(el) => {
+                // 提取 NodeId 后再 move doc（el 借用 doc.html，需先释放借用）
+                let id = el.id();
+                Self { doc, node_id: id }
+            }
+            None => {
+                let root_id = doc.html.root_element().id();
+                Self { doc, node_id: root_id }
+            }
+        }
     }
 
     /// Select all elements matching a CSS selector.
     pub fn select(&self, css: &str) -> NodeList {
         let selector = CssSelector::parse(css).unwrap_or_else(|_| CssSelector::parse("*").unwrap());
-        let nodes: Vec<Node> = self.inner.select(&selector)
-            .map(|el| {
-                let html = el.html();
-                Node {
-                    inner: Html::parse_fragment(&html),
-                    element_html: Some(html),
-                }
-            })
+        let nodes: Vec<Node> = self.doc.html.select(&selector)
+            .map(|el| Node::from_element_ref(self.doc.clone(), el))
             .collect();
         NodeList { nodes }
     }
@@ -61,13 +81,8 @@ impl Node {
     /// Select the first element matching a CSS selector.
     pub fn select_one(&self, css: &str) -> Option<Node> {
         let selector = CssSelector::parse(css).ok()?;
-        self.inner.select(&selector).next().map(|el| {
-            let html = el.html();
-            Node {
-                inner: Html::parse_fragment(&html),
-                element_html: Some(html),
-            }
-        })
+        self.doc.html.select(&selector).next()
+            .map(|el| Node::from_element_ref(self.doc.clone(), el))
     }
 
     /// Adaptive CSS selection with SQLite-backed snapshot persistence.
@@ -87,44 +102,47 @@ impl Node {
 
     /// Get the text content of the document/element.
     pub fn text(&self) -> String {
-        self.inner.root_element().text().collect::<Vec<_>>().join("")
+        self.element_ref()
+            .map(|e| e.text().collect::<Vec<_>>().join(""))
+            .unwrap_or_default()
     }
 
     /// Get the inner HTML.
     pub fn html(&self) -> String {
-        self.inner.root_element().inner_html()
+        self.element_ref()
+            .map(|e| e.inner_html())
+            .unwrap_or_default()
     }
 
     /// Get the outer HTML.
     pub fn outer_html(&self) -> String {
-        self.inner.root_element().html()
+        self.element_ref()
+            .map(|e| e.html())
+            .unwrap_or_default()
     }
 
-    /// Get an attribute value (only works on fragment single-element nodes).
+    /// Get an attribute value.
     pub fn attr(&self, name: &str) -> Option<String> {
-        // For fragments, get first element child's attribute
-        if let Some(ref html) = self.element_html {
-            let frag = Html::parse_fragment(html);
-            if let Some(el) = frag.root_element().select(&CssSelector::parse("*").unwrap()).next() {
-                return el.value().attr(name).map(|s| s.to_string());
-            }
-        }
-        self.inner.root_element().value().attr(name).map(|s| s.to_string())
+        self.element_ref()
+            .and_then(|e| e.value().attr(name).map(|s| s.to_string()))
     }
 
     /// Get all attributes as a map.
     pub fn attrs(&self) -> HashMap<String, String> {
-        if let Some(ref html) = self.element_html {
-            let frag = Html::parse_fragment(html);
-            if let Some(el) = frag.root_element().select(&CssSelector::parse("*").unwrap()).next() {
-                return el.value().attrs()
+        self.element_ref()
+            .map(|e| {
+                e.value().attrs()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect();
-            }
-        }
-        self.inner.root_element().value().attrs()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get the tag name of the element.
+    pub fn tag(&self) -> String {
+        self.element_ref()
+            .map(|e| e.value().name().to_string())
+            .unwrap_or_default()
     }
 
     /// Select all elements matching an XPath expression.
@@ -144,30 +162,28 @@ impl Node {
         NodeList { nodes: Vec::new() }
     }
 
-    /// Get the parent element (returns the containing element for fragments).
+    /// Get the parent element (returns None for now; Task 4 真实实现).
     pub fn parent(&self) -> Option<Node> {
-        // Limited parent navigation for fragment-based nodes
-        // The root element's parent in a fragment is the synthetic root
-        None
+        None // Task 4 真实实现
     }
 
     /// Get direct child elements.
     pub fn children(&self) -> NodeList {
-        let all = self.select("*");
-        let root = self.inner.root_element();
-        let child_count = root.children().filter(|c| c.value().is_element()).count();
-        let nodes: Vec<Node> = all.nodes.into_iter().take(child_count).collect();
+        let element = match self.element_ref() { Some(e) => e, None => return NodeList { nodes: Vec::new() } };
+        let nodes: Vec<Node> = element.child_elements()
+            .map(|c| Node::from_element_ref(self.doc.clone(), c))
+            .collect();
         NodeList { nodes }
     }
 
-    /// Get the next sibling element.
+    /// Get the next sibling element (returns None for now; Task 4 真实实现).
     pub fn next_sibling(&self) -> Option<Node> {
-        None // Limited in fragment-based architecture
+        None // Task 4 真实实现
     }
 
-    /// Get the previous sibling element.
+    /// Get the previous sibling element (returns None for now; Task 4 真实实现).
     pub fn prev_sibling(&self) -> Option<Node> {
-        None // Limited in fragment-based architecture
+        None // Task 4 真实实现
     }
 
     /// Get the first child element.
@@ -181,15 +197,8 @@ impl Node {
     }
 
     /// Check if element matches a CSS selector.
-    pub fn matches(&self, css: &str) -> bool {
-        // Simplified: check if re-selecting from this node finds itself
-        if CssSelector::parse(css).is_ok() {
-            // For now, just check if the selector is valid
-            // Full implementation would require parent context
-            false
-        } else {
-            false
-        }
+    pub fn matches(&self, _css: &str) -> bool {
+        false // Task 4 真实实现
     }
 
     /// Check if text content contains a substring.
@@ -219,7 +228,7 @@ impl Node {
 
     /// Access the underlying scraper::Html for advanced usage.
     pub fn inner(&self) -> &Html {
-        &self.inner
+        &self.doc.html
     }
 }
 
