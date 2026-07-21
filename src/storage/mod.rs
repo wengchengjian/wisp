@@ -46,6 +46,42 @@ impl Store {
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    /// Save a crawl checkpoint as bincode blob.
+    /// `state_bytes` is pre-serialized by caller (crawl::CrawlState).
+    pub fn save_checkpoint(&self, spider_name: &str, state_bytes: &[u8], saved_at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO crawl_checkpoints (spider_name, state, saved_at) VALUES (?1, ?2, ?3)",
+            params![spider_name, state_bytes, saved_at],
+        ).map_err(|e| WispError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Load a crawl checkpoint. Returns the bincode blob bytes.
+    pub fn load_checkpoint(&self, spider_name: &str) -> Result<Option<Vec<u8>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT state FROM crawl_checkpoints WHERE spider_name = ?1"
+        ).map_err(|e| WispError::Storage(e.to_string()))?;
+
+        let mut rows = stmt.query(params![spider_name])
+            .map_err(|e| WispError::Storage(e.to_string()))?;
+
+        if let Some(row) = rows.next().map_err(|e| WispError::Storage(e.to_string()))? {
+            let blob: Vec<u8> = row.get(0).map_err(|e| WispError::Storage(e.to_string()))?;
+            Ok(Some(blob))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Delete a crawl checkpoint (called after successful completion).
+    pub fn delete_checkpoint(&self, spider_name: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM crawl_checkpoints WHERE spider_name = ?1",
+            params![spider_name],
+        ).map_err(|e| WispError::Storage(e.to_string()))?;
+        Ok(())
+    }
 }
 
 /// Element snapshot row (storage layer doesn't know about parser::Node).

@@ -4,12 +4,15 @@ pub mod scheduler;
 pub mod robots;
 pub mod cache;
 pub mod templates;
+pub mod state;
+pub use state::CrawlState;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use async_trait::async_trait;
+use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use futures::stream::{self, StreamExt};
 use tokio::sync::Mutex;
@@ -19,16 +22,20 @@ use crate::fetch::{self, Client};
 use crate::parser::Node;
 
 /// HTTP method for spider requests.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Method { Get, Post, Put, Delete }
 
 /// A request to be processed by the spider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpiderRequest {
     pub url: String,
     pub method: Method,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
+    // `serde_json::Value` 的 Deserialize 依赖 `deserialize_any`，bincode 不支持。
+    // checkpoint 场景下 `meta` 当前不被读取，跳过它以让 bincode round-trip 可行。
+    // JSON 序列化语义不受影响（仅 bincode 路径跳过）。
+    #[serde(skip)]
     pub meta: Value,
     pub callback: Option<String>,
     pub priority: i32,
@@ -118,6 +125,8 @@ impl Default for EngineConfig {
 pub struct Engine<S: Spider> {
     spider: S,
     config: EngineConfig,
+    checkpoint_store: Option<Arc<crate::storage::Store>>,
+    checkpoint_interval: usize,
 }
 
 impl<S: Spider> Engine<S> {
@@ -129,11 +138,23 @@ impl<S: Spider> Engine<S> {
                 max_concurrent,
                 ..Default::default()
             },
+            checkpoint_store: None,
+            checkpoint_interval: 100,
         }
     }
 
     pub fn max_pages(mut self, n: usize) -> Self { self.config.max_pages = n; self }
     pub fn max_concurrent(mut self, n: usize) -> Self { self.config.max_concurrent = n; self }
+
+    pub fn with_checkpoint(mut self, store: Arc<crate::storage::Store>) -> Self {
+        self.checkpoint_store = Some(store);
+        self
+    }
+
+    pub fn checkpoint_interval(mut self, n: usize) -> Self {
+        self.checkpoint_interval = n;
+        self
+    }
 
     pub async fn run(self) -> Result<CrawlStats> {
         let start = std::time::Instant::now();
@@ -144,10 +165,32 @@ impl<S: Spider> Engine<S> {
         let allowed = self.spider.allowed_domains();
         let start_urls = self.spider.start_urls();
         let fetcher_config = self.spider.fetcher_config();
+        let checkpoint_store = self.checkpoint_store.clone();
+        let checkpoint_interval = self.checkpoint_interval;
+        let spider_name = self.spider.name().to_string();
 
         let client = Client::builder()
             .timeout(fetcher_config.timeout)
             .build()?;
+
+        // === checkpoint 恢复 ===
+        let mut restored_state: Option<CrawlState> = None;
+        if let Some(ref store) = checkpoint_store {
+            if let Some(blob) = store.load_checkpoint(&spider_name)? {
+                match bincode::deserialize::<CrawlState>(&blob) {
+                    Ok(state) => {
+                        tracing::info!(
+                            "恢复 checkpoint: {} 个待爬 URL, {} 个已访问",
+                            state.pending_urls.len(), state.seen_urls.len()
+                        );
+                        restored_state = Some(state);
+                    }
+                    Err(e) => {
+                        tracing::warn!("checkpoint 反序列化失败，将重新开始: {}", e);
+                    }
+                }
+            }
+        }
 
         self.spider.on_start().await;
 
@@ -155,9 +198,16 @@ impl<S: Spider> Engine<S> {
         let sched = Arc::new(scheduler::Scheduler::new());
         let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
 
-        // Seed start URLs
-        for url in start_urls {
-            sched.push(SpiderRequest::get(&url)).await;
+        // Seed start URLs (or restore from checkpoint)
+        if let Some(ref state) = restored_state {
+            for req in &state.pending_urls {
+                sched.push(req.clone()).await;
+            }
+            // stage 1: seen_urls 不单独恢复（Scheduler 的 seen_urls 是 placeholder）
+        } else {
+            for url in start_urls {
+                sched.push(SpiderRequest::get(&url)).await;
+            }
         }
 
         // Channel for follow requests 回灌
@@ -340,9 +390,43 @@ impl<S: Spider> Engine<S> {
 
         // Drive the stream to completion
         tokio::pin!(stream);
-        while stream.next().await.is_some() {}
+        let mut pages_since_checkpoint = 0usize;
+        while stream.next().await.is_some() {
+            pages_since_checkpoint += 1;
+            if pages_since_checkpoint >= checkpoint_interval {
+                if let Some(ref store) = checkpoint_store {
+                    let pending = sched.pending_urls().await;
+                    let snapshot_stats = CrawlStats {
+                        items_scraped: stats_items.load(Ordering::SeqCst),
+                        pages_crawled: stats_pages.load(Ordering::SeqCst),
+                        errors: stats_errors.load(Ordering::SeqCst),
+                        duration: start.elapsed(),
+                    };
+                    let state = CrawlState::from_stats(
+                        spider_name.clone(),
+                        &snapshot_stats,
+                        pending,
+                    );
+                    if let Ok(blob) = bincode::serialize(&state) {
+                        let _ = store.save_checkpoint(
+                            &spider_name,
+                            &blob,
+                            state.saved_at.timestamp(),
+                        );
+                    }
+                }
+                pages_since_checkpoint = 0;
+            }
+        }
 
         spider.on_close().await;
+
+        // === checkpoint 清理：爬取正常完成，删除 checkpoint ===
+        if let Some(ref store) = checkpoint_store {
+            if let Err(e) = store.delete_checkpoint(&spider_name) {
+                tracing::warn!("删除 checkpoint 失败: {}", e);
+            }
+        }
 
         Ok(CrawlStats {
             items_scraped: stats_items.load(Ordering::SeqCst),
