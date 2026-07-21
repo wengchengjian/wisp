@@ -83,14 +83,14 @@ impl Scheduler {
     }
 
     /// Snapshot the seen URLs (for checkpoint).
+    ///
+    /// Stage 1 placeholder: 返回 hash 字符串而非原始 URL（Scheduler 内部
+    /// 只存 u64 fingerprint）。stage 2 应改为维护 `HashSet<String>` 原始 URL。
+    /// 当前 CrawlState::seen_urls 使用 `HashSet::new()` 绕过此方法。
     pub async fn seen_urls(&self) -> HashSet<String> {
+        // placeholder: 返回 hash 字符串，不是真实 URL
         let g = self.inner.lock().await;
-        // seen stores u64 hashes; we need to return original URLs.
-        // Workaround: store URLs alongside hashes in a parallel map.
-        // For simplicity in stage 1, we store the full URL set here.
-        g.seen.iter()
-            .map(|h| h.to_string())  // placeholder - real URLs tracked separately
-            .collect()
+        g.seen.iter().map(|h| h.to_string()).collect()
     }
 
     /// Number of pending requests.
@@ -103,6 +103,10 @@ impl Scheduler {
     }
 
     /// Replace inner state (for checkpoint restore).
+    ///
+    /// Stage 1 未启用：Task 9 用 `push()` 循环恢复 pending_urls。
+    /// Stage 2 改用此方法批量恢复（含 seen_urls）。
+    #[allow(dead_code)]
     pub async fn restore(&self, pending: Vec<SpiderRequest>, seen: HashSet<String>) {
         let mut g = self.inner.lock().await;
         g.heap.clear();

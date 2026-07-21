@@ -1,6 +1,5 @@
 //! Verify checkpoint save/load round-trip.
 
-use std::sync::Arc;
 use wisp::crawl::{CrawlState, SpiderRequest, CrawlStats};
 use wisp::storage::Store;
 

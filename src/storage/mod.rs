@@ -11,8 +11,11 @@ use rusqlite::{params, Connection};
 use serde_json;
 use crate::error::{Result, WispError};
 
-/// Unified SQLite store. Inner connection is NOT thread-safe by itself;
-/// callers wrap it in `Arc<Mutex<Store>>` for concurrent access.
+/// Unified SQLite store. Inner connection is NOT thread-safe by itself.
+///
+/// 单 task 内访问无需 Mutex（如 Engine::run 主循环的 checkpoint 调用）。
+/// 多 task 并发访问需 `Arc<Mutex<Store>>`（如 Spider::parse() 内的
+/// adaptive save_element 调用，stage 2 集成时需处理）。
 pub struct Store {
     conn: Connection,
 }
@@ -40,11 +43,6 @@ impl Store {
         self.conn.execute_batch(migrations::SCHEMA_V1)
             .map_err(|e| WispError::Storage(e.to_string()))?;
         Ok(())
-    }
-
-    /// Raw connection accessor (for module-internal queries).
-    pub(crate) fn conn(&self) -> &Connection {
-        &self.conn
     }
 
     /// Save a crawl checkpoint as bincode blob.

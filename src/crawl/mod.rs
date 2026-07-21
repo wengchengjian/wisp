@@ -34,7 +34,8 @@ pub struct SpiderRequest {
     pub body: Option<String>,
     // `serde_json::Value` 的 Deserialize 依赖 `deserialize_any`，bincode 不支持。
     // checkpoint 场景下 `meta` 当前不被读取，跳过它以让 bincode round-trip 可行。
-    // JSON 序列化语义不受影响（仅 bincode 路径跳过）。
+    // 注意：`#[serde(skip)]` 对所有 Serializer 生效（含 serde_json），未来若用
+    // serde_json 序列化 SpiderRequest 需重新评估（改用 `#[serde(with = "...")]`）。
     #[serde(skip)]
     pub meta: Value,
     pub callback: Option<String>,
@@ -343,7 +344,7 @@ impl<S: Spider> Engine<S> {
                                 .unwrap_or_default();
                             let sem = {
                                 let mut sems = domain_sems_c.lock().await;
-                                sems.entry(domain.clone())
+                                sems.entry(domain)
                                     .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
                                     .clone()
                             };
@@ -407,12 +408,19 @@ impl<S: Spider> Engine<S> {
                         &snapshot_stats,
                         pending,
                     );
-                    if let Ok(blob) = bincode::serialize(&state) {
-                        let _ = store.save_checkpoint(
-                            &spider_name,
-                            &blob,
-                            state.saved_at.timestamp(),
-                        );
+                    match bincode::serialize(&state) {
+                        Ok(blob) => {
+                            if let Err(e) = store.save_checkpoint(
+                                &spider_name,
+                                &blob,
+                                state.saved_at.timestamp(),
+                            ) {
+                                tracing::warn!("checkpoint 保存失败: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("checkpoint 序列化失败: {}", e);
+                        }
                     }
                 }
                 pages_since_checkpoint = 0;
