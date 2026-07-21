@@ -56,17 +56,18 @@ pub fn xpath_full(node: &Node, expr: &str) -> Result<NodeList> {
 
 /// 在 sxd 树中定位 scraper 节点的对应节点。
 ///
-/// 启发式：用当前节点的 tag 匹配 sxd 树中的第一个同名元素。
-/// 找不到则返回 None（调用方回退到 doc.root()）。
-///
-/// 注意：sxd-document 0.3.2 的 `dom::Document` 没有 `descendants()` 方法，
-/// 需自己写 DFS 遍历 `root.children()` / `element.children()`。
+/// 先用路径签名精确匹配，失败回退到"第一个同名元素"启发式。
 fn locate_in_sxd<'d>(doc: dom::Document<'d>, node: &Node) -> Option<dom::Element<'d>> {
     let target_tag = node.tag();
     if target_tag.is_empty() {
         return None;
     }
-    // 简化：找第一个同名元素。精确匹配需用路径，stage 2 接受此简化。
+    // 策略 1：路径签名精确匹配
+    let sig = NodeSignature::from_scraper(node);
+    if let Some(e) = sig.find_in_sxd(doc) {
+        return Some(e);
+    }
+    // 策略 2：回退到第一个同名元素（保持向后兼容）
     find_first_element_by_tag(doc.root(), &target_tag)
 }
 
@@ -183,6 +184,54 @@ impl NodeSignature {
         path.reverse();  // 根在前
         Self { path }
     }
+
+    /// 在 sxd 树中 DFS 找到签名匹配的元素。
+    ///
+    /// 从 root 的子元素开始，逐级匹配 path。
+    /// 返回第一个签名完全匹配的元素，找不到返回 None。
+    fn find_in_sxd<'d>(&self, doc: dom::Document<'d>) -> Option<dom::Element<'d>> {
+        if self.path.is_empty() { return None; }
+        for child in doc.root().children() {
+            if let dom::ChildOfRoot::Element(e) = child {
+                if let Some(found) = dfs_sxd_match(e, &self.path, 0) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// DFS 遍历 sxd 树，匹配签名路径。
+///
+/// `depth` 是当前匹配到的路径深度（0 = 根级）。
+fn dfs_sxd_match<'d>(
+    element: dom::Element<'d>,
+    path: &[(String, Option<String>)],
+    depth: usize,
+) -> Option<dom::Element<'d>> {
+    if depth >= path.len() { return None; }
+    let (tag, first_class) = &path[depth];
+    // 匹配 tag
+    if element.name().local_part() != tag { return None; }
+    // 匹配 first_class
+    let e_class = element.attributes().iter()
+        .find(|a| a.name().local_part() == "class")
+        .and_then(|a| a.value().split_whitespace().next().map(|s| s.to_string()));
+    if &e_class != first_class { return None; }
+    // 如果是最后一级，匹配成功
+    if depth == path.len() - 1 {
+        return Some(element);
+    }
+    // 递归子元素
+    for child in element.children() {
+        if let dom::ChildOfElement::Element(ce) = child {
+            if let Some(found) = dfs_sxd_match(ce, path, depth + 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
