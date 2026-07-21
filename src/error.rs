@@ -25,6 +25,18 @@ pub enum WispError {
 
     #[error("CDP error: {0}")]
     CdpProtocol(String),
+
+    #[error("Storage error: {0}")]
+    Storage(String),
+
+    #[error("Adaptive relocation failed: {0}")]
+    AdaptiveError(String),
+
+    #[error("Serialize error: {0}")]
+    Serialize(String),
+
+    #[error("MCP error: {0}")]
+    McpError(String),
 }
 
 pub type Result<T> = std::result::Result<T, WispError>;

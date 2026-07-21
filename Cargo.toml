@@ -27,6 +27,14 @@ url = "2"
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
 regex = "1"
+# SQLite 统一存储（阶段 1：adaptive + checkpoint）
+rusqlite = { version = "0.32", features = ["bundled"] }
+# checkpoint blob 序列化
+bincode = "1"
+# 流式输出（阶段 1 内部用，阶段 3 对外暴露）
+tokio-stream = "0.1"
+# 时间戳（CrawlState 用）
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
