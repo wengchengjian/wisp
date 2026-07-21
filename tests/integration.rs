@@ -112,3 +112,49 @@ async fn test_screenshot_creates_file() {
     let _ = std::fs::remove_file(&path);
     browser.close().await.unwrap();
 }
+
+/// Adaptive + crawl integration tests (no network required).
+mod adaptive_test {
+    use wisp::parser::Node;
+    use wisp::storage::Store;
+
+    const PRODUCT_HTML: &str = r#"
+    <html><body>
+      <div class="products">
+        <div class="product" data-id="1">
+          <h3 class="title">Widget</h3>
+          <span class="price">$9.99</span>
+        </div>
+      </div>
+    </body></html>
+    "#;
+
+    const PRODUCT_HTML_V2: &str = r#"
+    <html><body>
+      <section class="catalog">
+        <article class="item" data-id="1">
+          <h3 class="name">Widget</h3>
+          <span class="cost">$9.99</span>
+        </article>
+      </section>
+    </body></html>
+    "#;
+
+    #[test]
+    fn test_end_to_end_adaptive_relocation() {
+        let store = Store::open_in_memory().unwrap();
+        let url = "https://shop.example.com/products";
+
+        // Phase 1: capture snapshot
+        let doc = Node::from_html(PRODUCT_HTML);
+        let node = doc.css_adaptive(".title", "product-title", url, &store, true, 0.5);
+        assert!(node.is_some());
+        assert_eq!(node.unwrap().text(), "Widget");
+
+        // Phase 2: site redesign, CSS fails, adaptive kicks in
+        let doc2 = Node::from_html(PRODUCT_HTML_V2);
+        let node2 = doc2.css_adaptive(".title", "product-title", url, &store, true, 0.5);
+        assert!(node2.is_some(), "adaptive should relocate after redesign");
+        assert_eq!(node2.unwrap().text(), "Widget");
+    }
+}
