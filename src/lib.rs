@@ -29,6 +29,7 @@ pub mod text;
 pub mod parser;
 pub mod fetch;
 pub mod crawl;
+pub mod storage;
 
 pub use browser::Browser;
 pub use config::{LaunchOptions, ProxyConfig};
@@ -38,3 +39,4 @@ pub use scraper::{Scraper, ScrapeResponse};
 pub use parser::{Node, NodeList};
 pub use fetch::Client;
 pub use crawl::{Spider, Engine};
+pub use storage::Store;
