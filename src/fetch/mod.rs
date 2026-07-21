@@ -1,6 +1,6 @@
 //! HTTP client with automatic encoding detection.
 //!
-//! Wraps reqwest with builder pattern, proxy support, and HTML parsing.
+//! Wraps wreq with builder pattern, proxy support, and HTML parsing.
 
 pub mod encoding;
 pub mod proxy;
@@ -48,16 +48,16 @@ impl ClientBuilder {
     pub fn max_redirects(mut self, n: usize) -> Self { self.config.max_redirects = n; self }
 
     pub fn build(self) -> Result<Client> {
-        let mut builder = reqwest::Client::builder()
+        let mut builder = wreq::Client::builder()
             .timeout(self.config.timeout)
-            .redirect(reqwest::redirect::Policy::limited(self.config.max_redirects))
-            .danger_accept_invalid_certs(false);
+            .redirect(wreq::redirect::Policy::limited(self.config.max_redirects))
+            .tls_cert_verification(true);
 
         if let Some(ref ua) = self.config.user_agent {
             builder = builder.user_agent(ua);
         }
         if let Some(ref proxy_url) = self.config.proxy {
-            let proxy = reqwest::Proxy::all(proxy_url)
+            let proxy = wreq::Proxy::all(proxy_url)
                 .map_err(|e| WispError::CdpError(format!("proxy error: {e}")))?;
             builder = builder.proxy(proxy);
         }
@@ -72,7 +72,7 @@ impl ClientBuilder {
 /// HTTP client for fetching web pages.
 #[derive(Clone)]
 pub struct Client {
-    http: reqwest::Client,
+    http: wreq::Client,
     config: Config,
 }
 
@@ -98,7 +98,7 @@ impl Client {
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
                 .map_err(|e| WispError::CdpError(format!("JSON serialize: {e}")))?;
-            req = req.header(reqwest::header::CONTENT_TYPE, "application/json").body(json_str);
+            req = req.header(wreq::header::CONTENT_TYPE, "application/json").body(json_str);
         }
         let resp = req.send().await
             .map_err(|e| WispError::CdpError(format!("POST {url}: {e}")))?;
@@ -112,7 +112,7 @@ impl Client {
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
                 .map_err(|e| WispError::CdpError(format!("JSON serialize: {e}")))?;
-            req = req.header(reqwest::header::CONTENT_TYPE, "application/json").body(json_str);
+            req = req.header(wreq::header::CONTENT_TYPE, "application/json").body(json_str);
         }
         let resp = req.send().await
             .map_err(|e| WispError::CdpError(format!("PUT {url}: {e}")))?;
@@ -128,12 +128,12 @@ impl Client {
         self.build_response(resp).await
     }
 
-    fn build_headers(&self) -> reqwest::header::HeaderMap {
-        let mut map = reqwest::header::HeaderMap::new();
+    fn build_headers(&self) -> wreq::header::HeaderMap {
+        let mut map = wreq::header::HeaderMap::new();
         for (k, v) in &self.config.headers {
             if let (Ok(name), Ok(val)) = (
-                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                reqwest::header::HeaderValue::from_str(v),
+                wreq::header::HeaderName::from_bytes(k.as_bytes()),
+                wreq::header::HeaderValue::from_str(v),
             ) {
                 map.insert(name, val);
             }
@@ -141,11 +141,11 @@ impl Client {
         map
     }
 
-    async fn build_response(&self, resp: reqwest::Response) -> Result<Response> {
+    async fn build_response(&self, resp: wreq::Response) -> Result<Response> {
         let status = resp.status().as_u16();
-        let url = resp.url().to_string();
+        let url = resp.uri().to_string();
         let content_type = resp.headers()
-            .get(reqwest::header::CONTENT_TYPE)
+            .get(wreq::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
