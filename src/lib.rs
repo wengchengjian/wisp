@@ -30,6 +30,7 @@ pub mod parser;
 pub mod fetch;
 pub mod crawl;
 pub mod storage;
+pub mod mcp;
 
 pub use browser::Browser;
 pub use config::{LaunchOptions, ProxyConfig};

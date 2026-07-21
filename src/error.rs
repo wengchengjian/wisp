@@ -38,6 +38,9 @@ pub enum WispError {
     #[error("MCP error: {0}")]
     McpError(String),
 
+    #[error("MCP unknown tool: {0}")]
+    McpUnknownTool(String),
+
     #[error("Parse error: {0}")]
     ParseError(String),
 }
