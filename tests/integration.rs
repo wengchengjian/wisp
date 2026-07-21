@@ -218,3 +218,35 @@ mod adaptive_test {
         assert_eq!(parent.tag(), "div");
     }
 }
+
+/// wreq 切换后的端到端集成测试（不发起实际网络请求）。
+mod fetch_test {
+    use wisp::fetch::Client;
+    use wreq_util::Profile;
+
+    #[test]
+    fn test_client_builder_with_emulation_builds() {
+        // 验证带 emulation 的 client 能成功 build
+        let client = Client::builder()
+            .emulation(Profile::Chrome136)
+            .timeout(std::time::Duration::from_secs(30))
+            .build();
+        assert!(client.is_ok(), "emulation client should build: {:?}", client.err());
+    }
+
+    #[test]
+    fn test_client_default_config_has_emulation() {
+        // 验证默认 Config 带 Chrome136 指纹（Client::new 走 Config::default）
+        let client = Client::new();
+        assert!(client.is_ok(), "default client should build with Chrome136 emulation: {:?}", client.err());
+    }
+
+    #[test]
+    fn test_client_builder_no_emulation_builds() {
+        // 验证关闭 emulation 的 client 能成功 build
+        let client = Client::builder()
+            .no_emulation()
+            .build();
+        assert!(client.is_ok(), "no_emulation client should build: {:?}", client.err());
+    }
+}
