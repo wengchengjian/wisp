@@ -157,4 +157,64 @@ mod adaptive_test {
         assert!(node2.is_some(), "adaptive should relocate after redesign");
         assert_eq!(node2.unwrap().text(), "Widget");
     }
+
+    #[test]
+    fn test_dom_navigation_with_adaptive_snapshot() {
+        // 验证 Node 重构后 adaptive 仍正常工作，且 capture 用了导航 API
+        let store = Store::open_in_memory().unwrap();
+        let url = "https://shop.example.com/products";
+
+        let html = r#"
+        <html><body>
+          <div class="products">
+            <div class="product" data-id="1">
+              <h3 class="title">Widget</h3>
+            </div>
+          </div>
+        </body></html>
+        "#;
+
+        let doc = Node::from_html(html);
+        let node = doc.css_adaptive(".title", "product-title", url, &store, true, 0.5);
+        assert!(node.is_some());
+        assert_eq!(node.unwrap().text(), "Widget");
+
+        // 验证 capture 用了导航 API：检查 snapshot 的 ancestor_path 包含 "div.products"
+        let saved = store.load_element(url, "product-title").unwrap().expect("snapshot should be saved");
+        let snapshot = wisp::parser::ElementSnapshot::from_row(saved);
+        assert!(snapshot.ancestor_path.iter().any(|p| p.contains("products")));
+    }
+
+    #[test]
+    fn test_xpath_and_css_consistency() {
+        // 验证 XPath 和 CSS 对同一查询返回一致结果
+        let html = r#"
+        <html><body>
+          <ul>
+            <li class="item">A</li>
+            <li class="item">B</li>
+            <li class="item">C</li>
+          </ul>
+        </body></html>
+        "#;
+
+        let doc = Node::from_html(html);
+        let css_result = doc.select("li.item");
+        let xpath_result = doc.xpath("//li[@class='item']");
+
+        assert_eq!(css_result.len(), xpath_result.len());
+        assert_eq!(css_result.len(), 3);
+    }
+
+    #[test]
+    fn test_node_shares_document_after_select() {
+        // 验证 select 返回的 Node 共享同一 Document（导航可工作）
+        let html = r#"<html><body><div><p>Hello</p></div></body></html>"#;
+        let doc = Node::from_html(html);
+        let p = doc.select_one("p").expect("p should exist");
+        // 阶段 1 的 fragment 模型下 parent() 返回 None
+        // 阶段 2 重构后 parent() 应返回 div
+        let parent = p.parent().expect("parent should work after refactor");
+        assert_eq!(parent.tag(), "div");
+    }
 }
