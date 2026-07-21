@@ -127,6 +127,10 @@ pub struct CrawlStats {
     pub blocked_requests: usize,
     /// 重试次数总计
     pub retry_count: usize,
+    /// HTTP 状态码分布（如 200 -> 5, 404 -> 1）
+    pub status_code_counts: HashMap<u16, usize>,
+    /// 因域名过滤被拒绝的请求数
+    pub offsite_requests_count: usize,
 }
 
 impl CrawlStats {
@@ -346,6 +350,9 @@ impl<S: Spider> Engine<S> {
         let stats_errors = Arc::new(AtomicUsize::new(0));
         let stats_blocked = Arc::new(AtomicUsize::new(0));
         let stats_retries = Arc::new(AtomicUsize::new(0));
+        let stats_offsite = Arc::new(AtomicUsize::new(0));
+        let stats_status_codes: Arc<Mutex<HashMap<u16, usize>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         let domain_sems: Arc<Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -366,6 +373,8 @@ impl<S: Spider> Engine<S> {
             let stats_items = stats_items.clone();
             let stats_blocked = stats_blocked.clone();
             let stats_retries = stats_retries.clone();
+            let stats_offsite = stats_offsite.clone();
+            let stats_status_codes = stats_status_codes.clone();
             let domain_sems = domain_sems.clone();
             let robots_cache = robots_cache.clone();
             let allowed = allowed.clone();
@@ -383,6 +392,8 @@ impl<S: Spider> Engine<S> {
                 let stats_items = stats_items.clone();
                 let stats_blocked = stats_blocked.clone();
                 let stats_retries = stats_retries.clone();
+                let stats_offsite = stats_offsite.clone();
+                let stats_status_codes = stats_status_codes.clone();
                 let domain_sems = domain_sems.clone();
                 let robots_cache = robots_cache.clone();
                 let allowed = allowed.clone();
@@ -423,6 +434,8 @@ impl<S: Spider> Engine<S> {
                         let stats_items_c = stats_items.clone();
                         let stats_blocked_c = stats_blocked.clone();
                         let stats_retries_c = stats_retries.clone();
+                        let stats_offsite_c = stats_offsite.clone();
+                        let stats_status_codes_c = stats_status_codes.clone();
                         let follow_tx_c = follow_tx.clone();
                         let client_c = client.clone();
                         let domain_sems_c = domain_sems.clone();
@@ -438,6 +451,7 @@ impl<S: Spider> Engine<S> {
                                 if let Ok(parsed) = url::Url::parse(&req.url) {
                                     if let Some(host) = parsed.host_str() {
                                         if !allowed_c.contains(host) {
+                                            stats_offsite_c.fetch_add(1, Ordering::SeqCst);
                                             return;
                                         }
                                     }
@@ -468,7 +482,20 @@ impl<S: Spider> Engine<S> {
                             };
                             let _permit = sem.acquire_owned().await.unwrap();
 
-                            let delay = spider_clone.download_delay();
+                            // 取 download_delay 与 robots crawl_delay 的最大值
+                            let mut delay = spider_clone.download_delay();
+                            if obey_robots {
+                                let robots_delay = {
+                                    let mut rc = robots_cache_c.lock().await;
+                                    rc.crawl_delay(&client_c, &req.url).await
+                                };
+                                if let Some(secs) = robots_delay {
+                                    let robots_dur = Duration::from_secs_f64(secs);
+                                    if robots_dur > delay {
+                                        delay = robots_dur;
+                                    }
+                                }
+                            }
                             if delay > Duration::ZERO {
                                 tokio::time::sleep(delay).await;
                             }
@@ -482,6 +509,11 @@ impl<S: Spider> Engine<S> {
                                 attempt += 1;
                                 match fetch_page(&client_c, &req).await {
                                     Ok(resp) => {
+                                        // 记录状态码分布
+                                        {
+                                            let mut codes = stats_status_codes_c.lock().await;
+                                            *codes.entry(resp.status).or_insert(0) += 1;
+                                        }
                                         if spider_clone.is_blocked(&resp) {
                                             stats_blocked_c.fetch_add(1, Ordering::SeqCst);
                                             if attempt <= max_retries {
@@ -546,6 +578,7 @@ impl<S: Spider> Engine<S> {
                                     let _ = follow_tx_c.send(f);
                                 }
                                 if let Some(ref tx) = tx_c {
+                                    let status_codes_snapshot = stats_status_codes_c.lock().await.clone();
                                     let _ = tx.send(CrawlEvent::PageScraped {
                                         url: page_url,
                                         stats: CrawlStats {
@@ -555,6 +588,8 @@ impl<S: Spider> Engine<S> {
                                             duration: start.elapsed(),
                                             blocked_requests: stats_blocked_c.load(Ordering::SeqCst),
                                             retry_count: stats_retries_c.load(Ordering::SeqCst),
+                                            status_code_counts: status_codes_snapshot,
+                                            offsite_requests_count: stats_offsite_c.load(Ordering::SeqCst),
                                             ..Default::default()
                                         },
                                     }).await;
@@ -622,6 +657,7 @@ impl<S: Spider> Engine<S> {
             }
         }
 
+        let final_status_codes = stats_status_codes.lock().await.clone();
         Ok(CrawlStats {
             items_scraped: stats_items.load(Ordering::SeqCst),
             pages_crawled: stats_pages.load(Ordering::SeqCst),
@@ -629,6 +665,8 @@ impl<S: Spider> Engine<S> {
             duration: start.elapsed(),
             blocked_requests: stats_blocked.load(Ordering::SeqCst),
             retry_count: stats_retries.load(Ordering::SeqCst),
+            status_code_counts: final_status_codes,
+            offsite_requests_count: stats_offsite.load(Ordering::SeqCst),
             ..Default::default()
         })
     }
@@ -767,6 +805,27 @@ mod tests {
         assert_eq!(stats.bytes_downloaded, 0);
         assert!(stats.domain_counts.is_empty());
         assert_eq!(stats.avg_response_time, Duration::ZERO);
+    }
+
+    #[test]
+    fn test_crawl_stats_has_status_code_counts() {
+        let stats = CrawlStats::default();
+        assert!(stats.status_code_counts.is_empty());
+    }
+
+    #[test]
+    fn test_crawl_stats_has_offsite_requests_count() {
+        let stats = CrawlStats::default();
+        assert_eq!(stats.offsite_requests_count, 0);
+    }
+
+    #[test]
+    fn test_crawl_stats_status_code_counts_can_hold_entries() {
+        let mut stats = CrawlStats::default();
+        stats.status_code_counts.insert(200, 5);
+        stats.status_code_counts.insert(404, 1);
+        assert_eq!(stats.status_code_counts.get(&200), Some(&5));
+        assert_eq!(stats.status_code_counts.get(&404), Some(&1));
     }
 
     #[tokio::test]
