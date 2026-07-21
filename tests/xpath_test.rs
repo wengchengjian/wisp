@@ -94,3 +94,47 @@ fn test_xpath_html5_tolerance() {
     assert_eq!(result.len(), 1);
     assert!(result.get(0).unwrap().text().contains("Unclosed"));
 }
+
+#[test]
+fn test_xpath_attr_value_with_path_suffix() {
+    // 回归测试：//div[@class='inner']/p 不应走快速路径（会丢弃 /p 后缀）
+    // 修复前：xpath_to_css 错误返回 div[class='inner']，导致返回 div 而非 p
+    // 修复后：xpath_to_css 返回 None，走 sxd-xpath 慢路径，正确返回 p
+    let html = r#"<html><body>
+        <div class="inner"><p>target</p></div>
+        <div class="other"><p>other</p></div>
+    </body></html>"#;
+    let doc = Node::from_html(html);
+    let ps = doc.xpath("//div[@class='inner']/p");
+    assert_eq!(ps.len(), 1);
+    assert_eq!(ps.get(0).unwrap().tag(), "p");
+    assert_eq!(ps.get(0).unwrap().text(), "target");
+}
+
+#[test]
+fn test_xpath_attr_only_with_path_suffix() {
+    // //div[@class]/p 也不应走快速路径
+    let html = r#"<html><body>
+        <div class="inner"><p>has-class</p></div>
+        <div><p>no-class</p></div>
+    </body></html>"#;
+    let doc = Node::from_html(html);
+    let ps = doc.xpath("//div[@class]/p");
+    assert_eq!(ps.len(), 1);
+    assert_eq!(ps.get(0).unwrap().tag(), "p");
+    assert_eq!(ps.get(0).unwrap().text(), "has-class");
+}
+
+#[test]
+fn test_xpath_id_with_path_suffix() {
+    // //*[@id='main']/p 也不应走快速路径
+    let html = r#"<html><body>
+        <div id="main"><p>inside-main</p></div>
+        <div id="other"><p>inside-other</p></div>
+    </body></html>"#;
+    let doc = Node::from_html(html);
+    let ps = doc.xpath("//*[@id='main']/p");
+    assert_eq!(ps.len(), 1);
+    assert_eq!(ps.get(0).unwrap().tag(), "p");
+    assert_eq!(ps.get(0).unwrap().text(), "inside-main");
+}

@@ -398,7 +398,13 @@ fn extract_attr_value(s: &str, attr: &str) -> Option<String> {
     if let Some(start) = s.find(&pattern) {
         let rest = &s[start + pattern.len()..];
         let value: String = rest.chars().take_while(|c| *c != '\'' && *c != '"').collect();
-        if !value.is_empty() { return Some(value); }
+        if value.is_empty() { return None; }
+        // 校验 value 后紧跟 ] 且 ] 后无内容（避免丢弃 /p 等路径后缀）
+        let after_value = &rest[value.len()..];
+        let after_quote = after_value.strip_prefix('\'').or_else(|| after_value.strip_prefix('"'))?;
+        let after_bracket = after_quote.strip_prefix(']')?;
+        if !after_bracket.trim().is_empty() { return None; }
+        return Some(value);
     }
     None
 }
@@ -414,6 +420,11 @@ fn parse_tag_attr_value(s: &str) -> Option<(String, String, String)> {
     let attr = &at[..eq];
     let val_part = &at[eq+1..];
     let value: String = val_part.chars().skip(1).take_while(|c| *c != '\'' && *c != '"' && *c != ']').collect();
+    // 校验 value 后紧跟 ] 且 ] 后无内容（避免丢弃 /p 等路径后缀）
+    let after_value = &val_part[1 + value.len()..];
+    let after_quote = after_value.strip_prefix('\'').or_else(|| after_value.strip_prefix('"'))?;
+    let after_bracket = after_quote.strip_prefix(']')?;
+    if !after_bracket.trim().is_empty() { return None; }
     Some((tag.to_string(), attr.to_string(), value))
 }
 
@@ -426,6 +437,10 @@ fn parse_tag_attr(s: &str) -> Option<(String, String)> {
     let at = rest.strip_prefix('@')?;
     let attr: String = at.chars().take_while(|c| *c != ']').collect();
     if attr.is_empty() { return None; }
+    // 校验 ] 后无内容（避免丢弃路径后缀）
+    let after_attr = &at[attr.len()..];
+    let after_bracket = after_attr.strip_prefix(']')?;
+    if !after_bracket.trim().is_empty() { return None; }
     Some((tag.to_string(), attr))
 }
 
@@ -439,6 +454,11 @@ fn parse_contains_class(s: &str) -> Option<(String, String)> {
         let quote_start = rest.find('\'').or_else(|| rest.find('"'))?;
         let val_start = &rest[quote_start+1..];
         let value: String = val_start.chars().take_while(|c| *c != '\'' && *c != '"').collect();
+        // 校验 value 后紧跟引号 + ] 且 ] 后无内容（避免丢弃路径后缀）
+        let after_value = &val_start[value.len()..];
+        let after_quote = after_value.strip_prefix('\'').or_else(|| after_value.strip_prefix('"'))?;
+        let after_bracket = after_quote.strip_prefix(']')?;
+        if !after_bracket.trim().is_empty() { return None; }
         return Some((tag.to_string(), value));
     }
     None
@@ -554,5 +574,24 @@ mod tests {
         assert_eq!(node.tag(), "td");
         assert!(node.text().contains("cell"));
         assert!(node.outer_html().contains("<td>cell</td>"));
+    }
+
+    #[test]
+    fn test_xpath_to_css_rejects_path_suffix() {
+        // 复合 XPath（带路径后缀）不应走快速路径，避免丢弃后缀
+        assert_eq!(xpath_to_css("//div[@class='inner']/p"), None);
+        assert_eq!(xpath_to_css("//div[@class]/p"), None);
+        assert_eq!(xpath_to_css("//div[contains(@class, 'inner')]/p"), None);
+        assert_eq!(xpath_to_css("//*[@id='main']/p"), None);
+        assert_eq!(xpath_to_css("//*[@id='main']//div"), None);
+    }
+
+    #[test]
+    fn test_xpath_to_css_still_handles_simple() {
+        // 简单 XPath（无后缀）仍应走快速路径
+        assert_eq!(xpath_to_css("//div[@class='inner']"), Some("div[class='inner']".to_string()));
+        assert_eq!(xpath_to_css("//div[@class]"), Some("div[class]".to_string()));
+        assert_eq!(xpath_to_css("//*[@id='main']"), Some("#main".to_string()));
+        assert_eq!(xpath_to_css("//li"), Some("li".to_string()));
     }
 }
