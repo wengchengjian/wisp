@@ -198,9 +198,15 @@ impl Node {
         NodeList { nodes: Vec::new() }
     }
 
-    /// Get the parent element (returns None for now; Task 4 真实实现).
+    /// Get the parent element.
+    ///
+    /// 使用 `ElementRef::wrap` 过滤非元素节点（scraper 0.23 中 `Element` 没有 `is_element()`，
+    /// 但 `ElementRef::wrap` 本身只对元素节点返回 `Some`）。
     pub fn parent(&self) -> Option<Node> {
-        None // Task 4 真实实现
+        let element = self.element_ref()?;
+        element.parent()
+            .and_then(ElementRef::wrap)
+            .map(|p| Node::from_element_ref(self.doc.clone(), p))
     }
 
     /// Get direct child elements.
@@ -212,14 +218,30 @@ impl Node {
         NodeList { nodes }
     }
 
-    /// Get the next sibling element (returns None for now; Task 4 真实实现).
+    /// Get the next sibling element (skips non-element nodes like text/comment).
     pub fn next_sibling(&self) -> Option<Node> {
-        None // Task 4 真实实现
+        let element = self.element_ref()?;
+        let mut sib = element.next_sibling();
+        while let Some(s) = sib {
+            if let Some(el) = ElementRef::wrap(s) {
+                return Some(Node::from_element_ref(self.doc.clone(), el));
+            }
+            sib = s.next_sibling();
+        }
+        None
     }
 
-    /// Get the previous sibling element (returns None for now; Task 4 真实实现).
+    /// Get the previous sibling element (skips non-element nodes like text/comment).
     pub fn prev_sibling(&self) -> Option<Node> {
-        None // Task 4 真实实现
+        let element = self.element_ref()?;
+        let mut sib = element.prev_sibling();
+        while let Some(s) = sib {
+            if let Some(el) = ElementRef::wrap(s) {
+                return Some(Node::from_element_ref(self.doc.clone(), el));
+            }
+            sib = s.prev_sibling();
+        }
+        None
     }
 
     /// Get the first child element.
@@ -232,9 +254,25 @@ impl Node {
         self.children().last().cloned()
     }
 
+    /// Iterate ancestor elements from parent up to document root.
+    ///
+    /// 使用 `std::iter::successors` 链式调用 `parent()`，惰性迭代。
+    pub fn ancestors(&self) -> impl Iterator<Item = Node> + '_ {
+        std::iter::successors(self.parent(), |node| node.parent())
+    }
+
     /// Check if element matches a CSS selector.
-    pub fn matches(&self, _css: &str) -> bool {
-        false // Task 4 真实实现
+    ///
+    /// 无效选择器返回 `false`（不 panic）。scraper 0.23 中 `Selector` 提供
+    /// `matches(&ElementRef) -> bool` 方法（注意：方法在 `Selector` 上，不在 `Element` 上）。
+    pub fn matches(&self, css: &str) -> bool {
+        let selector = match CssSelector::parse(css) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        self.element_ref()
+            .map(|e| selector.matches(&e))
+            .unwrap_or(false)
     }
 
     /// Check if text content contains a substring.
