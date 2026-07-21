@@ -100,8 +100,15 @@ pub trait Spider: Send + Sync + 'static {
     async fn on_close(&self) {}
     async fn on_error(&self, _req: &SpiderRequest, _err: &str) {}
     async fn on_item(&self, item: Value) -> Option<Value> { Some(item) }
-    fn is_blocked(&self, _resp: &SpiderResponse) -> bool { false }
+    /// 检测响应是否被阻塞。默认检测 BLOCKED_STATUS_CODES 中的状态码。
+    /// 用户可重写以加入响应体关键词检测（如 "access denied"、"rate limit"）。
+    fn is_blocked(&self, resp: &SpiderResponse) -> bool {
+        BLOCKED_STATUS_CODES.contains(&resp.status)
+    }
 }
+
+/// 默认阻塞状态码（参考 scrapling）：401/403/407/429/444/500/502/503/504
+pub const BLOCKED_STATUS_CODES: &[u16] = &[401, 403, 407, 429, 444, 500, 502, 503, 504];
 
 /// Crawling statistics.
 #[derive(Debug, Clone, Default)]
@@ -116,6 +123,10 @@ pub struct CrawlStats {
     pub avg_response_time: Duration,
     /// 每域名页数
     pub domain_counts: HashMap<String, usize>,
+    /// blocked 请求总数（含重试后成功的）
+    pub blocked_requests: usize,
+    /// 重试次数总计
+    pub retry_count: usize,
 }
 
 impl CrawlStats {
@@ -333,6 +344,8 @@ impl<S: Spider> Engine<S> {
         let stats_items = Arc::new(AtomicUsize::new(0));
         let stats_pages = Arc::new(AtomicUsize::new(0));
         let stats_errors = Arc::new(AtomicUsize::new(0));
+        let stats_blocked = Arc::new(AtomicUsize::new(0));
+        let stats_retries = Arc::new(AtomicUsize::new(0));
 
         let domain_sems: Arc<Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -351,6 +364,8 @@ impl<S: Spider> Engine<S> {
             let stats_pages = stats_pages.clone();
             let stats_errors = stats_errors.clone();
             let stats_items = stats_items.clone();
+            let stats_blocked = stats_blocked.clone();
+            let stats_retries = stats_retries.clone();
             let domain_sems = domain_sems.clone();
             let robots_cache = robots_cache.clone();
             let allowed = allowed.clone();
@@ -366,6 +381,8 @@ impl<S: Spider> Engine<S> {
                 let stats_pages = stats_pages.clone();
                 let stats_errors = stats_errors.clone();
                 let stats_items = stats_items.clone();
+                let stats_blocked = stats_blocked.clone();
+                let stats_retries = stats_retries.clone();
                 let domain_sems = domain_sems.clone();
                 let robots_cache = robots_cache.clone();
                 let allowed = allowed.clone();
@@ -404,6 +421,8 @@ impl<S: Spider> Engine<S> {
                         let stats_pages_c = stats_pages.clone();
                         let stats_errors_c = stats_errors.clone();
                         let stats_items_c = stats_items.clone();
+                        let stats_blocked_c = stats_blocked.clone();
+                        let stats_retries_c = stats_retries.clone();
                         let follow_tx_c = follow_tx.clone();
                         let client_c = client.clone();
                         let domain_sems_c = domain_sems.clone();
@@ -454,54 +473,98 @@ impl<S: Spider> Engine<S> {
                                 tokio::time::sleep(delay).await;
                             }
 
-                            match fetch_page(&client_c, &req).await {
-                                Ok(resp) => {
-                                    if spider_clone.is_blocked(&resp) {
-                                        stats_errors_c.fetch_add(1, Ordering::SeqCst);
-                                        if let Some(ref tx) = tx_c {
-                                            let _ = tx.send(CrawlEvent::Error {
-                                                url: req.url.clone(),
-                                                error: "blocked".into(),
-                                            }).await;
-                                        }
-                                        return;
-                                    }
-                                    stats_pages_c.fetch_add(1, Ordering::SeqCst);
-                                    let page_url = resp.url.clone();
-                                    let (items, follows) = spider_clone.parse(resp).await;
-                                    for item in items {
-                                        if let Some(processed) = spider_clone.on_item(item).await {
-                                            stats_items_c.fetch_add(1, Ordering::SeqCst);
-                                            if let Some(ref tx) = tx_c {
-                                                let _ = tx.send(CrawlEvent::Item(processed)).await;
+                            let max_retries = spider_clone.max_retries();
+                            let mut attempt: u32 = 0;
+                            let mut last_error: Option<String> = None;
+                            let mut final_resp: Option<SpiderResponse> = None;
+
+                            loop {
+                                attempt += 1;
+                                match fetch_page(&client_c, &req).await {
+                                    Ok(resp) => {
+                                        if spider_clone.is_blocked(&resp) {
+                                            stats_blocked_c.fetch_add(1, Ordering::SeqCst);
+                                            if attempt <= max_retries {
+                                                stats_retries_c.fetch_add(1, Ordering::SeqCst);
+                                                let delay = spider_clone.download_delay();
+                                                if delay > Duration::ZERO {
+                                                    tokio::time::sleep(delay).await;
+                                                }
+                                                tracing::warn!(
+                                                    "blocked (status={}, attempt={}/{}), retrying: {}",
+                                                    resp.status, attempt, max_retries, req.url
+                                                );
+                                                continue;
                                             }
+                                            // 重试次数耗尽
+                                            stats_errors_c.fetch_add(1, Ordering::SeqCst);
+                                            last_error = Some(format!(
+                                                "blocked after {} retries (status={})",
+                                                max_retries, resp.status
+                                            ));
+                                            break;
                                         }
+                                        // 成功
+                                        final_resp = Some(resp);
+                                        break;
                                     }
-                                    for f in follows {
-                                        let _ = follow_tx_c.send(f);
-                                    }
-                                    if let Some(ref tx) = tx_c {
-                                        let _ = tx.send(CrawlEvent::PageScraped {
-                                            url: page_url,
-                                            stats: CrawlStats {
-                                                items_scraped: stats_items_c.load(Ordering::SeqCst),
-                                                pages_crawled: stats_pages_c.load(Ordering::SeqCst),
-                                                errors: stats_errors_c.load(Ordering::SeqCst),
-                                                duration: start.elapsed(),
-                                                ..Default::default()
-                                            },
-                                        }).await;
+                                    Err(e) => {
+                                        if attempt <= max_retries {
+                                            stats_retries_c.fetch_add(1, Ordering::SeqCst);
+                                            let delay = spider_clone.download_delay();
+                                            if delay > Duration::ZERO {
+                                                tokio::time::sleep(delay).await;
+                                            }
+                                            tracing::warn!(
+                                                "fetch error (attempt={}/{}): {} - {}",
+                                                attempt, max_retries, e, req.url
+                                            );
+                                            continue;
+                                        }
+                                        stats_errors_c.fetch_add(1, Ordering::SeqCst);
+                                        spider_clone.on_error(&req, &e.to_string()).await;
+                                        last_error = Some(e.to_string());
+                                        break;
                                     }
                                 }
-                                Err(e) => {
-                                    stats_errors_c.fetch_add(1, Ordering::SeqCst);
-                                    spider_clone.on_error(&req, &e.to_string()).await;
-                                    if let Some(ref tx) = tx_c {
-                                        let _ = tx.send(CrawlEvent::Error {
-                                            url: req.url.clone(),
-                                            error: e.to_string(),
-                                        }).await;
+                            }
+
+                            // 处理最终结果
+                            if let Some(resp) = final_resp {
+                                stats_pages_c.fetch_add(1, Ordering::SeqCst);
+                                let page_url = resp.url.clone();
+                                let (items, follows) = spider_clone.parse(resp).await;
+                                for item in items {
+                                    if let Some(processed) = spider_clone.on_item(item).await {
+                                        stats_items_c.fetch_add(1, Ordering::SeqCst);
+                                        if let Some(ref tx) = tx_c {
+                                            let _ = tx.send(CrawlEvent::Item(processed)).await;
+                                        }
                                     }
+                                }
+                                for f in follows {
+                                    let _ = follow_tx_c.send(f);
+                                }
+                                if let Some(ref tx) = tx_c {
+                                    let _ = tx.send(CrawlEvent::PageScraped {
+                                        url: page_url,
+                                        stats: CrawlStats {
+                                            items_scraped: stats_items_c.load(Ordering::SeqCst),
+                                            pages_crawled: stats_pages_c.load(Ordering::SeqCst),
+                                            errors: stats_errors_c.load(Ordering::SeqCst),
+                                            duration: start.elapsed(),
+                                            blocked_requests: stats_blocked_c.load(Ordering::SeqCst),
+                                            retry_count: stats_retries_c.load(Ordering::SeqCst),
+                                            ..Default::default()
+                                        },
+                                    }).await;
+                                }
+                            } else if let Some(err) = last_error {
+                                if let Some(ref tx) = tx_c {
+                                    let _ = tx.send(CrawlEvent::Error {
+                                        url: req.url.clone(),
+                                        error: err,
+                                    }).await;
                                 }
                             }
                         };
@@ -564,6 +627,8 @@ impl<S: Spider> Engine<S> {
             pages_crawled: stats_pages.load(Ordering::SeqCst),
             errors: stats_errors.load(Ordering::SeqCst),
             duration: start.elapsed(),
+            blocked_requests: stats_blocked.load(Ordering::SeqCst),
+            retry_count: stats_retries.load(Ordering::SeqCst),
             ..Default::default()
         })
     }
@@ -607,6 +672,44 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    #[test]
+    fn test_blocked_status_codes_contains_common_codes() {
+        assert!(BLOCKED_STATUS_CODES.contains(&401));
+        assert!(BLOCKED_STATUS_CODES.contains(&403));
+        assert!(BLOCKED_STATUS_CODES.contains(&407));
+        assert!(BLOCKED_STATUS_CODES.contains(&429));
+        assert!(BLOCKED_STATUS_CODES.contains(&444));
+        assert!(BLOCKED_STATUS_CODES.contains(&500));
+        assert!(BLOCKED_STATUS_CODES.contains(&502));
+        assert!(BLOCKED_STATUS_CODES.contains(&503));
+        assert!(BLOCKED_STATUS_CODES.contains(&504));
+        assert!(!BLOCKED_STATUS_CODES.contains(&200));
+        assert!(!BLOCKED_STATUS_CODES.contains(&301));
+        assert!(!BLOCKED_STATUS_CODES.contains(&404));
+    }
+
+    #[test]
+    fn test_spider_default_is_blocked_detects_status_codes() {
+        struct DummySpider;
+        #[async_trait]
+        impl Spider for DummySpider {
+            fn name(&self) -> &str { "dummy" }
+            fn start_urls(&self) -> Vec<String> { vec![] }
+            async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) { (vec![], vec![]) }
+        }
+        let spider = DummySpider;
+        let blocked_resp = SpiderResponse {
+            url: "http://example.com".into(),
+            status: 403,
+            headers: HashMap::new(),
+            body: vec![],
+            request: SpiderRequest::get("http://example.com"),
+        };
+        assert!(spider.is_blocked(&blocked_resp));
+        let ok_resp = SpiderResponse { status: 200, ..blocked_resp };
+        assert!(!spider.is_blocked(&ok_resp));
+    }
+
     /// 启动一个本地 HTTP 测试服务器，对任意请求返回 `html`，返回其 base URL。
     ///
     /// 计划原用 `data:text/html,...` URL，但 wreq HTTP fetcher 不支持 data URI，
@@ -648,6 +751,7 @@ mod tests {
                 m.insert("example.com".to_string(), 5);
                 m
             },
+            ..Default::default()
         };
         let s = stats.summary();
         assert!(s.contains("5 页"), "summary 应含页数: {}", s);
