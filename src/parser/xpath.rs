@@ -106,26 +106,26 @@ fn find_first_element_by_tag_in_element<'d>(
 
 /// 在 scraper 树中找到 sxd 节点的对应节点。
 ///
-/// 用 tag + 属性启发式匹配。找不到则跳过（不 panic）。
+/// 先用路径签名精确匹配，失败回退到"tag + 第一个属性"启发式。
 fn find_in_scraper<'d>(doc: &Arc<Document>, sxd_node: &dom::Element<'d>) -> Option<Node> {
-    // sxd-document 0.3.2: QName::local_part() 直接返回 &str（不是 Option<&str>）。
+    // 策略 1：路径签名精确匹配
+    let sig = NodeSignature::from_sxd(*sxd_node);
+    if let Some(node) = sig.find_in_scraper(doc) {
+        return Some(node);
+    }
+    // 策略 2：回退到 tag + 第一个属性（保持向后兼容）
     let tag = sxd_node.name().local_part();
-    // Element::attributes() 返回 Vec<Attribute<'d>>（不是 &[Attribute]）。
     let attrs: Vec<(String, String)> = sxd_node
         .attributes()
         .iter()
         .map(|a| (a.name().local_part().to_string(), a.value().to_string()))
         .collect();
-
-    // 在 scraper 树中找第一个 tag + 属性匹配的元素
     let selector_str = if attrs.is_empty() {
         tag.to_string()
     } else {
-        // 用第一个属性构造选择器
         let (k, v) = &attrs[0];
         format!("{}[{}='{}']", tag, k, v)
     };
-
     let selector = scraper::Selector::parse(&selector_str).ok()?;
     doc.html
         .select(&selector)
@@ -135,44 +135,56 @@ fn find_in_scraper<'d>(doc: &Arc<Document>, sxd_node: &dom::Element<'d>) -> Opti
 
 // ===== 路径签名精确回查 =====
 
-/// 节点路径签名：从根到节点的路径，每级 (tag, first_class)。
+/// 节点路径签名：从根到节点的路径，每级 (tag, first_class) + sibling 索引。
 ///
 /// 用于在 scraper 树和 sxd 树之间精确回查。class 是最稳定的标识
 /// （ID 可能动态，其他属性可能变化），first_class 是 class 的第一个 token,
 /// 通常是最具体的。对序列化差异（空白、属性顺序、引号）鲁棒。
+///
+/// `sibling_indices` 记录每级在其 parent 的同 (tag, first_class) sibling 中的
+/// 0-based 索引，用于区分多个相同签名的 sibling（如多个 `<li class="item">`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NodeSignature {
     /// 从根到节点的路径，索引 0 是根的 (tag, first_class)
     path: Vec<(String, Option<String>)>,
+    /// 每级在其 parent 的同 (tag, first_class) sibling 中的 0-based 索引
+    sibling_indices: Vec<usize>,
 }
 
 impl NodeSignature {
     /// 从 scraper Node 构造签名（node 到根的路径）。
     fn from_scraper(node: &Node) -> Self {
         let mut path = Vec::new();
+        let mut sibling_indices = Vec::new();
         let mut current = Some(node.clone());
         while let Some(n) = current {
             let tag = n.tag();
             if tag.is_empty() { break; }
             let first_class = n.attr("class")
                 .and_then(|c| c.split_whitespace().next().map(|s| s.to_string()));
+            let idx = sibling_index_scraper(&n, &tag, &first_class);
             path.push((tag, first_class));
+            sibling_indices.push(idx);
             current = n.parent();
         }
         path.reverse();  // 根在前
-        Self { path }
+        sibling_indices.reverse();
+        Self { path, sibling_indices }
     }
 
     /// 从 sxd dom::Element 构造签名（element 到根的路径）。
     fn from_sxd(element: dom::Element) -> Self {
         let mut path = Vec::new();
+        let mut sibling_indices = Vec::new();
         let mut current = Some(element);
         while let Some(e) = current {
             let tag = e.name().local_part().to_string();
             let first_class = e.attributes().iter()
                 .find(|a| a.name().local_part() == "class")
                 .and_then(|a| a.value().split_whitespace().next().map(|s| s.to_string()));
+            let idx = sibling_index_sxd(e, &tag, &first_class);
             path.push((tag, first_class));
+            sibling_indices.push(idx);
             // sxd-document 0.3.2: element.parent() 返回 Option<dom::ParentOfChild>
             // dom::ParentOfChild 是枚举，有 Root 和 Element 变体。
             // 遇到 Root 时停止向上遍历（Root 不是元素，不计入路径）。
@@ -182,32 +194,104 @@ impl NodeSignature {
             });
         }
         path.reverse();  // 根在前
-        Self { path }
+        sibling_indices.reverse();
+        Self { path, sibling_indices }
     }
 
     /// 在 sxd 树中 DFS 找到签名匹配的元素。
     ///
-    /// 从 root 的子元素开始，逐级匹配 path。
+    /// 从 root 的子元素开始，逐级匹配 path 和 sibling_indices。
     /// 返回第一个签名完全匹配的元素，找不到返回 None。
     fn find_in_sxd<'d>(&self, doc: dom::Document<'d>) -> Option<dom::Element<'d>> {
         if self.path.is_empty() { return None; }
         for child in doc.root().children() {
             if let dom::ChildOfRoot::Element(e) = child {
-                if let Some(found) = dfs_sxd_match(e, &self.path, 0) {
+                if let Some(found) = dfs_sxd_match(e, &self.path, &self.sibling_indices, 0) {
                     return Some(found);
                 }
             }
         }
         None
     }
+
+    /// 在 scraper 树中找到签名匹配的 Node。
+    ///
+    /// 用最后一级的 tag + first_class 构造选择器缩小范围，
+    /// 对候选元素构造签名比较。返回第一个签名完全匹配的 Node，找不到返回 None。
+    fn find_in_scraper(&self, doc: &Arc<Document>) -> Option<Node> {
+        if self.path.is_empty() { return None; }
+        // 优化：用最后一级的 tag + first_class 构造选择器缩小范围
+        let (last_tag, last_class) = &self.path[self.path.len() - 1];
+        let selector_str = match last_class {
+            Some(c) => format!("{}.{}", last_tag, c),
+            None => last_tag.clone(),
+        };
+        let selector = scraper::Selector::parse(&selector_str).ok()?;
+        for el in doc.html.select(&selector) {
+            let node = Node::from_element_ref(doc.clone(), el);
+            let node_sig = NodeSignature::from_scraper(&node);
+            if node_sig == *self {
+                return Some(node);
+            }
+        }
+        None
+    }
 }
 
-/// DFS 遍历 sxd 树，匹配签名路径。
+/// 计算 scraper 节点在其 parent 的同 (tag, first_class) sibling 中的 0-based 索引。
+///
+/// 无 parent（根元素）时返回 0。用于 `NodeSignature::from_scraper`。
+fn sibling_index_scraper(node: &Node, tag: &str, first_class: &Option<String>) -> usize {
+    let parent = match node.parent() { Some(p) => p, None => return 0 };
+    let n_id = match node.element_ref() { Some(e) => e.id(), None => return 0 };
+    let mut idx = 0;
+    for c in parent.children() {
+        if c.tag() != tag { continue; }
+        let c_first_class = c.attr("class")
+            .and_then(|cls| cls.split_whitespace().next().map(|s| s.to_string()));
+        if c_first_class != *first_class { continue; }
+        if c.element_ref().map(|e| e.id()) == Some(n_id) {
+            return idx;
+        }
+        idx += 1;
+    }
+    0
+}
+
+/// 计算 sxd 元素在其 parent 的同 (tag, first_class) sibling 中的 0-based 索引。
+///
+/// 无 parent 或 parent 为 Root 时返回 0。用于 `NodeSignature::from_sxd`。
+/// sxd-document 0.3.2 的 `dom::Element` 实现了 `PartialEq`（基于内部指针），可直接比较。
+fn sibling_index_sxd(element: dom::Element, tag: &str, first_class: &Option<String>) -> usize {
+    let parent = match element.parent() {
+        Some(dom::ParentOfChild::Element(pe)) => pe,
+        Some(dom::ParentOfChild::Root(_)) => return 0,
+        None => return 0,
+    };
+    let mut idx = 0;
+    for child in parent.children() {
+        if let dom::ChildOfElement::Element(ce) = child {
+            if ce.name().local_part() != tag { continue; }
+            let ce_class = ce.attributes().iter()
+                .find(|a| a.name().local_part() == "class")
+                .and_then(|a| a.value().split_whitespace().next().map(|s| s.to_string()));
+            if ce_class != *first_class { continue; }
+            if ce == element {
+                return idx;
+            }
+            idx += 1;
+        }
+    }
+    0
+}
+
+/// DFS 遍历 sxd 树，匹配签名路径（含 sibling 索引）。
 ///
 /// `depth` 是当前匹配到的路径深度（0 = 根级）。
 fn dfs_sxd_match<'d>(
     element: dom::Element<'d>,
     path: &[(String, Option<String>)],
+    sibling_indices: &[usize],
     depth: usize,
 ) -> Option<dom::Element<'d>> {
     if depth >= path.len() { return None; }
@@ -219,6 +303,9 @@ fn dfs_sxd_match<'d>(
         .find(|a| a.name().local_part() == "class")
         .and_then(|a| a.value().split_whitespace().next().map(|s| s.to_string()));
     if &e_class != first_class { return None; }
+    // 匹配 sibling 索引
+    let actual_idx = sibling_index_sxd(element, tag, first_class);
+    if actual_idx != sibling_indices[depth] { return None; }
     // 如果是最后一级，匹配成功
     if depth == path.len() - 1 {
         return Some(element);
@@ -226,7 +313,7 @@ fn dfs_sxd_match<'d>(
     // 递归子元素
     for child in element.children() {
         if let dom::ChildOfElement::Element(ce) = child {
-            if let Some(found) = dfs_sxd_match(ce, path, depth + 1) {
+            if let Some(found) = dfs_sxd_match(ce, path, sibling_indices, depth + 1) {
                 return Some(found);
             }
         }
