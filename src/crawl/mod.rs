@@ -131,6 +131,39 @@ impl CrawlStats {
     }
 }
 
+/// 爬取过程中的事件流
+#[derive(Debug, Clone)]
+pub enum CrawlEvent {
+    /// 解析出一个 item
+    Item(Value),
+    /// 完成一页（含当前累计统计）
+    PageScraped { url: String, stats: CrawlStats },
+    /// 请求失败
+    Error { url: String, error: String },
+    /// 爬取结束（携带最终统计）
+    Done(CrawlStats),
+}
+
+/// 流式爬取事件流
+pub struct CrawlStream {
+    inner: std::pin::Pin<Box<dyn futures::Stream<Item = CrawlEvent>>>,
+}
+
+impl CrawlStream {
+    /// 仅消费 Item 事件（最常见用法）
+    pub fn items(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Value>>> {
+        use futures::StreamExt;
+        Box::pin(self.inner.filter_map(|e| async move {
+            match e { CrawlEvent::Item(v) => Some(v), _ => None }
+        }))
+    }
+
+    /// 消费所有事件（调试/监控用）
+    pub fn events(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = CrawlEvent>>> {
+        self.inner
+    }
+}
+
 /// Engine configuration.
 pub struct EngineConfig {
     pub max_pages: usize,
@@ -179,8 +212,72 @@ impl<S: Spider> Engine<S> {
     }
 
     pub async fn run(self) -> Result<CrawlStats> {
+        self.run_with_sender(None).await
+    }
+
+    /// 流式运行：边爬边产出事件。
+    ///
+    /// 与 `run()` 的区别：通过 mpsc channel(128) 把 Item/PageScraped/Error/Done 事件推给消费者。
+    /// run() 保持旧行为（收集 stats），stream() 额外暴露事件流。
+    ///
+    /// 实现说明：由于 `Engine<S>` 含 `Arc<Store>`（`Store` 内 `rusqlite::Connection`
+    /// 为 `!Sync`），`Engine<S>: !Send`，故不能用 `tokio::spawn`。这里用
+    /// `stream::unfold` + `tokio::select!` 在当前 task 内按需驱动 `run_with_sender`，
+    /// 同时转发 channel 中的事件，实现真正的 demand-driven 流式输出。
+    pub fn stream(self) -> CrawlStream {
+        let (tx, rx) = tokio::sync::mpsc::channel::<CrawlEvent>(128);
+
+        let driver = async move {
+            let stats = self.run_with_sender(Some(tx.clone())).await;
+            match stats {
+                Ok(s) => { let _ = tx.send(CrawlEvent::Done(s)).await; }
+                Err(e) => {
+                    let _ = tx.send(CrawlEvent::Error {
+                        url: "*".into(),
+                        error: e.to_string(),
+                    }).await;
+                    let _ = tx.send(CrawlEvent::Done(CrawlStats::default())).await;
+                }
+            }
+        };
+
+        let driver = Box::pin(driver);
+        let rx = tokio_stream::wrappers::ReceiverStream::new(rx);
+
+        use futures::StreamExt;
+        let s = futures::stream::unfold(
+            (driver, rx, false),
+            |(mut driver, mut rx, driver_done)| async move {
+                if driver_done {
+                    return rx.next().await.map(|e| (e, (driver, rx, true)));
+                }
+                tokio::select! {
+                    biased;
+                    event = rx.next() => match event {
+                        Some(e) => Some((e, (driver, rx, false))),
+                        None => None,
+                    },
+                    _ = &mut driver => {
+                        match rx.next().await {
+                            Some(e) => Some((e, (driver, rx, true))),
+                            None => None,
+                        }
+                    }
+                }
+            },
+        );
+
+        CrawlStream {
+            inner: Box::pin(s),
+        }
+    }
+
+    /// 内部：带可选事件发送器的运行逻辑。
+    ///
+    /// `tx=None` 时等价于原 run()（不发事件）；`tx=Some` 时在 item/页完成/错误处发事件。
+    /// 此方法把 run() 的逻辑重构为可复用，run() 调用 run_with_sender(None)，stream() 调用 run_with_sender(Some(tx))。
+    async fn run_with_sender(self, tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>) -> Result<CrawlStats> {
         let start = std::time::Instant::now();
-        // 提前提取所有需要的信息（避免 self 部分移动问题）
         let max_pages = self.config.max_pages;
         let max_concurrent = self.config.max_concurrent;
         let obey_robots = self.spider.obey_robots();
@@ -220,33 +317,27 @@ impl<S: Spider> Engine<S> {
         let sched = Arc::new(scheduler::Scheduler::new());
         let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
 
-        // Seed start URLs (or restore from checkpoint)
         if let Some(ref state) = restored_state {
             for req in &state.pending_urls {
                 sched.push(req.clone()).await;
             }
-            // stage 1: seen_urls 不单独恢复（Scheduler 的 seen_urls 是 placeholder）
         } else {
             for url in start_urls {
                 sched.push(SpiderRequest::get(&url)).await;
             }
         }
 
-        // Channel for follow requests 回灌
         let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
         let stats_items = Arc::new(AtomicUsize::new(0));
         let stats_pages = Arc::new(AtomicUsize::new(0));
         let stats_errors = Arc::new(AtomicUsize::new(0));
 
-        // Domain semaphores for per-domain throttling
         let domain_sems: Arc<Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
         let follow_rx = Arc::new(Mutex::new(follow_rx));
         let client = Arc::new(client);
         let allowed = Arc::new(allowed);
-        // C1 fix: track in-flight futures so unfold does not terminate while
-        // running futures may still emit follow requests into the channel.
         let in_flight = Arc::new(AtomicUsize::new(0));
 
         let stream = {
@@ -262,6 +353,7 @@ impl<S: Spider> Engine<S> {
             let robots_cache = robots_cache.clone();
             let allowed = allowed.clone();
             let in_flight = in_flight.clone();
+            let tx = tx.clone();
 
             stream::unfold((), move |_| {
                 let sched = sched.clone();
@@ -276,21 +368,17 @@ impl<S: Spider> Engine<S> {
                 let robots_cache = robots_cache.clone();
                 let allowed = allowed.clone();
                 let in_flight = in_flight.clone();
+                let tx = tx.clone();
 
                 async move {
                     loop {
-                        // 1. Drain follow channel into scheduler
                         let mut rx_guard = follow_rx.lock().await;
                         while let Ok(req) = rx_guard.try_recv() {
                             sched.push(req).await;
                         }
                         drop(rx_guard);
 
-                        // 2. Check page budget
                         if stats_pages.load(Ordering::SeqCst) >= max_pages {
-                            // Budget reached: don't start new fetches. Wait for all
-                            // in-flight futures to finish so their follow requests can
-                            // still be drained and counted (C1 fix).
                             if in_flight.load(Ordering::SeqCst) == 0 {
                                 return None;
                             }
@@ -298,12 +386,9 @@ impl<S: Spider> Engine<S> {
                             continue;
                         }
 
-                        // 3. Pop next request
                         let req = match sched.pop().await {
                             Some(req) => req,
                             None => {
-                                // Scheduler empty: if no in-flight futures, truly done;
-                                // otherwise wait for them to emit follow requests (C1 fix).
                                 if in_flight.load(Ordering::SeqCst) == 0 {
                                     return None;
                                 }
@@ -312,7 +397,6 @@ impl<S: Spider> Engine<S> {
                             }
                         };
 
-                        // 4-7. All logic in a single async block (unified future type)
                         in_flight.fetch_add(1, Ordering::SeqCst);
                         let spider_clone = spider.clone();
                         let stats_pages_c = stats_pages.clone();
@@ -324,41 +408,33 @@ impl<S: Spider> Engine<S> {
                         let robots_cache_c = robots_cache.clone();
                         let allowed_c = allowed.clone();
                         let in_flight_c = in_flight.clone();
+                        let tx_c = tx.clone();
 
                         let fut = async move {
-                            // RAII guard: ensures in_flight is decremented on every exit
-                            // path (early return, error, normal completion). Holds an Arc
-                            // clone to avoid self-referential async state machine.
                             let _guard = InFlightGuard { counter: in_flight_c };
 
-                            // 4. Domain filter
                             if !allowed_c.is_empty() {
                                 if let Ok(parsed) = url::Url::parse(&req.url) {
                                     if let Some(host) = parsed.host_str() {
                                         if !allowed_c.contains(host) {
-                                            return;  // skip
+                                            return;
                                         }
                                     }
                                 }
                             }
 
-                            // 5. Robots check
-                            // NOTE (I2): robots_cache 的全局 Mutex 在 is_allowed 的网络拉取
-                            // 期间被持有，序列化所有域的 robots 检查。阶段 1 接受此性能限制，
-                            // 后续可改为 per-domain 锁或在 RobotsCache 内部双检。
                             if obey_robots {
                                 let url_clone = req.url.clone();
                                 let client_r = client_c.clone();
-                                let allowed = {
+                                let allowed_flag = {
                                     let mut rc = robots_cache_c.lock().await;
                                     rc.is_allowed(&client_r, &url_clone).await
                                 };
-                                if !allowed {
+                                if !allowed_flag {
                                     return;
                                 }
                             }
 
-                            // 6. Per-domain throttle
                             let domain = url::Url::parse(&req.url)
                                 .ok()
                                 .and_then(|u| u.host_str().map(|s| s.to_string()))
@@ -371,38 +447,63 @@ impl<S: Spider> Engine<S> {
                             };
                             let _permit = sem.acquire_owned().await.unwrap();
 
-                            // I1 fix: download_delay - per-domain 信号量 acquire 后、fetch 前
                             let delay = spider_clone.download_delay();
                             if delay > Duration::ZERO {
                                 tokio::time::sleep(delay).await;
                             }
 
-                            // 7. Fetch
                             match fetch_page(&client_c, &req).await {
                                 Ok(resp) => {
                                     if spider_clone.is_blocked(&resp) {
                                         stats_errors_c.fetch_add(1, Ordering::SeqCst);
+                                        if let Some(ref tx) = tx_c {
+                                            let _ = tx.send(CrawlEvent::Error {
+                                                url: req.url.clone(),
+                                                error: "blocked".into(),
+                                            }).await;
+                                        }
                                         return;
                                     }
                                     stats_pages_c.fetch_add(1, Ordering::SeqCst);
+                                    let page_url = resp.url.clone();
                                     let (items, follows) = spider_clone.parse(resp).await;
                                     for item in items {
-                                        if let Some(_processed) = spider_clone.on_item(item).await {
+                                        if let Some(processed) = spider_clone.on_item(item).await {
                                             stats_items_c.fetch_add(1, Ordering::SeqCst);
+                                            if let Some(ref tx) = tx_c {
+                                                let _ = tx.send(CrawlEvent::Item(processed)).await;
+                                            }
                                         }
                                     }
                                     for f in follows {
                                         let _ = follow_tx_c.send(f);
                                     }
+                                    if let Some(ref tx) = tx_c {
+                                        let _ = tx.send(CrawlEvent::PageScraped {
+                                            url: page_url,
+                                            stats: CrawlStats {
+                                                items_scraped: stats_items_c.load(Ordering::SeqCst),
+                                                pages_crawled: stats_pages_c.load(Ordering::SeqCst),
+                                                errors: stats_errors_c.load(Ordering::SeqCst),
+                                                duration: start.elapsed(),
+                                                ..Default::default()
+                                            },
+                                        }).await;
+                                    }
                                 }
                                 Err(e) => {
                                     stats_errors_c.fetch_add(1, Ordering::SeqCst);
                                     spider_clone.on_error(&req, &e.to_string()).await;
+                                    if let Some(ref tx) = tx_c {
+                                        let _ = tx.send(CrawlEvent::Error {
+                                            url: req.url.clone(),
+                                            error: e.to_string(),
+                                        }).await;
+                                    }
                                 }
                             }
                         };
 
-                        // Return the future for buffer_unordered
                         return Some((fut, ()));
                     }
                 }
@@ -410,7 +511,6 @@ impl<S: Spider> Engine<S> {
             .buffer_unordered(max_concurrent)
         };
 
-        // Drive the stream to completion
         tokio::pin!(stream);
         let mut pages_since_checkpoint = 0usize;
         while stream.next().await.is_some() {
@@ -451,7 +551,6 @@ impl<S: Spider> Engine<S> {
 
         spider.on_close().await;
 
-        // === checkpoint 清理：爬取正常完成，删除 checkpoint ===
         if let Some(ref store) = checkpoint_store {
             if let Err(e) = store.delete_checkpoint(&spider_name) {
                 tracing::warn!("删除 checkpoint 失败: {}", e);
@@ -506,6 +605,33 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// 启动一个本地 HTTP 测试服务器，对任意请求返回 `html`，返回其 base URL。
+    ///
+    /// 计划原用 `data:text/html,...` URL，但 wreq HTTP fetcher 不支持 data URI，
+    /// 故改用本地 TCP 服务器提供相同 HTML 内容。
+    async fn spawn_html_server(html: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let html = html;
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        html.len(), html
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{}", addr)
+    }
+
     #[test]
     fn test_crawl_stats_summary() {
         let stats = CrawlStats {
@@ -535,5 +661,72 @@ mod tests {
         assert_eq!(stats.bytes_downloaded, 0);
         assert!(stats.domain_counts.is_empty());
         assert_eq!(stats.avg_response_time, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_stream_emits_item_and_done() {
+        use async_trait::async_trait;
+        use std::collections::HashSet;
+
+        let base = spawn_html_server("<p>1</p>").await;
+
+        struct CountSpider { start_url: String }
+        #[async_trait]
+        impl Spider for CountSpider {
+            fn name(&self) -> &str { "count" }
+            fn start_urls(&self) -> Vec<String> { vec![self.start_url.clone()] }
+            async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+                let node = resp.parse().unwrap();
+                let text = node.select("p").text().join("");
+                (vec![serde_json::json!({"text": text})], vec![])
+            }
+            fn obey_robots(&self) -> bool { false }
+        }
+
+        let engine = Engine::new(CountSpider { start_url: base }).max_pages(1);
+        let mut stream = engine.stream().events();
+        use futures::StreamExt;
+        let mut items = 0;
+        let mut done = false;
+        while let Some(event) = stream.next().await {
+            match event {
+                CrawlEvent::Item(_) => items += 1,
+                CrawlEvent::Done(stats) => {
+                    assert!(stats.pages_crawled >= 1);
+                    done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(done, "应收到 Done 事件");
+        assert!(items >= 1, "应至少收到 1 个 Item 事件, 实际 {}", items);
+    }
+
+    #[tokio::test]
+    async fn test_stream_items_helper() {
+        use async_trait::async_trait;
+
+        let base = spawn_html_server("<p>hello</p>").await;
+
+        struct OneSpider { start_url: String }
+        #[async_trait]
+        impl Spider for OneSpider {
+            fn name(&self) -> &str { "one" }
+            fn start_urls(&self) -> Vec<String> { vec![self.start_url.clone()] }
+            async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+                (vec![serde_json::json!({"v": 1})], vec![])
+            }
+            fn obey_robots(&self) -> bool { false }
+        }
+
+        let engine = Engine::new(OneSpider { start_url: base }).max_pages(1);
+        let mut items_stream = engine.stream().items();
+        use futures::StreamExt;
+        let mut count = 0;
+        while items_stream.next().await.is_some() {
+            count += 1;
+        }
+        assert!(count >= 1, "items() 应产出至少 1 个 item");
     }
 }
