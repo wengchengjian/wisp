@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "wisp", version, about = "Lightweight undetected browser automation")]
@@ -18,6 +19,28 @@ enum Commands {
     Eval { expression: String, #[arg(long, default_value = "about:blank")] url: String, #[arg(long)] headless: bool },
     /// Dump page text
     Dump { url: String, #[arg(long)] headless: bool, #[arg(long, default_value_t = 3000)] wait: u64 },
+    /// Scrape a URL with CSS selector (HTTP fetch, no browser)
+    Scrape {
+        url: String,
+        #[arg(long)]
+        selector: Option<String>,
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// MCP server commands
+    Mcp {
+        #[command(subcommand)]
+        cmd: McpCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCmd {
+    /// 启动 stdio MCP server
+    Serve {
+        #[arg(long, default_value = "./wisp.db")]
+        db: String,
+    },
 }
 
 #[tokio::main]
@@ -69,6 +92,40 @@ async fn main() -> anyhow::Result<()> {
             println!("{text}");
             browser.close().await?;
         }
+        Commands::Scrape { url, selector, format } => {
+            use wisp::fetch::Client;
+            let client = Client::builder().build()?;
+            let resp = client.get(&url).await?;
+            let html = resp.text()?;
+            if let Some(sel) = selector {
+                use wisp::parser::Node;
+                let doc = Node::from_html(&html);
+                let nodes = doc.select(&sel);
+                let items: Vec<serde_json::Value> = nodes.iter()
+                    .map(|n| serde_json::json!({"text": n.text()}))
+                    .collect();
+                match format.as_str() {
+                    "jsonl" => {
+                        for item in &items {
+                            println!("{}", serde_json::to_string(item)?);
+                        }
+                    }
+                    _ => println!("{}", serde_json::to_string_pretty(&items)?),
+                }
+            } else {
+                println!("{html}");
+            }
+        }
+        Commands::Mcp { cmd } => match cmd {
+            McpCmd::Serve { db } => {
+                let store = if db == ":memory:" {
+                    Arc::new(wisp::Store::open_in_memory()?)
+                } else {
+                    Arc::new(wisp::Store::open(std::path::Path::new(&db))?)
+                };
+                wisp::mcp::serve(store).await?;
+            }
+        },
     }
     Ok(())
 }
