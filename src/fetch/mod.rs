@@ -74,6 +74,12 @@ impl ClientBuilder {
         self
     }
 
+    /// 获取配置引用（测试用）
+    #[doc(hidden)]
+    pub fn config_ref(&self) -> &Config {
+        &self.config
+    }
+
     pub fn build(self) -> Result<Client> {
         let mut builder = wreq::Client::builder()
             .timeout(self.config.timeout)
