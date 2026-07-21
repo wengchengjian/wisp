@@ -292,6 +292,50 @@ pub fn relocate_with_snapshot(
     best.map(|(_, n)| n)
 }
 
+/// Adaptive CSS selection: try CSS first, fall back to snapshot-based relocation.
+///
+/// - `selector`: CSS selector that may or may not match
+/// - `key`: stable identifier for the element (user-defined, e.g. "product-name")
+/// - `store`: SQLite storage for snapshots
+/// - `auto_save`: if true, refresh snapshot after successful relocation
+/// - `tolerance`: similarity threshold (0.0..1.0)
+///
+/// Returns the first match. Use `css_adaptive_all` for all matches.
+pub fn css_adaptive(
+    doc: &Node,
+    selector: &str,
+    key: &str,
+    url: &str,
+    store: &Store,
+    auto_save: bool,
+    tolerance: f64,
+) -> Option<Node> {
+    // 1. Try CSS first
+    if let Some(node) = doc.select_one(selector) {
+        // Refresh snapshot if requested (site markup unchanged)
+        if auto_save {
+            let snap = ElementSnapshot::capture(&node);
+            let now = chrono::Utc::now().timestamp();
+            let _ = store.save_element(url, key, &snap.to_row(now));
+        }
+        return Some(node);
+    }
+
+    // 2. CSS failed - try relocate from saved snapshot
+    let saved_row = store.load_element(url, key).ok().flatten()?;
+    let saved = ElementSnapshot::from_row(saved_row);
+    let found = relocate_with_snapshot(doc, &saved, tolerance)?;
+
+    // 3. Auto-save new snapshot if relocated
+    if auto_save {
+        let snap = ElementSnapshot::capture(&found);
+        let now = chrono::Utc::now().timestamp();
+        let _ = store.save_element(url, key, &snap.to_row(now));
+    }
+
+    Some(found)
+}
+
 // ===== Helpers (stage 1: re-parse outer_html to get tree context) =====
 
 fn node_tag_name(node: &Node) -> String {

@@ -4,7 +4,10 @@ pub mod difflib;
 pub mod adaptive;
 pub mod generate;
 
-pub use adaptive::{ElementSnapshot, similarity, relocate_with_snapshot, DEFAULT_TOLERANCE};
+pub use adaptive::{
+    ElementSnapshot, similarity, relocate_with_snapshot,
+    css_adaptive, DEFAULT_TOLERANCE,
+};
 
 use scraper::{Html, Selector as CssSelector};
 use std::collections::HashMap;
@@ -64,6 +67,21 @@ impl Node {
                 element_html: Some(html),
             }
         })
+    }
+
+    /// Adaptive CSS selection with SQLite-backed snapshot persistence.
+    ///
+    /// See `adaptive::css_adaptive` for details.
+    pub fn css_adaptive(
+        &self,
+        selector: &str,
+        key: &str,
+        url: &str,
+        store: &crate::storage::Store,
+        auto_save: bool,
+        tolerance: f64,
+    ) -> Option<Node> {
+        adaptive::css_adaptive(self, selector, key, url, store, auto_save, tolerance)
     }
 
     /// Get the text content of the document/element.

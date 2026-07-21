@@ -83,3 +83,33 @@ fn test_relocate_finds_best_match_among_candidates() {
     let found = relocate_with_snapshot(&doc2, &loaded_snap, 0.3).unwrap();
     assert_eq!(found.text(), "Banana");
 }
+
+#[test]
+fn test_css_adaptive_falls_back_to_snapshot() {
+    let store = make_store();
+    let url = "https://example.com/p";
+
+    // First call: CSS works, snapshot is auto-saved
+    let doc_before = Node::from_html(HTML_BEFORE);
+    let found = doc_before.css_adaptive(".name", "name-key", url, &store, true, 0.5);
+    assert!(found.is_some());
+    assert_eq!(found.unwrap().text(), "Apple");
+
+    // Verify snapshot was saved
+    let row = store.load_element(url, "name-key").unwrap();
+    assert!(row.is_some());
+
+    // Second call: CSS fails (.name not in HTML_AFTER), should relocate via snapshot
+    let doc_after = Node::from_html(HTML_AFTER);
+    let found = doc_after.css_adaptive(".name", "name-key", url, &store, true, 0.5);
+    assert!(found.is_some(), "css_adaptive should relocate via snapshot");
+    assert_eq!(found.unwrap().text(), "Apple");
+}
+
+#[test]
+fn test_css_adaptive_returns_none_when_no_snapshot_and_css_fails() {
+    let store = make_store();
+    let doc = Node::from_html(HTML_BEFORE);
+    let found = doc.css_adaptive(".nonexistent", "missing-key", "url", &store, false, 0.5);
+    assert!(found.is_none());
+}
