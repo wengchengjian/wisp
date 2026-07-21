@@ -1,12 +1,93 @@
-//! Stealth JavaScript patches.
-//!
-//! Two modes:
-//! - HEADED: Minimal injection (matches patchright behavior - no webdriver override)
-//! - HEADLESS: Full patches (UA, WebGL, screen, plugins, etc.)
-//!
-//! Key insight from patchright source: it does NOT override navigator.webdriver via JS.
-//! It relies solely on --disable-blink-features=AutomationControlled.
-//! Overriding the property CREATES a detectable descriptor that Browserscan flags.
+/// Flags that leak automation identity and must be removed.
+const REMOVE_ARGS: &[&str] = &[
+    "--enable-automation",
+    "--disable-popup-blocking",
+    "--disable-component-update",
+    "--disable-default-apps",
+    "--disable-extensions",
+];
+
+/// Flags that must be added for stealth.
+const ADD_ARGS: &[&str] = &[
+    "--disable-blink-features=AutomationControlled",
+];
+
+/// Patch browser launch arguments to remove detection vectors.
+/// Removes automation-revealing flags and adds stealth flags.
+pub fn patch_launch_args(args: &mut Vec<String>) {
+    args.retain(|a| !REMOVE_ARGS.contains(&a.as_str()));
+    for arg in ADD_ARGS {
+        if !args.iter().any(|a| a == arg) {
+            args.push(arg.to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_removes_automation_flags() {
+        let mut args = vec![
+            "--enable-automation".to_string(),
+            "--disable-popup-blocking".to_string(),
+            "--disable-component-update".to_string(),
+            "--disable-default-apps".to_string(),
+            "--disable-extensions".to_string(),
+            "--no-first-run".to_string(),
+        ];
+        patch_launch_args(&mut args);
+        assert!(!args.contains(&"--enable-automation".to_string()));
+        assert!(!args.contains(&"--disable-popup-blocking".to_string()));
+        assert!(!args.contains(&"--disable-component-update".to_string()));
+        assert!(!args.contains(&"--disable-default-apps".to_string()));
+        assert!(!args.contains(&"--disable-extensions".to_string()));
+        assert!(args.contains(&"--no-first-run".to_string()));
+    }
+
+    #[test]
+    fn test_adds_stealth_flags() {
+        let mut args = vec!["--no-first-run".to_string()];
+        patch_launch_args(&mut args);
+        assert!(args.contains(&"--disable-blink-features=AutomationControlled".to_string()));
+    }
+
+    #[test]
+    fn test_no_duplicate_stealth_flags() {
+        let mut args = vec![
+            "--disable-blink-features=AutomationControlled".to_string(),
+        ];
+        patch_launch_args(&mut args);
+        let count = args.iter()
+            .filter(|a| *a == "--disable-blink-features=AutomationControlled")
+            .count();
+        assert_eq!(count, 1);
+    }
+}
+
+/// JavaScript that forces all shadow roots to be created as 'open'.
+pub const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
+(() => {
+    const originalAttachShadow = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function(init) {
+        if (init && init.mode === 'closed') {
+            init = Object.assign({}, init, { mode: 'open' });
+        }
+        return originalAttachShadow.call(this, init);
+    };
+})();
+"#;
+
+// Stealth JavaScript patches.
+//
+// Two modes:
+// - HEADED: Minimal injection (matches patchright behavior - no webdriver override)
+// - HEADLESS: Full patches (UA, WebGL, screen, plugins, etc.)
+//
+// Key insight from patchright source: it does NOT override navigator.webdriver via JS.
+// It relies solely on --disable-blink-features=AutomationControlled.
+// Overriding the property CREATES a detectable descriptor that Browserscan flags.
 
 /// Stealth script for HEADED mode.
 /// Full navigator property injection (matching banzhu-rs proven approach).

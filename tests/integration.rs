@@ -221,7 +221,7 @@ mod adaptive_test {
 
 /// wreq 切换后的端到端集成测试（不发起实际网络请求）。
 mod fetch_test {
-    use wisp::fetch::Client;
+    use wisp::http::Client;
     use wreq_util::Profile;
 
     #[test]

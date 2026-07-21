@@ -1,7 +1,7 @@
 //! robots.txt parsing and caching.
 
 use std::collections::HashMap;
-use crate::fetch::Client;
+use crate::http::Client;
 
 /// 单域名的 robots.txt 规则
 #[derive(Debug, Clone, Default)]

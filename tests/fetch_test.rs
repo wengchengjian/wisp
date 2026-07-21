@@ -3,7 +3,7 @@
 //! 验证：emulation 配置、builder 链式调用、Config 默认值、header_order。
 //! 不发起实际网络请求（避免环境依赖）。
 
-use wisp::fetch::{Client, ClientBuilder, Config};
+use wisp::http::{Client, ClientBuilder, Config};
 use wreq_util::Profile;
 use wreq::header::HeaderName;
 

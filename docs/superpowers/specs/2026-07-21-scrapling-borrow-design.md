@@ -82,8 +82,8 @@
 ```toml
 [dependencies]
 # 替换 reqwest → wreq（TLS 指纹模拟）
-wreq = "5"
-wreq-util = "2"          # 浏览器设备模拟（Chrome/Firefox）
+wreq = "6.0.0-rc"
+wreq-util = "3.0.0-rc"    # 浏览器设备模拟（Chrome/Firefox/Safari/Edge/OkHttp，75 变体）
 
 # XPath 真实现
 sxd-document = "0.3"
@@ -558,7 +558,7 @@ impl<S: Spider> Engine<S> {
 |---|---|---|
 | `src/fetch/mod.rs` | `reqwest::Client` | `wreq::Client` |
 | `src/fetch/proxy.rs` | `reqwest::Proxy` | `wreq::Proxy` |
-| `Cargo.toml` | `reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }` | `wreq = "5"` + `wreq-util = "2"` |
+| `Cargo.toml` | `reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }` | `wreq = "6.0.0-rc"` + `wreq-util = "3.0.0-rc"` |
 
 **关键约束**：wreq 基于 BoringSSL，不能与 openssl-sys 共存。wisp 当前全栈用 rustls，无 openssl 依赖，切换安全。
 
@@ -582,9 +582,21 @@ impl Client {
 
 ### 2.1.3 新增 TLS 指纹模拟配置
 
+**wreq 6.0.0-rc API 实测（2026-07-21，Task 3 实施时校正）：**
+- `ClientBuilder::emulation<T: IntoEmulation>(self, emulation: T)` — 接受 `wreq_util::Profile` 枚举（非 `Emulation` struct）
+- **注意：`wreq_util::Emulation` 是 struct（无 Debug），不能用于 `#[derive(Debug)]` 的 Config；改用 `wreq_util::Profile`（enum，`Debug + Clone + Copy`，75 变体含 Chrome136）**
+- `ClientBuilder::headers_order()` — **wreq 6.0.0-rc.29 已移除该方法**（仅 5.3.0 有）；Config 保留 `header_order` 字段但不应用，未来可用 `orig_headers(OrigHeaderMap)` 替代
+- `ClientBuilder::tls_cert_verification(bool)` — 替代 reqwest 的 `danger_accept_invalid_certs`（true=验证）
+- `ClientBuilder::cookie_store(bool)` / `gzip(bool)` / `brotli(bool)` — 内置
+- `wreq::redirect::Policy::limited(max: usize) -> Self` — 与 reqwest 完全兼容
+- `wreq::Proxy::all(url) -> Result<Proxy>` — 与 reqwest 完全兼容
+- `wreq::Response` API：`status()/uri()/headers()/bytes()/text()`（注意是 `uri() -> &http::Uri` 而非 `url() -> &Url`）
+- `wreq::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE}` — 重导出 http crate
+
 ```rust
 // src/fetch/mod.rs
-use wreq_util::Emulation;
+use wreq_util::Profile;      // 注意：Profile 而非 Emulation
+use wreq::header::HeaderName;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -594,8 +606,8 @@ pub struct Config {
     pub proxy: Option<String>,
     pub max_redirects: usize,
     // 新增
-    pub emulation: Option<Emulation>,        // 浏览器设备模拟
-    pub header_order: Option<Vec<String>>,   // 自定义 header 顺序
+    pub emulation: Option<Profile>,                 // 浏览器 TLS 指纹模拟
+    pub header_order: Option<Vec<HeaderName>>,       // 保留字段（wreq 6.0.0-rc.29 无 headers_order 方法，不应用）
 }
 
 impl Default for Config {
@@ -603,20 +615,20 @@ impl Default for Config {
         Self {
             // ...原字段
             // 默认 Chrome 136 指纹（覆盖最广）
-            emulation: Some(Emulation::Chrome136),
+            emulation: Some(Profile::Chrome136),
             header_order: None,
         }
     }
 }
 
 impl ClientBuilder {
-    /// 指定浏览器模拟（Chrome/Firefox/Safari）
-    pub fn emulation(mut self, emu: Emulation) -> Self {
+    /// 指定浏览器模拟（Chrome/Firefox/Safari/Edge/OkHttp，75 变体）
+    pub fn emulation(mut self, emu: Profile) -> Self {
         self.config.emulation = Some(emu);
         self
     }
 
-    /// 不做指纹模拟（纯 reqwest 行为，用于调试）
+    /// 不做指纹模拟（纯 wreq 默认行为，用于调试）
     pub fn no_emulation(mut self) -> Self {
         self.config.emulation = None;
         self
@@ -628,13 +640,14 @@ impl ClientBuilder {
 
 wreq 编译需 BoringSSL 依赖。
 
-**Windows（用户当前环境）**：
-- `cmake`（已常见）
-- `perl`（Strawberry Perl 推荐）
-- `nasm`
-- `libclang`（LLVM 安装时勾选）
+**Windows（用户当前环境）— 已验证编译通过（2026-07-21）：**
+- `cmake` 4.3.1 ✅
+- `perl` 5.42.2 (Strawberry) ✅
+- `nasm` 2.16.01 ✅
+- `go` 1.26.1 (BoringSSL build 脚本用) ✅
+- `libclang`（bindgen 需要，LLVM 安装时勾选）— cargo build 自动检测
 
-在 README 增加"从源码构建"章节说明。
+编译耗时约 10 分钟（首次 BoringSSL + btls-sys），后续增量编译正常。
 
 **vendored 模式**：用 `boring-sys` 的 `vendored` feature 自带 BoringSSL 源码，避免系统依赖问题。
 

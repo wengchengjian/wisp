@@ -19,7 +19,7 @@ use std::sync::Arc;
 use wisp::crawl::{
     CrawlEvent, CrawlStats, Engine, JsonlWriter, Spider, SpiderRequest, SpiderResponse,
 };
-use wisp::fetch::Client;
+use wisp::http::Client;
 use wisp::storage::Store;
 
 /// 探测 httpbin.org 是否可达且未被 Cloudflare 拦截。

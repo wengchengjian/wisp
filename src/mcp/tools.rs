@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::error::{WispError, Result};
 use crate::storage::Store;
 use crate::parser::Node;
-use crate::fetch::Client;
+use crate::http::Client;
 use wreq_util::Profile;
 
 /// 抓取单个网页，返回 HTML 文本。

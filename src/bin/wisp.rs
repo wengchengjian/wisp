@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
             browser.close().await?;
         }
         Commands::Scrape { url, selector, format } => {
-            use wisp::fetch::Client;
+            use wisp::http::Client;
             let client = Client::builder().build()?;
             let resp = client.get(&url).await?;
             let html = resp.text()?;

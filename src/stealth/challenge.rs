@@ -1,13 +1,13 @@
 //! Cloudflare challenge detection and automatic solving.
 //!
 //! Supports: JS Challenge (5-second shield), Turnstile, Managed Challenge.
+use super::turnstile;
 
-pub mod turnstile;
 
 use std::time::Duration;
 
 use crate::error::{WispError, Result};
-use crate::page::Page;
+use crate::browser::page::Page;
 
 /// Type of Cloudflare challenge detected on the page.
 #[derive(Debug, Clone, Copy, PartialEq)]

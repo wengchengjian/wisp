@@ -1,6 +1,6 @@
 use crate::error::{WispError, Result};
-use crate::page::Page;
-use crate::page::evaluate::evaluate;
+use crate::browser::page::Page;
+use crate::browser::page::do_evaluate as evaluate;
 
 pub async fn click(page: &Page, selector: &str) -> Result<()> {
     let js = format!(

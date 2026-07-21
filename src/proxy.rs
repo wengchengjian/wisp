@@ -65,9 +65,7 @@ impl ProxyPool {
     }
 
     /// Format a proxy URL as a Chrome `--proxy-server` argument value.
-    /// Strips the scheme prefix since Chrome expects `host:port` or `scheme://host:port`.
     pub fn to_chrome_arg(proxy: &str) -> String {
-        // Chrome accepts full URLs like http://host:port
         proxy.to_string()
     }
 }

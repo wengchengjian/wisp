@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::error::{WispError, Result};
-use crate::page::Page;
+use crate::browser::page::Page;
 
 /// Solve a Cloudflare Turnstile challenge on the given page.
 ///

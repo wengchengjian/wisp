@@ -1,6 +1,13 @@
 //! Browser process management. Launches Chrome directly with stealth args.
 
 pub mod launch;
+pub mod page;
+pub mod cdp;
+pub mod patches;
+pub mod element;
+
+pub use page::Page;
+pub use cdp::CdpSession;
 
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -9,10 +16,8 @@ use std::process::Stdio;
 use serde_json::json;
 use tokio::process::Child;
 
-use crate::cdp::CdpSession;
 use crate::config::LaunchOptions;
 use crate::error::{WispError, Result};
-use crate::page::Page;
 
 
 pub struct Browser {

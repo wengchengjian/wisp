@@ -1,14 +1,12 @@
 //! Page operations with anti-detection (isolated worlds, no Runtime.enable).
 
-pub mod evaluate;
-pub mod navigate;
-pub mod screenshot;
 
 use std::sync::Arc;
 use serde_json::{json, Value};
 
-use crate::cdp::CdpSession;
+use crate::browser::cdp::CdpSession;
 use crate::error::{WispError, Result};
+use base64::Engine;
 
 pub struct Page {
     pub(crate) session: Arc<CdpSession>,
@@ -49,9 +47,9 @@ impl Page {
 
         // Inject stealth scripts (conditional on headless/headed)
         let stealth_script = if headless {
-            crate::patches::stealth::HEADLESS_STEALTH_SCRIPT
+            crate::browser::patches::HEADLESS_STEALTH_SCRIPT
         } else {
-            crate::patches::stealth::HEADED_STEALTH_SCRIPT
+            crate::browser::patches::HEADED_STEALTH_SCRIPT
         };
         page.cmd("Page.addScriptToEvaluateOnNewDocument", json!({"source": stealth_script})).await?;
         // NOTE: shadow_dom patch removed - it overrides Element.prototype.attachShadow
@@ -81,8 +79,8 @@ impl Page {
 
     // --- Public API: Navigation ---
 
-    pub async fn goto(&self, url: &str) -> Result<()> { navigate::goto(self, url).await }
-    pub async fn reload(&self) -> Result<()> { navigate::reload(self).await }
+    pub async fn goto(&self, url: &str) -> Result<()> { do_goto(self, url).await }
+    pub async fn reload(&self) -> Result<()> { do_reload(self).await }
     pub async fn go_back(&self) -> Result<()> {
         self.cmd("Page.navigate", json!({"url": "javascript:history.back()"})).await?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -120,7 +118,7 @@ impl Page {
 
     // --- Public API: JavaScript ---
 
-    pub async fn evaluate(&self, expression: &str) -> Result<Value> { evaluate::evaluate(self, expression).await }
+    pub async fn evaluate(&self, expression: &str) -> Result<Value> { do_evaluate(self, expression).await }
     pub async fn evaluate_as_string(&self, expression: &str) -> Result<String> {
         let value = self.evaluate(expression).await?;
         Ok(match value { Value::String(s) => s, Value::Null => "null".to_string(), other => other.to_string() })
@@ -159,10 +157,10 @@ impl Page {
 
     // --- Public API: Elements ---
 
-    pub async fn click(&self, selector: &str) -> Result<()> { crate::element::click(self, selector).await }
-    pub async fn fill(&self, selector: &str, value: &str) -> Result<()> { crate::element::fill(self, selector, value).await }
-    pub async fn wait_for_selector(&self, selector: &str, timeout_ms: u64) -> Result<()> { crate::element::wait_for_selector(self, selector, timeout_ms).await }
-    pub async fn text_content(&self, selector: &str) -> Result<String> { crate::element::text_content(self, selector).await }
+    pub async fn click(&self, selector: &str) -> Result<()> { crate::browser::element::click(self, selector).await }
+    pub async fn fill(&self, selector: &str, value: &str) -> Result<()> { crate::browser::element::fill(self, selector, value).await }
+    pub async fn wait_for_selector(&self, selector: &str, timeout_ms: u64) -> Result<()> { crate::browser::element::wait_for_selector(self, selector, timeout_ms).await }
+    pub async fn text_content(&self, selector: &str) -> Result<String> { crate::browser::element::text_content(self, selector).await }
 
     /// Get inner text of an element.
     pub async fn inner_text(&self, selector: &str) -> Result<String> {
@@ -269,8 +267,8 @@ impl Page {
 
     // --- Public API: Output ---
 
-    pub async fn screenshot(&self, path: &str) -> Result<()> { screenshot::screenshot(self, path).await }
-    pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> { screenshot::screenshot_bytes(self).await }
+    pub async fn screenshot(&self, path: &str) -> Result<()> { do_screenshot(self, path).await }
+    pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> { do_screenshot_bytes(self).await }
 
     /// Generate a PDF (headless only).
     pub async fn pdf(&self, path: &str) -> Result<()> {
@@ -312,4 +310,94 @@ impl Page {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
+}
+
+// === evaluate (inlined) ===
+// JS evaluation via isolated worlds (no Runtime.enable needed).
+
+
+
+pub async fn do_evaluate(page: &Page, expression: &str) -> Result<Value> {
+    // Create isolated world (avoids Runtime.enable detection)
+    let world = page.cmd("Page.createIsolatedWorld", json!({
+        "frameId": page.frame_id,
+        "grantUniveralAccess": true,
+        "worldName": "patchright"
+    })).await?;
+
+    let context_id = world.get("executionContextId").and_then(|id| id.as_u64())
+        .ok_or_else(|| WispError::CdpError("no executionContextId".into()))?;
+
+    let result = page.cmd("Runtime.evaluate", json!({
+        "expression": expression,
+        "contextId": context_id,
+        "returnByValue": true,
+        "awaitPromise": true
+    })).await?;
+
+    if let Some(exception) = result.get("exceptionDetails") {
+        let text = exception.get("text").and_then(|t| t.as_str()).unwrap_or("JS error");
+        return Err(WispError::EvalError(text.to_string()));
+    }
+
+    Ok(result.get("result").and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null))
+}
+
+// === navigate (inlined) ===
+
+
+pub async fn do_goto(page: &Page, url: &str) -> Result<()> {
+    page.cmd("Page.navigate", json!({ "url": url })).await?;
+    // Wait for page load using lifecycle event or timeout
+    wait_for_load(page).await
+}
+
+pub async fn do_reload(page: &Page) -> Result<()> {
+    page.cmd("Page.reload", json!({})).await?;
+    wait_for_load(page).await
+}
+
+async fn wait_for_load(page: &Page) -> Result<()> {
+    // Try to wait for load event, but don't fail if it times out
+    // (some pages like about:blank don't fire load events the same way)
+    let sid = page.session_id.clone();
+    let result = page.session.wait_for_event(
+        move |e| {
+            if e.method == "Page.loadEventFired" {
+                return e.session_id.as_deref() == Some(sid.as_str()) || e.session_id.is_none();
+            }
+            // Also accept lifecycleEvent with name "load"
+            if e.method == "Page.lifecycleEvent" {
+                if e.params.get("name").and_then(|n| n.as_str()) == Some("load") {
+                    return e.session_id.as_deref() == Some(sid.as_str()) || e.session_id.is_none();
+                }
+            }
+            false
+        },
+        15000,
+    ).await;
+
+    // If event wait fails, fall back to a short delay
+    if result.is_err() {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    }
+    Ok(())
+}
+
+// === screenshot (inlined) ===
+
+
+pub async fn do_screenshot(page: &Page, path: &str) -> Result<()> {
+    let bytes = do_screenshot_bytes(page).await?;
+    tokio::fs::write(path, &bytes).await
+        .map_err(|e| WispError::CdpError(format!("write: {e}")))?;
+    Ok(())
+}
+
+pub async fn do_screenshot_bytes(page: &Page) -> Result<Vec<u8>> {
+    let result = page.cmd("Page.captureScreenshot", json!({"format": "png"})).await?;
+    let data = result.get("data").and_then(|d| d.as_str())
+        .ok_or_else(|| WispError::CdpError("no screenshot data".into()))?;
+    base64::engine::general_purpose::STANDARD.decode(data)
+        .map_err(|e| WispError::CdpError(format!("decode: {e}")))
 }

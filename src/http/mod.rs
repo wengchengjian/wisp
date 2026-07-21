@@ -4,6 +4,11 @@
 
 pub mod encoding;
 pub mod proxy;
+pub mod session;
+pub mod block;
+
+pub use session::HttpSession;
+pub use block::DomainBlocker;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -26,6 +31,9 @@ pub struct Config {
     pub emulation: Option<Profile>,
     /// 自定义 header 顺序（wreq 6.0.0-rc.29 已移除 headers_order 方法，字段保留供未来扩展）
     pub header_order: Option<Vec<HeaderName>>,
+    /// DNS-over-HTTPS 服务器 URL（如 "https://1.1.1.1/dns-query"）。
+    /// 启用后通过 DoH 解析域名，防止代理场景下 DNS 泄漏。
+    pub dns_over_https: Option<String>,
 }
 
 impl Default for Config {
@@ -39,6 +47,7 @@ impl Default for Config {
             // 默认 Chrome 136 指纹（覆盖最广）
             emulation: Some(Profile::Chrome136),
             header_order: None,
+            dns_over_https: None,
         }
     }
 }
@@ -71,6 +80,14 @@ impl ClientBuilder {
     /// 自定义 header 顺序（wreq 6.0.0-rc.29 已移除 headers_order 方法，配置保留供未来扩展）
     pub fn header_order(mut self, order: Vec<HeaderName>) -> Self {
         self.config.header_order = Some(order);
+        self
+    }
+
+    /// 设置 DNS-over-HTTPS 服务器（防止代理场景 DNS 泄漏）。
+    ///
+    /// 常用值："https://1.1.1.1/dns-query" (Cloudflare) 或 "https://dns.google/dns-query" (Google)
+    pub fn dns_over_https(mut self, url: &str) -> Self {
+        self.config.dns_over_https = Some(url.to_string());
         self
     }
 
@@ -120,6 +137,9 @@ impl Client {
     /// Create a client with default config.
     pub fn new() -> Result<Self> { ClientBuilder::new().build() }
 
+    /// 获取配置引用（供 Engine 代理轮换时读取 timeout 等参数）。
+    pub fn config_ref(&self) -> &Config { &self.config }
+
     /// GET request.
     pub async fn get(&self, url: &str) -> Result<Response> {
         let resp = self.http.get(url)
@@ -163,6 +183,47 @@ impl Client {
             .headers(self.build_headers())
             .send().await
             .map_err(|e| WispError::CdpError(format!("DELETE {url}: {e}")))?;
+        self.build_response(resp).await
+    }
+
+    /// GET request with extra headers (用于 Session cookie 注入)。
+    pub async fn get_with_headers(&self, url: &str, extra_headers: &[(String, String)]) -> Result<Response> {
+        let mut headers = self.build_headers();
+        for (k, v) in extra_headers {
+            if let (Ok(name), Ok(val)) = (
+                wreq::header::HeaderName::from_bytes(k.as_bytes()),
+                wreq::header::HeaderValue::from_str(v),
+            ) {
+                headers.insert(name, val);
+            }
+        }
+        let resp = self.http.get(url)
+            .headers(headers)
+            .send().await
+            .map_err(|e| WispError::CdpError(format!("GET {url}: {e}")))?;
+        self.build_response(resp).await
+    }
+
+    /// POST request with extra headers (用于 Session cookie 注入)。
+    pub async fn post_with_headers(&self, url: &str, body: Option<&str>, json: Option<&serde_json::Value>, extra_headers: &[(String, String)]) -> Result<Response> {
+        let mut headers = self.build_headers();
+        for (k, v) in extra_headers {
+            if let (Ok(name), Ok(val)) = (
+                wreq::header::HeaderName::from_bytes(k.as_bytes()),
+                wreq::header::HeaderValue::from_str(v),
+            ) {
+                headers.insert(name, val);
+            }
+        }
+        let mut req = self.http.post(url).headers(headers);
+        if let Some(b) = body { req = req.body(b.to_string()); }
+        if let Some(j) = json {
+            let json_str = serde_json::to_string(j)
+                .map_err(|e| WispError::CdpError(format!("JSON serialize: {e}")))?;
+            req = req.header(wreq::header::CONTENT_TYPE, "application/json").body(json_str);
+        }
+        let resp = req.send().await
+            .map_err(|e| WispError::CdpError(format!("POST {url}: {e}")))?;
         self.build_response(resp).await
     }
 

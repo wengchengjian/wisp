@@ -7,7 +7,7 @@ use serde_json::json;
 use std::time::Duration;
 
 use crate::error::Result;
-use crate::page::Page;
+use crate::browser::page::Page;
 
 /// Human-like behavior simulator bound to a page.
 pub struct HumanBehavior<'a> {

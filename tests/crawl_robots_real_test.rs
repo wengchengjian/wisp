@@ -1,6 +1,6 @@
 //! 真实环境测试：robots.txt 解析。cargo test --test crawl_robots_real_test -- --ignored 运行。
 
-use wisp::fetch::Client;
+use wisp::http::Client;
 use wisp::crawl::robots::RobotsCache;
 
 #[tokio::test]
