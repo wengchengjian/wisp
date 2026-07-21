@@ -2,6 +2,7 @@
 
 pub mod difflib;
 pub mod document;
+pub mod xpath;
 pub mod adaptive;
 pub mod generate;
 
@@ -183,19 +184,21 @@ impl Node {
 
     /// Select all elements matching an XPath expression.
     ///
-    /// Supports common XPath patterns:
-    /// - `//tag` - all elements with tag name
-    /// - `//tag[@attr='value']` - elements with attribute
-    /// - `//tag[@attr]` - elements having attribute
-    /// - `//*[@id='value']` - by ID
-    /// - `//tag[contains(@class, 'value')]` - class contains
+    /// 支持完整 XPath 1.0。简单表达式走 xpath_to_css 快速路径，
+    /// 复杂表达式走 sxd-xpath 完整查询。
     pub fn xpath(&self, expr: &str) -> NodeList {
-        // Convert common XPath patterns to CSS selectors
+        // 快速路径：简单 XPath 转 CSS（覆盖 80% 常见用法）
         if let Some(css) = xpath_to_css(expr) {
             return self.select(&css);
         }
-        // Fallback: return empty for unsupported XPath
-        NodeList { nodes: Vec::new() }
+        // 慢路径：完整 sxd-xpath 查询
+        match xpath::xpath_full(self, expr) {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("xpath 查询失败 '{}': {}", expr, e);
+                NodeList { nodes: Vec::new() }
+            }
+        }
     }
 
     /// Get the parent element.
