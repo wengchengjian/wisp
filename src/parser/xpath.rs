@@ -131,3 +131,122 @@ fn find_in_scraper<'d>(doc: &Arc<Document>, sxd_node: &dom::Element<'d>) -> Opti
         .next()
         .map(|el| Node::from_element_ref(doc.clone(), el))
 }
+
+// ===== 路径签名精确回查 =====
+
+/// 节点路径签名：从根到节点的路径，每级 (tag, first_class)。
+///
+/// 用于在 scraper 树和 sxd 树之间精确回查。class 是最稳定的标识
+/// （ID 可能动态，其他属性可能变化），first_class 是 class 的第一个 token,
+/// 通常是最具体的。对序列化差异（空白、属性顺序、引号）鲁棒。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NodeSignature {
+    /// 从根到节点的路径，索引 0 是根的 (tag, first_class)
+    path: Vec<(String, Option<String>)>,
+}
+
+impl NodeSignature {
+    /// 从 scraper Node 构造签名（node 到根的路径）。
+    fn from_scraper(node: &Node) -> Self {
+        let mut path = Vec::new();
+        let mut current = Some(node.clone());
+        while let Some(n) = current {
+            let tag = n.tag();
+            if tag.is_empty() { break; }
+            let first_class = n.attr("class")
+                .and_then(|c| c.split_whitespace().next().map(|s| s.to_string()));
+            path.push((tag, first_class));
+            current = n.parent();
+        }
+        path.reverse();  // 根在前
+        Self { path }
+    }
+
+    /// 从 sxd dom::Element 构造签名（element 到根的路径）。
+    fn from_sxd(element: dom::Element) -> Self {
+        let mut path = Vec::new();
+        let mut current = Some(element);
+        while let Some(e) = current {
+            let tag = e.name().local_part().to_string();
+            let first_class = e.attributes().iter()
+                .find(|a| a.name().local_part() == "class")
+                .and_then(|a| a.value().split_whitespace().next().map(|s| s.to_string()));
+            path.push((tag, first_class));
+            // sxd-document 0.3.2: element.parent() 返回 Option<dom::ParentOfChild>
+            // dom::ParentOfChild 是枚举，有 Root 和 Element 变体。
+            // 遇到 Root 时停止向上遍历（Root 不是元素，不计入路径）。
+            current = e.parent().and_then(|p| match p {
+                dom::ParentOfChild::Element(pe) => Some(pe),
+                dom::ParentOfChild::Root(_) => None,
+            });
+        }
+        path.reverse();  // 根在前
+        Self { path }
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+    use crate::parser::Node;
+
+    #[test]
+    fn test_signature_from_scraper_simple() {
+        let html = r#"<html><body><div class="main"><p>text</p></div></body></html>"#;
+        let doc = Node::from_html(html);
+        let p = doc.select_one("p").expect("p should exist");
+        let sig = NodeSignature::from_scraper(&p);
+        // 路径: html > body > div.main > p
+        assert_eq!(sig.path.len(), 4);
+        assert_eq!(sig.path[0], ("html".to_string(), None));
+        assert_eq!(sig.path[1], ("body".to_string(), None));
+        assert_eq!(sig.path[2], ("div".to_string(), Some("main".to_string())));
+        assert_eq!(sig.path[3], ("p".to_string(), None));
+    }
+
+    #[test]
+    fn test_signature_from_scraper_multi_class() {
+        // first_class 只取第一个 token
+        let html = r#"<html><body><div class="main content box">x</div></body></html>"#;
+        let doc = Node::from_html(html);
+        let div = doc.select_one("div").expect("div should exist");
+        let sig = NodeSignature::from_scraper(&div);
+        assert_eq!(sig.path[2], ("div".to_string(), Some("main".to_string())));
+    }
+
+    #[test]
+    fn test_signature_from_sxd_simple() {
+        let html = r#"<html><body><div class="main"><p>text</p></div></body></html>"#;
+        let doc = Node::from_html(html);
+        // 通过 pub(crate) doc 字段访问 sxd_package
+        let package = doc.doc.sxd_package();
+        let sxd_doc = package.as_document();
+        // 找到 p 元素
+        let p_element = find_first_element_by_tag(sxd_doc.root(), "p")
+            .expect("p should exist in sxd tree");
+        let sig = NodeSignature::from_sxd(p_element);
+        // 路径: html > body > div.main > p
+        assert_eq!(sig.path.len(), 4);
+        assert_eq!(sig.path[0], ("html".to_string(), None));
+        assert_eq!(sig.path[1], ("body".to_string(), None));
+        assert_eq!(sig.path[2], ("div".to_string(), Some("main".to_string())));
+        assert_eq!(sig.path[3], ("p".to_string(), None));
+    }
+
+    #[test]
+    fn test_signature_scraper_sxd_consistency() {
+        // 同一段 HTML，scraper 和 sxd 构造的签名应该一致
+        let html = r#"<html><body><div class="main"><p>text</p></div></body></html>"#;
+        let doc = Node::from_html(html);
+        let p = doc.select_one("p").expect("p should exist");
+        let scraper_sig = NodeSignature::from_scraper(&p);
+
+        let package = doc.doc.sxd_package();
+        let sxd_doc = package.as_document();
+        let p_element = find_first_element_by_tag(sxd_doc.root(), "p")
+            .expect("p should exist in sxd tree");
+        let sxd_sig = NodeSignature::from_sxd(p_element);
+
+        assert_eq!(scraper_sig, sxd_sig, "scraper 和 sxd 签名应一致");
+    }
+}

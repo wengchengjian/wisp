@@ -23,7 +23,7 @@ use document::Document;
 /// 所有 select() 返回的 Node 共享同一文档，使 parent/ancestors 等导航可工作。
 #[derive(Clone)]
 pub struct Node {
-    doc: Arc<Document>,
+    pub(crate) doc: Arc<Document>,
     node_id: NodeId,
 }
 
