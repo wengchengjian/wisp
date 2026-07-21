@@ -42,7 +42,7 @@ impl ProxyConfig {
         })
     }
 
-    /// Format as a reqwest-compatible proxy URL.
+    /// Format as a wreq-compatible proxy URL.
     pub fn to_proxy_url(&self) -> String {
         self.url.clone()
     }
