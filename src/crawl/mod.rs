@@ -5,7 +5,9 @@ pub mod robots;
 pub mod cache;
 pub mod templates;
 pub mod state;
+pub mod items;
 pub use state::CrawlState;
+pub use items::{Items, JsonlWriter};
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;

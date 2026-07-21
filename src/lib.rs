@@ -38,5 +38,5 @@ pub use page::Page;
 pub use scraper::{Scraper, ScrapeResponse};
 pub use parser::{Node, NodeList};
 pub use fetch::Client;
-pub use crawl::{Spider, Engine};
+pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter};
 pub use storage::Store;
