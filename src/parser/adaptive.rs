@@ -170,3 +170,206 @@ impl ElementSnapshot {
         }
     }
 }
+
+/// Default relocation tolerance (0.0 - 1.0). Matches Python Scrapling.
+pub const DEFAULT_TOLERANCE: f64 = 0.5;
+
+/// Compute 6-dimension similarity between a live Node and a saved snapshot.
+///
+/// Dimensions and weights (total 8.0, normalized to 0..1):
+/// - Tag match: 1.0
+/// - Attribute overlap + class value similarity: 2.0
+/// - Text similarity (char-level): 2.0
+/// - Ancestor path similarity: 1.5
+/// - Sibling tag sequence similarity: 1.0
+/// - Parent attribute similarity: 0.5
+pub fn similarity(node: &Node, saved: &ElementSnapshot) -> f64 {
+    let mut score = 0.0_f64;
+    let mut max = 0.0_f64;
+
+    // 1. Tag match (weight 1.0)
+    max += 1.0;
+    let node_tag = node_tag_name(node);
+    if node_tag == saved.tag {
+        score += 1.0;
+    }
+
+    // 2. Attribute overlap + class value similarity (weight 2.0)
+    max += 2.0;
+    let node_attrs = node.attrs();
+    let key_overlap = saved.attrs.keys()
+        .filter(|k| node_attrs.contains_key(*k)).count();
+    let denom = (saved.attrs.len() + node_attrs.len() - key_overlap).max(1);
+    let key_jaccard = key_overlap as f64 / denom as f64;
+
+    let class_sim = match (node_attrs.get("class"), saved.attrs.get("class")) {
+        (Some(a), Some(b)) => {
+            let a_tokens: Vec<&str> = a.split_whitespace().collect();
+            let b_tokens: Vec<&str> = b.split_whitespace().collect();
+            SequenceMatcher::new(&a_tokens, &b_tokens).ratio()
+        }
+        _ => 0.0,
+    };
+    score += 2.0 * (0.5 * key_jaccard + 0.5 * class_sim);
+
+    // 3. Text similarity (weight 2.0, char-level)
+    max += 2.0;
+    let node_text = node.text();
+    let node_chars: Vec<char> = node_text.chars().collect();
+    let saved_chars: Vec<char> = saved.text_preview.chars().collect();
+    let text_ratio = SequenceMatcher::new(&node_chars, &saved_chars).ratio();
+    score += 2.0 * text_ratio;
+
+    // 4. Ancestor path similarity (weight 1.5)
+    max += 1.5;
+    let node_path = ancestor_path_of(node);
+    let path_ratio = SequenceMatcher::new(&node_path, &saved.ancestor_path).ratio();
+    score += 1.5 * path_ratio;
+
+    // 5. Sibling tag sequence similarity (weight 1.0)
+    max += 1.0;
+    let node_siblings = sibling_tags_of(node);
+    let sib_ratio = SequenceMatcher::new(&node_siblings, &saved.sibling_tags).ratio();
+    score += 1.0 * sib_ratio;
+
+    // 6. Parent attribute similarity (weight 0.5, key Jaccard)
+    max += 0.5;
+    let parent_attrs = parent_attrs_of(node);
+    let p_overlap = saved.parent_attrs.keys()
+        .filter(|k| parent_attrs.contains_key(*k)).count();
+    let p_denom = (saved.parent_attrs.len() + parent_attrs.len() - p_overlap).max(1);
+    let p_jaccard = p_overlap as f64 / p_denom as f64;
+    score += 0.5 * p_jaccard;
+
+    if max == 0.0 { 0.0 } else { score / max }
+}
+
+/// Relocate the best-matching element in `doc` against `saved` snapshot.
+/// Returns None if no candidate reaches `tolerance`.
+pub fn relocate_with_snapshot(
+    doc: &Node,
+    saved: &ElementSnapshot,
+    tolerance: f64,
+) -> Option<Node> {
+    // Strategy 1: try exact id match first
+    if let Some(id) = saved.attrs.get("id") {
+        if let Some(node) = doc.select_one(&format!("#{}", id)) {
+            if similarity(&node, saved) >= tolerance {
+                return Some(node);
+            }
+        }
+    }
+
+    // Strategy 2: try first class token
+    if let Some(class) = saved.attrs.get("class") {
+        if let Some(first) = class.split_whitespace().next() {
+            if !first.is_empty() {
+                let selector = format!(".{}", first);
+                let candidates = doc.select_all(&selector);
+                let mut best: Option<(f64, Node)> = None;
+                for cand in candidates {
+                    let s = similarity(&cand, saved);
+                    if s >= tolerance && best.as_ref().map(|(b, _)| s > *b).unwrap_or(true) {
+                        best = Some((s, cand));
+                    }
+                }
+                if let Some((_, n)) = best {
+                    return Some(n);
+                }
+            }
+        }
+    }
+
+    // Strategy 3: scan all elements with the same tag
+    let candidates = doc.select_all(&saved.tag);
+    let mut best: Option<(f64, Node)> = None;
+    for cand in candidates {
+        let s = similarity(&cand, saved);
+        if s >= tolerance && best.as_ref().map(|(b, _)| s > *b).unwrap_or(true) {
+            best = Some((s, cand));
+        }
+    }
+    best.map(|(_, n)| n)
+}
+
+// ===== Helpers (stage 1: re-parse outer_html to get tree context) =====
+
+fn node_tag_name(node: &Node) -> String {
+    let attrs = node.attrs();
+    attrs.get("tag").cloned().unwrap_or_else(|| {
+        // Fallback: parse outer_html
+        let outer = node.outer_html();
+        let doc = Html::parse_fragment(&outer);
+        let sel = scraper::Selector::parse("*").unwrap();
+        doc.select(&sel).next()
+            .map(|e| e.value().name().to_string())
+            .unwrap_or_else(|| "div".to_string())
+    })
+}
+
+fn ancestor_path_of(node: &Node) -> Vec<String> {
+    // Re-parse the node's outer_html inside a full doc to get ancestors
+    let outer = node.outer_html();
+    let full = format!("<html><body>{}</body></html>", outer);
+    let doc = Html::parse_document(&full);
+    let body_sel = scraper::Selector::parse("body > *").unwrap();
+    if let Some(el) = doc.select(&body_sel).next() {
+        el.ancestors()
+            .filter_map(|a| {
+                if let ScraperNode::Element(e) = a.value() {
+                    let name = e.name().to_string();
+                    if let Some(class) = e.attr("class") {
+                        let first = class.split_whitespace().next().unwrap_or("");
+                        if !first.is_empty() {
+                            return Some(format!("{}.{}", name, first));
+                        }
+                    }
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn sibling_tags_of(node: &Node) -> Vec<String> {
+    let outer = node.outer_html();
+    let full = format!("<html><body>{}</body></html>", outer);
+    let doc = Html::parse_document(&full);
+    let body_sel = scraper::Selector::parse("body > *").unwrap();
+    if let Some(el) = doc.select(&body_sel).next() {
+        if let Some(parent) = el.parent().and_then(|p| ElementRef::wrap(p)) {
+            return parent.children()
+                .filter_map(|c| {
+                    if let ScraperNode::Element(e) = c.value() {
+                        Some(e.name().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn parent_attrs_of(node: &Node) -> HashMap<String, String> {
+    let outer = node.outer_html();
+    let full = format!("<html><body>{}</body></html>", outer);
+    let doc = Html::parse_document(&full);
+    let body_sel = scraper::Selector::parse("body > *").unwrap();
+    if let Some(el) = doc.select(&body_sel).next() {
+        if let Some(parent) = el.parent().and_then(|p| ElementRef::wrap(p)) {
+            return parent.value().attrs()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        }
+    }
+    HashMap::new()
+}

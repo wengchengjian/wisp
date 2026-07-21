@@ -4,6 +4,8 @@ pub mod difflib;
 pub mod adaptive;
 pub mod generate;
 
+pub use adaptive::{ElementSnapshot, similarity, relocate_with_snapshot, DEFAULT_TOLERANCE};
+
 use scraper::{Html, Selector as CssSelector};
 use std::collections::HashMap;
 
@@ -45,6 +47,11 @@ impl Node {
             })
             .collect();
         NodeList { nodes }
+    }
+
+    /// Alias for select() returning Vec<Node> for ergonomic iteration.
+    pub fn select_all(&self, css: &str) -> Vec<Node> {
+        self.select(css).nodes
     }
 
     /// Select the first element matching a CSS selector.
