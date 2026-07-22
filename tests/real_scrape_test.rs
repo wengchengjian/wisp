@@ -53,7 +53,6 @@ async fn test_quotes_full_crawl_10_pages() {
 
     let spider = SpiderBuilder::new("quotes-full")
         .start_urls(vec!["https://quotes.toscrape.com/"])
-        .concurrent(4)
         .delay_ms(200)
         .obey_robots(false)
         .on("default", |resp| async move {
@@ -287,7 +286,6 @@ async fn test_spider_builder_engine_integration() {
 
     let spider = SpiderBuilder::new("books")
         .start_urls(vec!["https://books.toscrape.com/"])
-        .concurrent(2)
         .delay_ms(300)
         .obey_robots(false)
         .max_retries(2)

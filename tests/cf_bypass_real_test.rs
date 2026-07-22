@@ -193,7 +193,6 @@ async fn test_engine_with_proxy_pool() {
 
     let spider = SpiderBuilder::new("proxy-crawl")
         .start_urls(vec!["https://quotes.toscrape.com/"])
-        .concurrent(2)
         .obey_robots(false)
         .on("default", |resp| async move {
             let doc = resp.parse().unwrap();
