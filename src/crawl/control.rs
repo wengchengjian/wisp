@@ -19,6 +19,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
+use std::time::Duration;
 use tokio::sync::{watch, RwLock};
 
 // === Global state (process-wide singleton) ===
@@ -100,10 +101,18 @@ pub(crate) async fn wait_if_paused(url: &str) -> bool {
         let global = GLOBAL_PAUSED.load(Ordering::SeqCst);
         let url_paused = PAUSED_URLS.read().await.contains(url);
         if !global && !url_paused { return true; }
-        // Block until any state change (resume/pause_all/shutdown all bump)
+        // 阻塞直到 version 变化（resume/pause_all/shutdown 都会 bump）
+        // 超时 60 秒作为极端 safety
         tokio::select! {
-            _ = rx.changed() => {},
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}, // safety fallback
+            changed = rx.changed() => {
+                if changed.is_err() {
+                    // watch sender dropped（不应发生），退出避免死循环
+                    return !SHUTDOWN_FLAG.load(Ordering::SeqCst);
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                // safety fallback：60 秒后重新检查状态
+            }
         }
     }
 }
