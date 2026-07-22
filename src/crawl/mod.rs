@@ -5,6 +5,7 @@ pub mod robots;
 pub mod cache;
 pub mod templates;
 pub mod state;
+pub mod stats;
 pub mod items;
 pub mod builder;
 pub mod session;
