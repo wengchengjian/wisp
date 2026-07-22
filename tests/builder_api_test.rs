@@ -6,9 +6,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use wisp::crawl::{
     Spider, SpiderBuilder, ClosureSpider, Engine, SpiderRequest, SpiderResponse,
-    SessionManager, FetcherType,
 };
-use wisp::crawl::session::{request_with_session, session_id_of};
 use wisp::crawl::CrawlEvent;
 use wisp::http;
 use wisp::parser::Node;
@@ -22,7 +20,6 @@ fn test_spider_builder_full_config() {
     let spider = SpiderBuilder::new("full-test")
         .start_urls(vec!["https://a.com/", "https://b.com/"])
         .allowed_domains(vec!["a.com", "b.com"])
-        .concurrent(16)
         .delay(Duration::from_millis(500))
         .obey_robots(false)
         .max_retries(5)
@@ -34,7 +31,6 @@ fn test_spider_builder_full_config() {
 
     assert_eq!(spider.name(), "full-test");
     assert_eq!(spider.start_urls().len(), 2);
-    assert_eq!(spider.concurrent_requests(), 16);
     assert_eq!(spider.download_delay(), Duration::from_millis(500));
     assert!(!spider.obey_robots());
     assert_eq!(spider.max_retries(), 5);
@@ -175,29 +171,6 @@ async fn test_engine_builder_local_server() {
 
     assert_eq!(stats.pages_crawled, 1);
     assert_eq!(stats.items_scraped, 1);
-}
-
-// === Multi-Session tests ===
-
-#[test]
-fn test_session_manager_routing() {
-    let mut mgr = SessionManager::new();
-    mgr.add("default", FetcherType::Http(wisp::http::Config::default()));
-    mgr.add("stealth", FetcherType::Stealth {
-        headless: true,
-        proxy: Some("http://127.0.0.1:7897".into()),
-        challenge_timeout_secs: 60,
-    });
-
-    let req = SpiderRequest::get("https://protected.site.com/");
-    let req = request_with_session(req, "stealth");
-    assert_eq!(session_id_of(&req), "stealth");
-}
-
-#[test]
-fn test_session_default_routing() {
-    let req = SpiderRequest::get("https://normal.site.com/");
-    assert_eq!(session_id_of(&req), "default");
 }
 
 // === Node.find_by_text / find_similar tests ===

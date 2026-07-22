@@ -9,7 +9,6 @@ pub mod stats;
 pub mod stop;
 pub mod items;
 pub mod builder;
-pub mod session;
 pub mod auto;
 pub mod engine;
 pub mod request_cache;
@@ -19,7 +18,6 @@ pub mod cron;
 pub use state::CrawlState;
 pub use items::{Items, JsonlWriter};
 pub use builder::{SpiderBuilder, ClosureSpider};
-pub use session::{SessionManager, FetcherType};
 pub use auto::{SelectorTracker, ModeRuleEngine};
 pub use request_cache::RequestCache;
 pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
@@ -179,7 +177,6 @@ pub trait Spider: Send + Sync + 'static {
 
     // Optional with defaults
     fn allowed_domains(&self) -> HashSet<String> { HashSet::new() }
-    fn concurrent_requests(&self) -> u32 { 8 }
     fn download_delay(&self) -> Duration { Duration::from_millis(0) }
     fn obey_robots(&self) -> bool { true }
     fn max_retries(&self) -> u32 { 3 }
@@ -191,15 +188,11 @@ pub trait Spider: Send + Sync + 'static {
     fn is_blocked(&self, resp: &SpiderResponse) -> bool {
         BLOCKED_STATUS_CODES.contains(&resp.status)
     }
-    fn configure_sessions(&self, _mgr: &mut session::SessionManager) {}
-    fn session_for(&self, _req: &SpiderRequest) -> &str { "default" }
     fn fetch_mode(&self) -> FetchMode { FetchMode::Http }
     fn auto_rules(&self) -> Vec<(String, FetchMode)> { Vec::new() }
     fn auto_exclude(&self) -> HashSet<String> { HashSet::new() }
     /// 最大爬取深度。默认无限制。
     fn max_depth(&self) -> u32 { u32::MAX }
-    /// 每次请求随机轮换 User-Agent。
-    fn rotate_ua(&self) -> bool { false }
     /// 每个请求执行前的异步钩子。默认返回 Proceed。
     async fn on_before_request(&self, _req: &SpiderRequest) -> RequestAction {
         RequestAction::Proceed

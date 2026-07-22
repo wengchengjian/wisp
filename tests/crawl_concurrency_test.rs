@@ -13,7 +13,6 @@ impl Spider for ConcurrencySpider {
         // 10 URLs that each take 100ms to respond
         (0..10).map(|i| format!("https://httpbin.org/delay/0.1?i={}", i)).collect()
     }
-    fn concurrent_requests(&self) -> u32 { 4 }
     async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
         (vec![], vec![])
     }

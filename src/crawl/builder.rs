@@ -10,7 +10,6 @@
 //!
 //! let spider = SpiderBuilder::new("quotes")
 //!     .start_urls(vec!["https://quotes.toscrape.com/"])
-//!     .concurrent(10)
 //!     .delay(Duration::from_millis(500))
 //!     .obey_robots(false)
 //!     .parse(|resp| {
@@ -87,7 +86,6 @@ pub struct SpiderBuilder {
     start_urls: Vec<String>,
     handlers: HashMap<String, Handler>,
     allowed_domains: HashSet<String>,
-    concurrent: u32,
     delay: Duration,
     obey_robots: bool,
     max_retries: u32,
@@ -109,7 +107,6 @@ impl SpiderBuilder {
             start_urls: Vec::new(),
             handlers: HashMap::new(),
             allowed_domains: HashSet::new(),
-            concurrent: 8,
             delay: Duration::ZERO,
             obey_robots: true,
             max_retries: 3,
@@ -133,12 +130,6 @@ impl SpiderBuilder {
     /// 设置允许的域名集合。
     pub fn allowed_domains(mut self, domains: Vec<impl Into<String>>) -> Self {
         self.allowed_domains = domains.into_iter().map(|d| d.into()).collect();
-        self
-    }
-
-    /// 设置并发请求数。
-    pub fn concurrent(mut self, n: u32) -> Self {
-        self.concurrent = n;
         self
     }
 
@@ -259,7 +250,6 @@ impl SpiderBuilder {
             start_urls: self.start_urls,
             handlers: self.handlers,
             allowed_domains: self.allowed_domains,
-            concurrent: self.concurrent,
             delay: self.delay,
             obey_robots: self.obey_robots,
             max_retries: self.max_retries,
@@ -281,7 +271,6 @@ pub struct ClosureSpider {
     start_urls: Vec<String>,
     handlers: HashMap<String, Handler>,
     allowed_domains: HashSet<String>,
-    concurrent: u32,
     delay: Duration,
     obey_robots: bool,
     max_retries: u32,
@@ -300,7 +289,6 @@ impl Spider for ClosureSpider {
     fn name(&self) -> &str { &self.name }
     fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
     fn allowed_domains(&self) -> HashSet<String> { self.allowed_domains.clone() }
-    fn concurrent_requests(&self) -> u32 { self.concurrent }
     fn download_delay(&self) -> Duration { self.delay }
     fn obey_robots(&self) -> bool { self.obey_robots }
     fn max_retries(&self) -> u32 { self.max_retries }
@@ -365,7 +353,6 @@ mod tests {
     fn test_spider_builder_basic() {
         let spider = SpiderBuilder::new("test")
             .start_urls(vec!["https://example.com/"])
-            .concurrent(4)
             .delay_ms(100)
             .obey_robots(false)
             .parse(|resp| {
@@ -376,7 +363,6 @@ mod tests {
 
         assert_eq!(spider.name(), "test");
         assert_eq!(spider.start_urls(), vec!["https://example.com/"]);
-        assert_eq!(spider.concurrent_requests(), 4);
         assert_eq!(spider.download_delay(), Duration::from_millis(100));
         assert!(!spider.obey_robots());
     }
