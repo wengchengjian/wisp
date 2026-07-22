@@ -5,8 +5,6 @@
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use scraper::{Html, ElementRef};
-use scraper::node::Node as ScraperNode;
 use super::Node;
 use super::difflib::SequenceMatcher;
 use crate::storage::{Store, ElementSnapshotRow};
@@ -296,84 +294,55 @@ pub fn css_adaptive(
     Some(found)
 }
 
-// ===== Helpers (stage 1: re-parse outer_html to get tree context) =====
+// ===== Helpers (stage 2: use Node navigation API, no HTML re-parsing) =====
+//
+// 旧实现对每个候选节点调用 4 个 helper，每个 helper 都 outer_html() + Html::parse_document()
+// 重新解析 HTML，导致 similarity() 每次调用解析 4 次。现在改用 Node 的导航 API
+// (tag/ancestors/parent/children/attrs)，与 ElementSnapshot::capture() 一致，零次重解析。
 
 fn node_tag_name(node: &Node) -> String {
-    let attrs = node.attrs();
-    attrs.get("tag").cloned().unwrap_or_else(|| {
-        // Fallback: parse outer_html
-        let outer = node.outer_html();
-        let doc = Html::parse_fragment(&outer);
-        let sel = scraper::Selector::parse("*").unwrap();
-        doc.select(&sel).next()
-            .map(|e| e.value().name().to_string())
-            .unwrap_or_else(|| "div".to_string())
-    })
+    node.tag()
 }
 
 fn ancestor_path_of(node: &Node) -> Vec<String> {
-    // Re-parse the node's outer_html inside a full doc to get ancestors
-    let outer = node.outer_html();
-    let full = format!("<html><body>{}</body></html>", outer);
-    let doc = Html::parse_document(&full);
-    let body_sel = scraper::Selector::parse("body > *").unwrap();
-    if let Some(el) = doc.select(&body_sel).next() {
-        el.ancestors()
-            .filter_map(|a| {
-                if let ScraperNode::Element(e) = a.value() {
-                    let name = e.name().to_string();
-                    if let Some(class) = e.attr("class") {
-                        let first = class.split_whitespace().next().unwrap_or("");
-                        if !first.is_empty() {
-                            return Some(format!("{}.{}", name, first));
-                        }
-                    }
-                    Some(name)
+    // 用 ancestors() 迭代器获取祖先路径（父→根），每级 "tag" 或 "tag.firstclass"，
+    // 最后 rev() 使根在前。不重新解析 HTML。
+    node.ancestors()
+        .filter_map(|n| {
+            let t = n.tag();
+            if t.is_empty() {
+                return None;
+            }
+            let class = n.attr("class").unwrap_or_default();
+            if class.is_empty() {
+                Some(t)
+            } else {
+                let first_class: String = class.split_whitespace().next().unwrap_or("").to_string();
+                if first_class.is_empty() {
+                    Some(t)
                 } else {
-                    None
+                    Some(format!("{}.{}", t, first_class))
                 }
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
-    } else {
-        Vec::new()
-    }
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 fn sibling_tags_of(node: &Node) -> Vec<String> {
-    let outer = node.outer_html();
-    let full = format!("<html><body>{}</body></html>", outer);
-    let doc = Html::parse_document(&full);
-    let body_sel = scraper::Selector::parse("body > *").unwrap();
-    if let Some(el) = doc.select(&body_sel).next() {
-        if let Some(parent) = el.parent().and_then(|p| ElementRef::wrap(p)) {
-            return parent.children()
-                .filter_map(|c| {
-                    if let ScraperNode::Element(e) = c.value() {
-                        Some(e.name().to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-        }
-    }
-    Vec::new()
+    // 父节点的所有元素子节点的 tag 列表
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    parent.children().iter().map(|c| c.tag()).collect()
 }
 
 fn parent_attrs_of(node: &Node) -> HashMap<String, String> {
-    let outer = node.outer_html();
-    let full = format!("<html><body>{}</body></html>", outer);
-    let doc = Html::parse_document(&full);
-    let body_sel = scraper::Selector::parse("body > *").unwrap();
-    if let Some(el) = doc.select(&body_sel).next() {
-        if let Some(parent) = el.parent().and_then(|p| ElementRef::wrap(p)) {
-            return parent.value().attrs()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
-        }
+    match node.parent() {
+        Some(p) => p.attrs(),
+        None => HashMap::new(),
     }
-    HashMap::new()
 }
