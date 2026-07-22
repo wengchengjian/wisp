@@ -458,10 +458,55 @@ impl Engine {
         let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
         let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
 
-        // 把所有 spider 的 start_urls 推入共享队列
+        // Fix #1: 检查 cron 调度。共享队列架构暂不支持 cron 循环，显式 warning 避免静默回归。
+        // （完整 cron 循环是后续任务，这里只警告不实现。）
         for spider in &spiders {
-            for url in spider.start_urls() {
-                sched.push(SpiderRequest::get(&url)).await;
+            if let Some(cron_expr) = spider.schedule() {
+                tracing::warn!(
+                    "Spider '{}' 配置了 cron 调度 '{}'，当前共享队列架构暂不支持 cron 循环，将仅执行一次",
+                    spider.name(),
+                    cron_expr
+                );
+            }
+        }
+
+        // 单 Spider 名（用于 checkpoint load/save/delete）
+        let spider_name = if n_spiders == 1 { spiders[0].name().to_string() } else { "multi".to_string() };
+
+        // Fix #2: 单 Spider 时从 checkpoint 恢复 pending URLs（与旧 run_spider_once 行为一致）。
+        // 多 Spider 跳过恢复（plan:1563 要求 checkpoint 仅在单 Spider 时生效）。
+        // checkpoint 删除仍由尾部既有逻辑在运行结束后执行。
+        let mut restored_pending = false;
+        if n_spiders == 1 {
+            if let Some(ref store) = checkpoint_store {
+                if let Some(blob) = store.load_checkpoint(&spider_name)? {
+                    match bincode::deserialize::<CrawlState>(&blob) {
+                        Ok(state) => {
+                            if !state.pending_urls.is_empty() {
+                                let n = state.pending_urls.len();
+                                for req in state.pending_urls {
+                                    sched.push(req).await;
+                                }
+                                tracing::info!(
+                                    "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs",
+                                    spider_name,
+                                    n
+                                );
+                                restored_pending = true;
+                            }
+                        }
+                        Err(e) => tracing::warn!("checkpoint 反序列化失败: {}", e),
+                    }
+                }
+            }
+        }
+
+        // 把所有 spider 的 start_urls 推入共享队列（仅在未恢复 checkpoint 时）
+        if !restored_pending {
+            for spider in &spiders {
+                for url in spider.start_urls() {
+                    sched.push(SpiderRequest::get(&url)).await;
+                }
             }
         }
 
@@ -497,9 +542,6 @@ impl Engine {
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             engine_max_pages,
         });
-
-        // checkpoint 处理：单 Spider 时保留 checkpoint，多 Spider 时跳过（简化）
-        let spider_name = if n_spiders == 1 { spiders[0].name().to_string() } else { "multi".to_string() };
 
         // 构建并发流：共享队列 + 路由
         let max_total_concurrent: usize = ctx.max_concurrents.iter().copied().max().unwrap_or(8);
