@@ -57,6 +57,8 @@ pub(crate) struct EngineContext {
     pub obey_robots_flags: Vec<bool>,
     pub global_in_flight: Arc<AtomicUsize>,
     pub engine_max_pages: usize,
+    /// 预编译的 per-spider 正则模式（路由用，避免每次 matches 重新编译）。
+    pub compiled_patterns: Vec<Vec<regex::Regex>>,
 }
 
 // === 核心函数：处理单个请求 ===
@@ -287,6 +289,8 @@ async fn fetch_with_retry(ctx: &EngineContext, req: &SpiderRequest, idx: usize) 
                 record_status(stats, resp.status).await;
                 if spider.is_blocked(&resp) {
                     stats.blocked.fetch_add(1, Ordering::SeqCst);
+                    // attempt 从 1 起；attempt <= max_retries 表示还能重试，
+                    // 故 max_retries=3 时实际尝试 4 次（attempt 1..=4）。
                     if attempt <= max_retries {
                         stats.retries.fetch_add(1, Ordering::SeqCst);
                         let delay = spider.download_delay();
@@ -295,7 +299,10 @@ async fn fetch_with_retry(ctx: &EngineContext, req: &SpiderRequest, idx: usize) 
                         continue;
                     }
                     stats.errors.fetch_add(1, Ordering::SeqCst);
-                    return (None, Some(format!("blocked after {} retries (status={})", max_retries, resp.status)));
+                    return (None, Some(format!(
+                        "blocked after {} retries (status={}, total attempts={})",
+                        max_retries, resp.status, attempt
+                    )));
                 }
                 return (Some(resp), None);
             }
@@ -309,7 +316,10 @@ async fn fetch_with_retry(ctx: &EngineContext, req: &SpiderRequest, idx: usize) 
                 }
                 stats.errors.fetch_add(1, Ordering::SeqCst);
                 spider.on_error(req, &e.to_string()).await;
-                return (None, Some(e.to_string()));
+                return (None, Some(format!(
+                    "fetch failed after {} retries (total attempts={}): {}",
+                    max_retries, attempt, e
+                )));
             }
         }
     }
@@ -579,6 +589,7 @@ mod tests {
             obey_robots_flags: vec![false],
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             engine_max_pages: 100,
+            compiled_patterns: vec![vec![]],
         };
         (ctx, stats)
     }

@@ -192,7 +192,10 @@ pub trait Spider: Send + Sync + 'static {
     async fn on_before_request(&self, _req: &SpiderRequest) -> RequestAction {
         RequestAction::Proceed
     }
-    /// Cron 表达式（标准 5 字段）。返回 None 表示立即执行一次（默认行为）。
+    /// Cron 表达式（标准 5 字段）。
+    ///
+    /// **注意：当前共享队列架构暂未实现 cron 循环**，返回 Some 时仅记录 warning 并执行一次。
+    /// 完整 cron 调度为后续路线图项。
     fn schedule(&self) -> Option<&str> { None }
 
     // === 路由与终止（新增） ===
@@ -453,6 +456,13 @@ impl Engine {
         }).collect();
         let obey_robots_flags: Vec<bool> = spiders.iter().map(|s| s.obey_robots()).collect();
 
+        // 预编译每个 Spider 的 patterns 正则（路由用，避免每次 matches 重新编译）。
+        let compiled_patterns: Vec<Vec<regex::Regex>> = spiders.iter().map(|s| {
+            s.patterns().iter()
+                .filter_map(|p| regex::Regex::new(p).ok())
+                .collect()
+        }).collect();
+
         // 共享调度器
         let sched = Arc::new(scheduler::Scheduler::new());
         let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
@@ -541,6 +551,7 @@ impl Engine {
             obey_robots_flags,
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             engine_max_pages,
+            compiled_patterns,
         });
 
         // 构建并发流：共享队列 + 路由
@@ -579,18 +590,28 @@ impl Engine {
                             }
                         };
 
-                        // 路由：找 matches(url) 的 Spider
+                        // 路由：找 matches(url) 且未停止的 Spider。
+                        // 使用预编译正则（ctx.compiled_patterns）替代 spider.matches()，
+                        // 避免 1000 页 × N Spider 反复编译正则。
+                        let queue_size = ctx.sched.len().await;
                         let mut chosen_idx: Option<usize> = None;
+                        let mut all_matching_stopped = true;
                         for (i, spider) in ctx.spiders.iter().enumerate() {
-                            if !spider.matches(&req.url) { continue; }
-                            // 检查 until
+                            let patterns = &ctx.compiled_patterns[i];
+                            let matched = if patterns.is_empty() {
+                                true  // 空 patterns 匹配所有
+                            } else {
+                                patterns.iter().any(|re| re.is_match(&req.url))
+                            };
+                            if !matched { continue; }
+                            all_matching_stopped = false;
                             let stop_ctx = stop::StopContext {
                                 pages: ctx.stats[i].pages.load(Ordering::SeqCst),
                                 items: ctx.stats[i].items.load(Ordering::SeqCst),
                                 errors: ctx.stats[i].errors.load(Ordering::SeqCst),
                                 in_flight: ctx.stats[i].in_flight.load(Ordering::SeqCst),
                                 elapsed: ctx.stats[i].start.elapsed(),
-                                queue_size: 0,
+                                queue_size,
                             };
                             if spider.until().should_stop(&stop_ctx) {
                                 continue;  // 该 Spider 停止消费，找下一个
@@ -602,8 +623,12 @@ impl Engine {
                         let idx = match chosen_idx {
                             Some(i) => i,
                             None => {
-                                // 无匹配或所有匹配的 Spider 都已停 → 丢弃
-                                tracing::debug!("无 Spider 处理 URL（或均已停止）: {}", req.url);
+                                // 区分"全部停止"与"无匹配"，避免 URL 被静默丢弃。
+                                if all_matching_stopped {
+                                    tracing::info!("URL 无活跃 Spider 处理（全部 until 停止）: {}", req.url);
+                                } else {
+                                    tracing::warn!("URL 有匹配 Spider 但未派发: {}", req.url);
+                                }
                                 continue;
                             }
                         };
