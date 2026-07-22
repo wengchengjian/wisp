@@ -10,6 +10,7 @@ use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::{WispError, Result};
 use crate::storage::Store;
+use crate::crawl::Engine;
 
 /// MCP 工具定义
 pub struct Tool {
@@ -108,6 +109,14 @@ pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| vec![
 
 /// MCP server 主循环（stdio JSON-RPC 2.0）
 pub async fn serve(store: Arc<Store>) -> Result<()> {
+    // 启动时创建一个长驻共享 Engine，所有 crawl_site 调用复用
+    // （共享 HTTP 连接池 / 请求缓存 / 代理池）。Engine 自身的 max_pages 作为全局兜底，
+    // 每次 crawl_site 的 per-call 上限由 SimpleSpider 的 until() 终止策略控制。
+    let engine = Engine::infra()
+        .max_pages(100000)
+        .cache_store(store.clone())
+        .build()?;
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let reader = BufReader::new(stdin);
@@ -131,7 +140,7 @@ pub async fn serve(store: Arc<Store>) -> Result<()> {
                 "jsonrpc": "2.0", "id": id,
                 "result": handle_tools_list()
             }),
-            "tools/call" => match handle_tools_call(request, &store).await {
+            "tools/call" => match handle_tools_call(request, &store, &engine).await {
                 Ok(result) => json!({
                     "jsonrpc": "2.0", "id": id,
                     "result": result
@@ -193,7 +202,7 @@ fn handle_tools_list() -> Value {
     json!({"tools": tools})
 }
 
-async fn handle_tools_call(request: Value, store: &Arc<Store>) -> Result<Value> {
+async fn handle_tools_call(request: Value, store: &Arc<Store>, engine: &Engine) -> Result<Value> {
     let params = request.get("params")
         .ok_or_else(|| WispError::McpError("missing params".into()))?;
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -203,7 +212,7 @@ async fn handle_tools_call(request: Value, store: &Arc<Store>) -> Result<Value> 
         "fetch_page" => tools::fetch_page(args).await,
         "extract_css" => tools::extract_css(args).await,
         "extract_xpath" => tools::extract_xpath(args).await,
-        "crawl_site" => tools::crawl_site(args, store).await,
+        "crawl_site" => tools::crawl_site(args, engine).await,
         "adaptive_scrape" => tools::adaptive_scrape(args, store).await,
         "stealth_fetch" => tools::stealth_fetch(args).await,
         _ => Err(WispError::McpUnknownTool(name.into())),
@@ -248,10 +257,15 @@ mod tests {
     #[tokio::test]
     async fn test_handle_tools_call_unknown_tool() {
         let store = Arc::new(Store::open_in_memory().unwrap());
+        let engine = Engine::infra()
+            .max_pages(100)
+            .cache_store(store.clone())
+            .build()
+            .unwrap();
         let req = json!({
             "params": { "name": "nonexistent", "arguments": {} }
         });
-        let result = handle_tools_call(req, &store).await;
+        let result = handle_tools_call(req, &store, &engine).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             WispError::McpUnknownTool(n) => assert_eq!(n, "nonexistent"),

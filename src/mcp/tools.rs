@@ -6,6 +6,7 @@ use crate::error::{WispError, Result};
 use crate::storage::Store;
 use crate::parser::Node;
 use crate::http::Client;
+use crate::crawl::Engine;
 use wreq_util::Profile;
 
 /// 抓取单个网页，返回 HTML 文本。
@@ -83,7 +84,11 @@ pub async fn extract_xpath(args: Value) -> Result<Value> {
 }
 
 /// 爬取站点：用内置 SimpleSpider 按 CSS 选择器提取，返回 JSONL。
-pub async fn crawl_site(args: Value, _store: &Arc<Store>) -> Result<Value> {
+///
+/// Task 5：复用 MCP server 启动时创建的共享 Engine（HTTP 连接池 / 请求缓存 / 代理池），
+/// 不再每次调用新建 Engine。per-call `max_pages` 通过 Spider 的 `until()` 终止策略生效，
+/// Engine 自身的 `max_pages` 作为全局兜底。
+pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
     let start_urls: Vec<String> = args.get("start_urls")
         .and_then(|v| v.as_array())
         .ok_or_else(|| WispError::McpError("missing 'start_urls' array".into()))?
@@ -103,12 +108,13 @@ pub async fn crawl_site(args: Value, _store: &Arc<Store>) -> Result<Value> {
         .and_then(|v| v.as_u64())
         .unwrap_or(100) as usize;
 
-    use crate::crawl::{Spider, Engine, SpiderRequest, SpiderResponse};
+    use crate::crawl::{Spider, SpiderRequest, SpiderResponse, MaxPages, StopCondition};
     use async_trait::async_trait;
 
     struct SimpleSpider {
         css: String,
         start_urls: Vec<String>,
+        max_pages: usize,
     }
 
     #[async_trait]
@@ -125,20 +131,15 @@ pub async fn crawl_site(args: Value, _store: &Arc<Store>) -> Result<Value> {
             (items, vec![])
         }
         fn obey_robots(&self) -> bool { false }
+        // per-call max_pages：由 Spider 终止策略生效，Engine 的 max_pages 作为全局兜底
+        fn until(&self) -> Arc<dyn StopCondition> {
+            Arc::new(MaxPages(self.max_pages))
+        }
     }
 
-    // SimpleSpider 接收 start_urls，由 Engine 推入共享队列
-    // Task 3：Engine 重构为纯基础设施，用 infra().build() + run_stream(spider)
-    let spider = SimpleSpider { css: css_selector.clone(), start_urls };
-    let engine = Engine::infra().max_pages(max_pages).build()?;
-    let stream = engine.run_stream(spider).items();
-
-    use futures::StreamExt;
-    let mut items: Vec<Value> = Vec::new();
-    let mut s = stream;
-    while let Some(item) = s.next().await {
-        items.push(item);
-    }
+    // 复用共享 Engine，run() 返回 (stats, items)
+    let spider = SimpleSpider { css: css_selector, start_urls, max_pages };
+    let (_stats, items) = engine.run(spider).await?;
 
     let jsonl: String = items.iter()
         .map(|v| serde_json::to_string(v).unwrap_or_default())
@@ -288,8 +289,13 @@ mod tests {
     #[tokio::test]
     async fn test_crawl_site_missing_args() {
         let store = Arc::new(Store::open_in_memory().unwrap());
+        let engine = crate::crawl::Engine::infra()
+            .max_pages(100)
+            .cache_store(store.clone())
+            .build()
+            .unwrap();
         let args = json!({});
-        let result = crawl_site(args, &store).await;
+        let result = crawl_site(args, &engine).await;
         assert!(result.is_err());
     }
 
