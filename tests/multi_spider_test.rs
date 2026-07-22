@@ -1,57 +1,9 @@
-//! 多 Spider 共享队列 + 路由 + until 终止策略 E2E 测试。
+//! StopCondition 终止策略单元测试。
 //!
-//! 场景：ListSpider 爬取列表页 50 页停，DetailSpider 消费详情 URL。
+//! 验证 MaxPages 停止条件的判定逻辑。真实多 Spider E2E 测试为后续任务。
 
 use std::time::Duration;
-use async_trait::async_trait;
-use serde_json::{json, Value};
-use wisp::crawl::{Spider, SpiderRequest, SpiderResponse, StopCondition};
-use wisp::crawl::{MaxPages, NeverStop, StopContext};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// 列表页 Spider：从 list/1 开始，产出 list/N+1 和 detail/X
-struct ListSpider {
-    max_page: usize,
-    list_counter: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl Spider for ListSpider {
-    fn name(&self) -> &str { "list" }
-    fn start_urls(&self) -> Vec<String> { vec!["http://test.example/list/1".into()] }
-    fn patterns(&self) -> Vec<String> { vec![r"test\.example/list/\d+".into()] }
-    fn until(&self) -> Arc<dyn wisp::crawl::StopCondition> {
-        Arc::new(MaxPages(self.max_page))
-    }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        let n = self.list_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let items = vec![json!({ "list_page": n })];
-        // follow 下一页列表 + 一个详情
-        let next = resp.follow(&format!("/list/{}", n + 1)).unwrap();
-        let detail = resp.follow(&format!("/detail/{}", n)).unwrap();
-        (items, vec![next, detail])
-    }
-}
-
-/// 详情页 Spider：消费 detail URL
-struct DetailSpider {
-    detail_counter: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl Spider for DetailSpider {
-    fn name(&self) -> &str { "detail" }
-    fn start_urls(&self) -> Vec<String> { vec![] }
-    fn patterns(&self) -> Vec<String> { vec![r"test\.example/detail/\d+".into()] }
-    fn until(&self) -> Arc<dyn wisp::crawl::StopCondition> {
-        Arc::new(NeverStop)  // 受限于上游 ListSpider
-    }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        let n = self.detail_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        (vec![json!({ "detail_page": n })], vec![])
-    }
-}
+use wisp::crawl::{MaxPages, StopCondition, StopContext};
 
 #[test]
 fn test_max_pages_condition() {

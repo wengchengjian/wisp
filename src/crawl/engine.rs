@@ -529,3 +529,98 @@ impl Drop for InFlightGuard {
         self.counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::time::Instant;
+
+    /// 最小 Spider：parse 返回空，不产出 items/follows，避免触碰事件通道。
+    struct DummySpider;
+
+    #[async_trait]
+    impl Spider for DummySpider {
+        fn name(&self) -> &str { "dummy" }
+        fn start_urls(&self) -> Vec<String> { vec![] }
+        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+            (vec![], vec![])
+        }
+    }
+
+    /// 构造最小 EngineContext（单 Spider，Http 模式，无事件通道）。
+    /// 返回上下文与对应 stats 的 Arc 克隆，便于测试断言计数器。
+    fn make_ctx() -> (EngineContext, Arc<SpiderStats>) {
+        let stats = Arc::new(SpiderStats::new());
+        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
+        let ctx = EngineContext {
+            client: Arc::new(Client::new().expect("build http client")),
+            sched: Arc::new(scheduler::Scheduler::new()),
+            robots_cache: Arc::new(Mutex::new(robots::RobotsCache::new())),
+            follow_tx,
+            follow_rx: Arc::new(Mutex::new(follow_rx)),
+            domain_sems: Arc::new(Mutex::new(HashMap::new())),
+            proxy_pool: None,
+            cache_store: None,
+            request_cache: None,
+            abort_flag: Arc::new(AtomicBool::new(false)),
+            start: Instant::now(),
+            tx: None,
+            dev_mode: false,
+            spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
+            stats: vec![stats.clone()],
+            rule_engines: vec![Arc::new(Mutex::new(auto::ModeRuleEngine::new()))],
+            auto_excludes: vec![HashSet::new()],
+            allowed_list: vec![Arc::new(HashSet::new())],
+            fetcher_configs: vec![http::Config::default()],
+            fetch_modes: vec![FetchMode::Http],
+            max_concurrents: vec![8],
+            max_depths: vec![u32::MAX],
+            obey_robots_flags: vec![false],
+            global_in_flight: Arc::new(AtomicUsize::new(0)),
+            engine_max_pages: 100,
+        };
+        (ctx, stats)
+    }
+
+    /// 构造最小 SpiderResponse，仅 from_cache 字段可变。
+    fn make_resp(from_cache: bool) -> SpiderResponse {
+        SpiderResponse {
+            url: "http://example.com/page".into(),
+            status: 200,
+            headers: HashMap::new(),
+            body: vec![],
+            request: SpiderRequest::get("http://example.com/page"),
+            tracker: None,
+            from_cache,
+        }
+    }
+
+    /// 缓存命中（from_cache=true）时 stats.pages 不应递增。
+    #[tokio::test]
+    async fn process_response_from_cache_does_not_increment_pages() {
+        let (ctx, stats) = make_ctx();
+        let req = SpiderRequest::get("http://example.com/page");
+        let resp = make_resp(true);
+        process_response(&ctx, resp, &req, 0).await;
+        assert_eq!(
+            stats.pages.load(Ordering::SeqCst),
+            0,
+            "缓存命中时 pages 不应递增"
+        );
+    }
+
+    /// 非缓存响应（from_cache=false）时 stats.pages 应递增。
+    #[tokio::test]
+    async fn process_response_not_from_cache_increments_pages() {
+        let (ctx, stats) = make_ctx();
+        let req = SpiderRequest::get("http://example.com/page");
+        let resp = make_resp(false);
+        process_response(&ctx, resp, &req, 0).await;
+        assert_eq!(
+            stats.pages.load(Ordering::SeqCst),
+            1,
+            "非缓存响应 pages 应递增到 1"
+        );
+    }
+}
