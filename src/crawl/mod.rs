@@ -165,6 +165,18 @@ pub trait Spider: Send + Sync + 'static {
     fn start_urls(&self) -> Vec<String>;
     async fn parse(&self, response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>);
 
+    /// 请求分发入口。Engine 调用此方法（不直接调 parse）。
+    ///
+    /// 默认实现：直接调 `parse()`，保持向后兼容。
+    /// 用户可重写此方法实现 callback 路由（参考 ClosureSpider）。
+    ///
+    /// # 路由约定
+    /// - `resp.request.callback` 为 `None` 或 `"default"`：入口请求
+    /// - 其他字符串：用户自定义 label（通过 `resp.follow_with(url, "detail")` 指定）
+    async fn handle(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        self.parse(resp).await
+    }
+
     // Optional with defaults
     fn allowed_domains(&self) -> HashSet<String> { HashSet::new() }
     fn concurrent_requests(&self) -> u32 { 8 }
@@ -192,28 +204,8 @@ pub trait Spider: Send + Sync + 'static {
     async fn on_before_request(&self, _req: &SpiderRequest) -> RequestAction {
         RequestAction::Proceed
     }
-    /// Cron 表达式（标准 5 字段）。
-    ///
-    /// **注意：当前共享队列架构暂未实现 cron 循环**，返回 Some 时仅记录 warning 并执行一次。
-    /// 完整 cron 调度为后续路线图项。
-    fn schedule(&self) -> Option<&str> { None }
 
-    // === 路由与终止（新增） ===
-
-    /// URL 匹配模式（字符串数组，内部自动编译为正则）。默认空 Vec（匹配所有）。
-    fn patterns(&self) -> Vec<String> { Vec::new() }
-
-    /// URL 匹配判定。默认实现遍历 patterns()，任一正则匹配即返回 true。
-    /// patterns() 为空时匹配所有 URL。
-    fn matches(&self, url: &str) -> bool {
-        let patterns = self.patterns();
-        if patterns.is_empty() {
-            return true;
-        }
-        patterns.iter().any(|p| {
-            regex::Regex::new(p).map(|re| re.is_match(url)).unwrap_or(false)
-        })
-    }
+    // === 终止条件（保留） ===
 
     /// 终止条件。默认永不停止（由引擎 max_pages 兜底）。
     fn until(&self) -> Arc<dyn StopCondition> {
