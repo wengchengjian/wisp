@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -14,7 +15,8 @@ pub struct SpiderStats {
     pub retries: AtomicUsize,
     pub offsite: AtomicUsize,
     pub cache_hits: AtomicUsize,
-    pub in_flight: AtomicUsize,
+    /// 在飞请求数。使用 Arc 以便 InFlightGuard 克隆。
+    pub in_flight: Arc<AtomicUsize>,
     pub status_codes: Mutex<HashMap<u16, usize>>,
     pub start: Instant,
 }
@@ -29,7 +31,7 @@ impl SpiderStats {
             retries: AtomicUsize::new(0),
             offsite: AtomicUsize::new(0),
             cache_hits: AtomicUsize::new(0),
-            in_flight: AtomicUsize::new(0),
+            in_flight: Arc::new(AtomicUsize::new(0)),
             status_codes: Mutex::new(HashMap::new()),
             start: Instant::now(),
         }
