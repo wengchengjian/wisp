@@ -20,7 +20,7 @@ pub fn xpath_full(node: &Node, expr: &str) -> Result<NodeList> {
     let package = node.doc.sxd_package();
     let doc = package.as_document();
 
-    // 定位当前节点在 sxd 树中的对应节点（用 tag 启发式定位）。
+    // 定位当前节点在 sxd 树中的对应节点（用路径签名精确匹配，失败回退到 root）。
     // locate_in_sxd 返回 Option<dom::Element>，doc.root() 返回 dom::Root，
     // 二者类型不同但都 Into<nodeset::Node>，统一转成 nodeset::Node 给 evaluate。
     let context_element = match locate_in_sxd(doc, node) {
@@ -56,22 +56,19 @@ pub fn xpath_full(node: &Node, expr: &str) -> Result<NodeList> {
 
 /// 在 sxd 树中定位 scraper 节点的对应节点。
 ///
-/// 先用路径签名精确匹配，失败回退到"第一个同名元素"启发式。
+/// 用路径签名精确匹配。签名失败返回 None（不再回退到启发式，避免误匹配）。
 fn locate_in_sxd<'d>(doc: dom::Document<'d>, node: &Node) -> Option<dom::Element<'d>> {
     let target_tag = node.tag();
     if target_tag.is_empty() {
         return None;
     }
-    // 策略 1：路径签名精确匹配
     let sig = NodeSignature::from_scraper(node);
-    if let Some(e) = sig.find_in_sxd(doc) {
-        return Some(e);
-    }
-    // 策略 2：回退到第一个同名元素（保持向后兼容）
-    find_first_element_by_tag(doc.root(), &target_tag)
+    sig.find_in_sxd(doc)
+    // 注意：不再回退到 find_first_element_by_tag，签名失败即失败
 }
 
 /// DFS 遍历 sxd 树（从 root 起）找第一个 local_part == tag 的元素。
+#[cfg(test)]
 fn find_first_element_by_tag<'d>(root: dom::Root<'d>, tag: &str) -> Option<dom::Element<'d>> {
     for child in root.children() {
         if let dom::ChildOfRoot::Element(e) = child {
@@ -87,6 +84,7 @@ fn find_first_element_by_tag<'d>(root: dom::Root<'d>, tag: &str) -> Option<dom::
 }
 
 /// DFS 遍历 sxd 子树（从 element 起）找第一个 local_part == tag 的元素。
+#[cfg(test)]
 fn find_first_element_by_tag_in_element<'d>(
     parent: dom::Element<'d>,
     tag: &str,
@@ -106,31 +104,11 @@ fn find_first_element_by_tag_in_element<'d>(
 
 /// 在 scraper 树中找到 sxd 节点的对应节点。
 ///
-/// 先用路径签名精确匹配，失败回退到"tag + 第一个属性"启发式。
+/// 用路径签名精确匹配。签名失败返回 None。
 fn find_in_scraper<'d>(doc: &Arc<Document>, sxd_node: &dom::Element<'d>) -> Option<Node> {
-    // 策略 1：路径签名精确匹配
     let sig = NodeSignature::from_sxd(*sxd_node);
-    if let Some(node) = sig.find_in_scraper(doc) {
-        return Some(node);
-    }
-    // 策略 2：回退到 tag + 第一个属性（保持向后兼容）
-    let tag = sxd_node.name().local_part();
-    let attrs: Vec<(String, String)> = sxd_node
-        .attributes()
-        .iter()
-        .map(|a| (a.name().local_part().to_string(), a.value().to_string()))
-        .collect();
-    let selector_str = if attrs.is_empty() {
-        tag.to_string()
-    } else {
-        let (k, v) = &attrs[0];
-        format!("{}[{}='{}']", tag, k, v)
-    };
-    let selector = scraper::Selector::parse(&selector_str).ok()?;
-    doc.html
-        .select(&selector)
-        .next()
-        .map(|el| Node::from_element_ref(doc.clone(), el))
+    sig.find_in_scraper(doc)
+    // 签名失败：不再回退到启发式（会导致误匹配）
 }
 
 // ===== 路径签名精确回查 =====
