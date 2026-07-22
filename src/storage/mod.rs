@@ -41,9 +41,21 @@ impl Store {
     }
 
     fn init_schema(&self) -> Result<()> {
+        // 启用 WAL 模式（文件 DB 提升并发读写；in-memory DB 自动降级为 memory）
+        self.conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| WispError::Storage(e.to_string()))?;
+        // 降低 fsync 频率，提升写性能（WAL 下安全）
+        self.conn.execute_batch("PRAGMA synchronous=NORMAL;")
+            .map_err(|e| WispError::Storage(e.to_string()))?;
         self.conn.execute_batch(migrations::SCHEMA_V1)
             .map_err(|e| WispError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    /// 获取连接引用（测试用）。
+    #[doc(hidden)]
+    pub fn conn_ref(&self) -> &Connection {
+        &self.conn
     }
 
     /// Save a crawl checkpoint as bincode blob.
