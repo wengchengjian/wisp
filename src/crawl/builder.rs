@@ -22,6 +22,7 @@
 //! ```
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -53,6 +54,8 @@ pub struct SpiderBuilder {
     parse_fn: Option<ParseFn>,
     async_parse_fn: Option<AsyncParseFn>,
     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
+    patterns: Vec<String>,
+    until_cond: Arc<dyn super::stop::StopCondition>,
 }
 
 impl SpiderBuilder {
@@ -73,6 +76,8 @@ impl SpiderBuilder {
             parse_fn: None,
             async_parse_fn: None,
             is_blocked_fn: None,
+            patterns: Vec::new(),
+            until_cond: Arc::new(super::NeverStop),
         }
     }
 
@@ -174,6 +179,18 @@ impl SpiderBuilder {
         self
     }
 
+    /// 设置 URL 匹配模式（正则字符串数组）。任一匹配即处理该 URL。
+    pub fn patterns(mut self, patterns: Vec<String>) -> Self {
+        self.patterns = patterns;
+        self
+    }
+
+    /// 设置终止条件策略。
+    pub fn until<C: super::stop::StopCondition + 'static>(mut self, cond: C) -> Self {
+        self.until_cond = Arc::new(cond);
+        self
+    }
+
     /// 鏋勫缓 ClosureSpider 瀹炰緥銆?
     ///
     /// # Panics
@@ -198,6 +215,8 @@ impl SpiderBuilder {
             parse_fn: self.parse_fn,
             async_parse_fn: self.async_parse_fn,
             is_blocked_fn: self.is_blocked_fn,
+            patterns: self.patterns,
+            until_cond: self.until_cond,
         }
     }
 }
@@ -218,6 +237,8 @@ pub struct ClosureSpider {
     parse_fn: Option<ParseFn>,
     async_parse_fn: Option<AsyncParseFn>,
     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
+    patterns: Vec<String>,
+    until_cond: Arc<dyn super::stop::StopCondition>,
 }
 
 #[async_trait]
@@ -250,6 +271,12 @@ impl Spider for ClosureSpider {
         } else {
             super::BLOCKED_STATUS_CODES.contains(&resp.status)
         }
+    }
+
+    fn patterns(&self) -> Vec<String> { self.patterns.clone() }
+
+    fn until(&self) -> Arc<dyn super::stop::StopCondition> {
+        Arc::clone(&self.until_cond)
     }
 }
 
