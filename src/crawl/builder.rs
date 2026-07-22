@@ -2,7 +2,7 @@
 //!
 //! # 示例
 //!
-//! ## 简单爬虫（单 parse 闭包）
+//! ## 简单爬虫（单 default handler）
 //!
 //! ```rust,no_run
 //! use wisp::crawl::SpiderBuilder;
@@ -12,7 +12,7 @@
 //!     .start_urls(vec!["https://quotes.toscrape.com/"])
 //!     .delay(Duration::from_millis(500))
 //!     .obey_robots(false)
-//!     .parse(|resp| {
+//!     .on("default", |resp| async move {
 //!         let doc = resp.parse().unwrap();
 //!         let items = doc.select(".quote").iter().map(|q| {
 //!             serde_json::json!({ "text": q.select_one(".text").map(|n| n.text()) })
@@ -63,12 +63,6 @@ use serde_json::Value;
 use super::{Spider, SpiderRequest, SpiderResponse};
 use crate::http;
 
-/// 解析闭包类型：接收 SpiderResponse，返回 (items, follow_requests)。
-pub type ParseFn = Box<dyn Fn(SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) + Send + Sync + 'static>;
-
-/// 异步解析闭包类型。
-pub type AsyncParseFn = Box<dyn Fn(SpiderResponse) -> std::pin::Pin<Box<dyn std::future::Future<Output = (Vec<Value>, Vec<SpiderRequest>)> + Send>> + Send + Sync + 'static>;
-
 /// 异步 handler 签名：接收 SpiderResponse，返回 (items, follows)。
 ///
 /// 用 `Arc<dyn Fn(...) -> BoxFuture>` 让闭包可 Clone + 异步 + Send + Sync。
@@ -93,8 +87,6 @@ pub struct SpiderBuilder {
     fetch_mode: crate::fetcher::FetchMode,
     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
     auto_exclude: HashSet<String>,
-    parse_fn: Option<ParseFn>,
-    async_parse_fn: Option<AsyncParseFn>,
     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
 }
@@ -114,8 +106,6 @@ impl SpiderBuilder {
             fetch_mode: crate::fetcher::FetchMode::Http,
             auto_rules: Vec::new(),
             auto_exclude: HashSet::new(),
-            parse_fn: None,
-            async_parse_fn: None,
             is_blocked_fn: None,
             until_cond: Arc::new(super::NeverStop),
         }
@@ -185,25 +175,6 @@ impl SpiderBuilder {
         self
     }
 
-    /// 设置同步解析闭包。
-    pub fn parse<F>(mut self, f: F) -> Self
-    where
-        F: Fn(SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) + Send + Sync + 'static,
-    {
-        self.parse_fn = Some(Box::new(f));
-        self
-    }
-
-    /// 设置异步解析闭包。
-    pub fn parse_async<F, Fut>(mut self, f: F) -> Self
-    where
-        F: Fn(SpiderResponse) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = (Vec<Value>, Vec<SpiderRequest>)> + Send + 'static,
-    {
-        self.async_parse_fn = Some(Box::new(move |resp| Box::pin(f(resp))));
-        self
-    }
-
     /// 自定义阻塞检测逻辑。
     pub fn is_blocked<F>(mut self, f: F) -> Self
     where
@@ -218,8 +189,8 @@ impl SpiderBuilder {
     /// 多 callback 路由：`resp.follow_with(url, "detail")` 产生的请求会被
     /// `on("detail", handler)` 注册的 handler 处理。
     ///
-    /// 与 `parse()` / `parse_async()` 互斥：若已注册 handler，则 `parse()`
-    /// 仅作为直接调用时的兜底，`handle()` 路由优先使用 handler。
+    /// 这是定义 Spider 解析逻辑的唯一 API：至少注册一个 handler（通常为
+    /// `"default"`）才能 `build()`。
     pub fn on<F, Fut>(mut self, label: &str, handler: F) -> Self
     where
         F: Fn(SpiderResponse) -> Fut + Send + Sync + 'static,
@@ -271,11 +242,11 @@ impl SpiderBuilder {
     /// 构建 ClosureSpider 实例。
     ///
     /// # Panics
-    /// 若未设置任何 handler（`parse()` / `parse_async()` / `on()` 均未调用）则 panic。
+    /// 若未注册任何 handler（`on()` 未调用）则 panic。
     pub fn build(self) -> ClosureSpider {
         assert!(
-            self.parse_fn.is_some() || self.async_parse_fn.is_some() || !self.handlers.is_empty(),
-            "SpiderBuilder: 必须设置 parse() / parse_async() / on() 之一"
+            !self.handlers.is_empty(),
+            "SpiderBuilder: 必须至少注册一个 handler（通过 on()）"
         );
         ClosureSpider {
             name: self.name,
@@ -289,8 +260,6 @@ impl SpiderBuilder {
             fetch_mode: self.fetch_mode,
             auto_rules: self.auto_rules,
             auto_exclude: self.auto_exclude,
-            parse_fn: self.parse_fn,
-            async_parse_fn: self.async_parse_fn,
             is_blocked_fn: self.is_blocked_fn,
             until_cond: self.until_cond,
         }
@@ -310,8 +279,6 @@ pub struct ClosureSpider {
     fetch_mode: crate::fetcher::FetchMode,
     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
     auto_exclude: HashSet<String>,
-    parse_fn: Option<ParseFn>,
-    async_parse_fn: Option<AsyncParseFn>,
     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
 }
@@ -332,9 +299,9 @@ impl Spider for ClosureSpider {
     /// callback 路由：根据 `resp.request.callback` 查表分发。
     ///
     /// 路由顺序：
-    /// 1. callback 为 `None` 或 `"default"` → "default" handler（若有），否则 parse 闭包
+    /// 1. callback 为 `None` 或 `"default"` → "default" handler（若有）
     /// 2. callback 为其他 label → 对应 handler（若有）
-    /// 3. label 无匹配 → 回退到 "default" handler，再回退到 parse 闭包
+    /// 3. label 无匹配 → 回退到 "default" handler
     /// 4. 都无 → 返回空
     async fn handle(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
         let label = resp.request.callback.as_deref().unwrap_or("default");
@@ -345,22 +312,17 @@ impl Spider for ClosureSpider {
                 if let Some(default_h) = self.handlers.get("default") {
                     default_h(resp).await
                 } else {
-                    // 无 default handler，回退到 parse 闭包
-                    self.parse(resp).await
+                    // 无 default handler，返回空
+                    (vec![], vec![])
                 }
             }
         }
     }
 
-    /// parse 兜底：用户未注册任何 handler 时用，或 handle() 回退时调用。
-    async fn parse(&self, response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        if let Some(ref f) = self.async_parse_fn {
-            f(response).await
-        } else if let Some(ref f) = self.parse_fn {
-            f(response)
-        } else {
-            (vec![], vec![])
-        }
+    /// parse 兜底：ClosureSpider 不再使用 parse 闭包，统一走 `handle()` 路由。
+    /// 此实现仅满足 Spider trait 默认契约，返回空结果。
+    async fn parse(&self, _response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        (vec![], vec![])
     }
 
     fn is_blocked(&self, resp: &SpiderResponse) -> bool {
@@ -387,8 +349,7 @@ mod tests {
             .start_urls(vec!["https://example.com/"])
             .delay_ms(100)
             .obey_robots(false)
-            .parse(|resp| {
-                let _ = resp;
+            .on("default", |_resp| async move {
                 (vec![json!({"ok": true})], vec![])
             })
             .build();
@@ -404,7 +365,7 @@ mod tests {
         let spider = SpiderBuilder::new("test")
             .start_urls(vec!["https://example.com/"])
             .allowed_domains(vec!["example.com"])
-            .parse(|_| (vec![], vec![]))
+            .on("default", |_| async move { (vec![], vec![]) })
             .build();
 
         let domains = spider.allowed_domains();
@@ -412,18 +373,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "必须设置 parse()")]
-    fn test_spider_builder_no_parse_panics() {
+    #[should_panic(expected = "必须至少注册一个 handler")]
+    fn test_spider_builder_no_handler_panics() {
         let _spider = SpiderBuilder::new("test")
             .start_urls(vec!["https://example.com/"])
             .build();
     }
 
     #[tokio::test]
-    async fn test_closure_spider_parse() {
+    async fn test_closure_spider_default_handler() {
         let spider = SpiderBuilder::new("test")
             .start_urls(vec!["https://example.com/"])
-            .parse(|resp| {
+            .on("default", |resp| async move {
                 let doc = resp.parse().unwrap();
                 let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
                 (vec![json!({"title": title})], vec![])
@@ -440,17 +401,17 @@ mod tests {
             from_cache: false,
         };
 
-        let (items, follows) = spider.parse(resp).await;
+        let (items, follows) = spider.handle(resp).await;
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["title"], "Hello");
         assert!(follows.is_empty());
     }
 
     #[tokio::test]
-    async fn test_closure_spider_parse_async() {
+    async fn test_closure_spider_async_handler() {
         let spider = SpiderBuilder::new("async-test")
             .start_urls(vec!["https://example.com/"])
-            .parse_async(|resp| async move {
+            .on("default", |resp| async move {
                 let doc = resp.parse().unwrap();
                 let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
                 (vec![json!({"text": text})], vec![])
@@ -467,7 +428,7 @@ mod tests {
             from_cache: false,
         };
 
-        let (items, _) = spider.parse(resp).await;
+        let (items, _) = spider.handle(resp).await;
         assert_eq!(items[0]["text"], "World");
     }
 
@@ -475,7 +436,7 @@ mod tests {
     fn test_closure_spider_custom_is_blocked() {
         let spider = SpiderBuilder::new("test")
             .start_urls(Vec::<String>::new())
-            .parse(|_| (vec![], vec![]))
+            .on("default", |_| async move { (vec![], vec![]) })
             .is_blocked(|resp| resp.body.windows(7).any(|w| w == b"blocked"))
             .build();
 
@@ -569,12 +530,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_closure_spider_handle_fallback_to_parse() {
-        // 无 handler 时，handle() 回退到 parse 闭包
+    async fn test_closure_spider_handle_default_handler() {
+        // 无 callback 时，handle() 路由到 "default" handler
         let spider = SpiderBuilder::new("fallback")
             .start_urls(vec!["https://example.com/"])
-            .parse(|_resp| {
-                (vec![json!({"via": "parse"})], vec![])
+            .on("default", |_resp| async move {
+                (vec![json!({"via": "default"})], vec![])
             })
             .build();
 
@@ -588,6 +549,6 @@ mod tests {
             from_cache: false,
         };
         let (items, _) = spider.handle(resp).await;
-        assert_eq!(items[0]["via"], "parse");
+        assert_eq!(items[0]["via"], "default");
     }
 }

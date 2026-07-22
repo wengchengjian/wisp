@@ -118,18 +118,18 @@ async fn test_callback_default_label_explicit_string() {
 }
 
 #[tokio::test]
-async fn test_callback_no_handler_falls_back_to_parse() {
-    // 无 on() 注册，只用 parse() → handle() 回退到 parse 闭包
+async fn test_callback_default_handler_serves_no_callback() {
+    // 只注册 "default" handler，无 callback 时走 default handler
     let spider = SpiderBuilder::new("fallback")
         .start_urls(vec!["https://example.com/"])
-        .parse(|_resp| {
-            (vec![json!({"via": "parse"})], vec![])
+        .on("default", |_resp| async move {
+            (vec![json!({"via": "default"})], vec![])
         })
         .build();
 
     let resp = make_resp("https://example.com/", "<html></html>", None);
     let (items, _) = spider.handle(resp).await;
-    assert_eq!(items[0]["via"], "parse");
+    assert_eq!(items[0]["via"], "default");
 }
 
 #[tokio::test]
@@ -205,7 +205,7 @@ async fn test_spider_trait_default_handle_calls_parse() {
 
 #[tokio::test]
 async fn test_callback_empty_handler_returns_empty() {
-    // 只注册 on()，无 parse()，无 default handler 匹配时返回空
+    // 只注册 on()，无 "default" handler，无 callback 匹配时返回空
     let spider = SpiderBuilder::new("empty")
         .start_urls(vec!["https://example.com/"])
         .on("only", |_resp| async move {
@@ -213,7 +213,7 @@ async fn test_callback_empty_handler_returns_empty() {
         })
         .build();
 
-    // callback=None，无 "default" handler，无 parse 闭包 → 返回空
+    // callback=None，无 "default" handler → 返回空
     let resp = make_resp("https://example.com/", "<html></html>", None);
     let (items, follows) = spider.handle(resp).await;
     assert!(items.is_empty());

@@ -56,7 +56,7 @@ async fn test_quotes_full_crawl_10_pages() {
         .concurrent(4)
         .delay_ms(200)
         .obey_robots(false)
-        .parse(|resp| {
+        .on("default", |resp| async move {
             let doc = resp.parse().unwrap();
             let items: Vec<Value> = doc.select(".quote").iter().map(|q| {
                 serde_json::json!({
@@ -291,7 +291,7 @@ async fn test_spider_builder_engine_integration() {
         .delay_ms(300)
         .obey_robots(false)
         .max_retries(2)
-        .parse(|resp| {
+        .on("default", |resp| async move {
             let doc = resp.parse().unwrap();
             let items: Vec<Value> = doc.select("article.product_pod").iter().map(|book| {
                 serde_json::json!({

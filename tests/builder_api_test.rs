@@ -23,8 +23,7 @@ fn test_spider_builder_full_config() {
         .delay(Duration::from_millis(500))
         .obey_robots(false)
         .max_retries(5)
-        .parse(|resp| {
-            let _ = resp;
+        .on("default", |_resp| async move {
             (vec![json!({"ok": true})], vec![])
         })
         .build();
@@ -41,7 +40,7 @@ fn test_spider_builder_delay_ms() {
     let spider = SpiderBuilder::new("delay-test")
         .start_urls(vec!["https://x.com/"])
         .delay_ms(250)
-        .parse(|_| (vec![], vec![]))
+        .on("default", |_| async move { (vec![], vec![]) })
         .build();
     assert_eq!(spider.download_delay(), Duration::from_millis(250));
 }
@@ -50,7 +49,7 @@ fn test_spider_builder_delay_ms() {
 async fn test_spider_builder_parse_with_follow() {
     let spider = SpiderBuilder::new("follow-test")
         .start_urls(vec!["https://example.com/"])
-        .parse(|resp| {
+        .on("default", |resp| async move {
             let doc = resp.parse().unwrap();
             let items: Vec<Value> = doc.select("h1").text().into_iter()
                 .map(|t| json!({"title": t}))
@@ -70,7 +69,7 @@ async fn test_spider_builder_parse_with_follow() {
         from_cache: false,
     };
 
-    let (items, follows) = spider.parse(resp).await;
+    let (items, follows) = spider.handle(resp).await;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["title"], "Home");
     assert_eq!(follows.len(), 1);
@@ -155,7 +154,7 @@ async fn test_engine_builder_local_server() {
     let spider = SpiderBuilder::new("builder-test")
         .start_urls(vec![base_url])
         .obey_robots(false)
-        .parse(|resp| {
+        .on("default", |resp| async move {
             let doc = resp.parse().unwrap();
             let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
             (vec![json!({"title": title})], vec![])
@@ -236,7 +235,7 @@ async fn test_stream_with_builder() {
     let spider = SpiderBuilder::new("stream-builder")
         .start_urls(vec![base_url])
         .obey_robots(false)
-        .parse(|resp| {
+        .on("default", |resp| async move {
             let doc = resp.parse().unwrap();
             let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
             (vec![json!({"text": text})], vec![])

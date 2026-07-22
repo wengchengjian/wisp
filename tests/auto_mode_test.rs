@@ -199,7 +199,7 @@ async fn test_auto_mode_with_local_server() {
         .start_urls(vec![base_url.clone()])
         .mode(FetchMode::Auto)
         .obey_robots(false)
-        .parse(|resp| {
+        .on("default", |resp| async move {
             // 浣跨敤 resp.css() 瑙﹀彂杩借釜
             let products = resp.css(".product");
             let items: Vec<Value> = products.iter().map(|p| {
@@ -255,7 +255,7 @@ async fn test_auto_mode_static_page_no_upgrade() {
         .start_urls(vec![base_url])
         .mode(FetchMode::Auto)
         .obey_robots(false)
-        .parse(|resp| {
+        .on("default", |resp| async move {
             let products = resp.css(".product");
             let items: Vec<Value> = products.iter().map(|p| {
                 serde_json::json!({ "text": p.text() })
