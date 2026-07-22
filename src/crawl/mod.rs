@@ -6,6 +6,7 @@ pub mod cache;
 pub mod templates;
 pub mod state;
 pub mod stats;
+pub mod stop;
 pub mod items;
 pub mod builder;
 pub mod session;
@@ -21,6 +22,7 @@ pub use builder::{SpiderBuilder, ClosureSpider};
 pub use session::{SessionManager, FetcherType};
 pub use auto::{SelectorTracker, ModeRuleEngine};
 pub use request_cache::RequestCache;
+pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
