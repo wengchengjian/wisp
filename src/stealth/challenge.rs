@@ -120,52 +120,6 @@ impl<'a> ChallengeSolver<'a> {
             }
         }
     }
-
-    /// Wait for a JS challenge (5-second shield) to complete.
-    /// The page will automatically reload once the challenge passes.
-    async fn wait_js_challenge(&self, timeout: Duration) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + timeout;
-
-        loop {
-            if tokio::time::Instant::now() > deadline {
-                return Err(WispError::Timeout("JS challenge did not resolve in time".into()));
-            }
-
-            // Check if challenge is gone
-            let check = self.detect().await?;
-            if check == ChallengeType::None {
-                return Ok(());
-            }
-
-            // Wait a bit before checking again
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-        }
-    }
-
-    /// Wait for a managed challenge to resolve.
-    /// May involve JS execution + possible Turnstile appearance.
-    async fn wait_managed(&self, timeout: Duration) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + timeout;
-
-        loop {
-            if tokio::time::Instant::now() > deadline {
-                return Err(WispError::Timeout("Managed challenge did not resolve in time".into()));
-            }
-
-            let check = self.detect().await?;
-            match check {
-                ChallengeType::None => return Ok(()),
-                ChallengeType::Turnstile => {
-                    // Managed challenge escalated to Turnstile
-                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                    return turnstile::solve_turnstile(self.page, remaining).await;
-                }
-                _ => {
-                    tokio::time::sleep(Duration::from_millis(1000)).await;
-                }
-            }
-        }
-    }
 }
 
 /// Check if a response/page comes from Cloudflare (by checking headers or page content).

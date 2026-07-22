@@ -145,7 +145,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         None
     };
 
-    let mut final_resp: Option<SpiderResponse> = None;
+    let final_resp: Option<SpiderResponse>;
     let mut last_error: Option<String> = None;
 
     if let Some(cached) = cached_resp {

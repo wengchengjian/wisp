@@ -12,7 +12,6 @@ pub struct Page {
     pub(crate) session: Arc<CdpSession>,
     pub(crate) session_id: String,
     pub(crate) frame_id: String,
-    pub(crate) headless: bool,
 }
 
 impl Page {
@@ -43,7 +42,7 @@ impl Page {
         let _ = session.execute_with_session("Log.enable", json!({}), Some(&session_id)).await;
         session.execute_with_session("Page.setLifecycleEventsEnabled", json!({"enabled": true}), Some(&session_id)).await?;
 
-        let page = Self { session, session_id, frame_id, headless };
+        let page = Self { session, session_id, frame_id };
 
         // Inject stealth scripts (conditional on headless/headed)
         let stealth_script = if headless {

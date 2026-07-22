@@ -33,10 +33,9 @@ pub use session::Session;
 
 use std::collections::HashMap;
 use std::time::Duration;
-use serde_json::Value;
 use wreq_util::Profile;
 
-use crate::error::{WispError, Result};
+use crate::error::Result;
 use crate::http::block::DomainBlocker;
 
 /// 鎶撳彇妯″紡銆?

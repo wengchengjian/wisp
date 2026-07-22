@@ -1,16 +1,12 @@
 //! Builder pattern API tests (no network required).
 
 use std::time::Duration;
-use std::collections::HashSet;
-use async_trait::async_trait;
 use serde_json::{json, Value};
 use wisp::crawl::{
-    Spider, SpiderBuilder, ClosureSpider, Engine, SpiderRequest, SpiderResponse,
+    Spider, SpiderBuilder, Engine, SpiderRequest, SpiderResponse,
 };
 use wisp::crawl::CrawlEvent;
-use wisp::http;
 use wisp::parser::Node;
-use wisp::FetchMode;
 use futures::StreamExt;
 
 // === SpiderBuilder tests ===

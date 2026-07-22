@@ -78,7 +78,7 @@ impl Session {
 
     /// 发送自定义请求。
     pub async fn fetch(&self, req: Request) -> Result<Response> {
-        let mut resp = self.fetcher.fetch(req).await?;
+        let resp = self.fetcher.fetch(req).await?;
         self.store_cookies_from_response(&resp.url.clone(), &resp).await;
         Ok(resp)
     }
