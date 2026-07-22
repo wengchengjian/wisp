@@ -165,7 +165,7 @@ async fn test_engine_builder_local_server() {
     let stats = Engine::builder(spider)
         .max_pages(1)
         .max_concurrent(2)
-        .run()
+        .run_one()
         .await
         .unwrap();
 

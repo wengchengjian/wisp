@@ -53,7 +53,8 @@ pub use proxy::RotationStrategy;
 pub use storage::Store;
 
 // === 爬虫引擎 ===
-pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider, SessionManager, FetcherType};
+pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider, SessionManager, FetcherType, RequestCache};
+pub use http::UaRotator;
 
 // === 兼容层 ===
 pub use http::{Client, HttpSession, DomainBlocker};

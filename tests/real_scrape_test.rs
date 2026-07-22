@@ -79,7 +79,7 @@ async fn test_quotes_full_crawl_10_pages() {
 
     let stats = Engine::builder(spider)
         .max_pages(10)
-        .run()
+        .run_one()
         .await
         .unwrap();
 
@@ -314,7 +314,7 @@ async fn test_spider_builder_engine_integration() {
 
     let stats = Engine::builder(spider)
         .max_pages(3)
-        .run()
+        .run_one()
         .await
         .unwrap();
 

@@ -6,9 +6,11 @@ pub mod encoding;
 pub mod proxy;
 pub mod session;
 pub mod block;
+pub mod ua;
 
 pub use session::HttpSession;
 pub use block::DomainBlocker;
+pub use ua::UaRotator;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -34,6 +36,8 @@ pub struct Config {
     /// DNS-over-HTTPS 服务器 URL（如 "https://1.1.1.1/dns-query"）。
     /// 启用后通过 DoH 解析域名，防止代理场景下 DNS 泄漏。
     pub dns_over_https: Option<String>,
+    /// 每次请求随机轮换 User-Agent。
+    pub rotate_ua: bool,
 }
 
 impl Default for Config {
@@ -48,6 +52,7 @@ impl Default for Config {
             emulation: Some(Profile::Chrome136),
             header_order: None,
             dns_over_https: None,
+            rotate_ua: false,
         }
     }
 }

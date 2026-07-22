@@ -10,11 +10,16 @@ pub mod builder;
 pub mod session;
 pub mod auto;
 pub mod engine;
+pub mod request_cache;
+pub mod control;
+pub mod output;
+pub mod cron;
 pub use state::CrawlState;
 pub use items::{Items, JsonlWriter};
 pub use builder::{SpiderBuilder, ClosureSpider};
 pub use session::{SessionManager, FetcherType};
 pub use auto::{SelectorTracker, ModeRuleEngine};
+pub use request_cache::RequestCache;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -35,6 +40,19 @@ use crate::fetcher::FetchMode;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Method { Get, Post, Put, Delete }
 
+/// 请求钩子的决策结果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum RequestAction {
+    /// 正常执行
+    Proceed,
+    /// 跳过此请求
+    Skip,
+    /// 延迟指定时间后再执行
+    Delay(Duration),
+    /// 终止整个爬取
+    Abort,
+}
+
 /// A request to be processed by the spider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpiderRequest {
@@ -46,18 +64,22 @@ pub struct SpiderRequest {
     pub meta: Value,
     pub callback: Option<String>,
     pub priority: i32,
+    /// 深度：起始 URL 为 0，每 follow 一次 +1。
+    #[serde(default)]
+    pub depth: u32,
 }
 
 impl SpiderRequest {
     pub fn get(url: &str) -> Self {
-        Self { url: url.to_string(), method: Method::Get, headers: HashMap::new(), body: None, meta: Value::Null, callback: None, priority: 0 }
+        Self { url: url.to_string(), method: Method::Get, headers: HashMap::new(), body: None, meta: Value::Null, callback: None, priority: 0, depth: 0 }
     }
     pub fn post(url: &str, body: Option<String>) -> Self {
-        Self { url: url.to_string(), method: Method::Post, headers: HashMap::new(), body, meta: Value::Null, callback: None, priority: 0 }
+        Self { url: url.to_string(), method: Method::Post, headers: HashMap::new(), body, meta: Value::Null, callback: None, priority: 0, depth: 0 }
     }
     pub fn with_meta(mut self, meta: Value) -> Self { self.meta = meta; self }
     pub fn with_priority(mut self, p: i32) -> Self { self.priority = p; self }
     pub fn with_callback(mut self, cb: &str) -> Self { self.callback = Some(cb.to_string()); self }
+    pub fn with_depth(mut self, d: u32) -> Self { self.depth = d; self }
 }
 
 /// Response received by the spider.
@@ -87,18 +109,18 @@ impl SpiderResponse {
             .map_err(|e| WispError::CdpError(format!("json: {e}")))
     }
 
-    /// 从当前响应 URL 解析相对链接，创建 GET 请求。
+    /// 从当前响应 URL 解析相对链接，创建 GET 请求（depth 自动 +1）。
     pub fn follow(&self, href: &str) -> Option<SpiderRequest> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(SpiderRequest::get(&absolute))
+        Some(SpiderRequest::get(&absolute).with_depth(self.request.depth + 1))
     }
     pub fn follow_with(&self, href: &str, callback: &str) -> Option<SpiderRequest> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(SpiderRequest::get(&absolute).with_callback(callback))
+        Some(SpiderRequest::get(&absolute).with_callback(callback).with_depth(self.request.depth + 1))
     }
     pub fn follow_meta(&self, href: &str, meta: Value) -> Option<SpiderRequest> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(SpiderRequest::get(&absolute).with_meta(meta))
+        Some(SpiderRequest::get(&absolute).with_meta(meta).with_depth(self.request.depth + 1))
     }
 
     /// CSS 查询（Auto 模式自动追踪选择器匹配数）。
@@ -155,6 +177,16 @@ pub trait Spider: Send + Sync + 'static {
     fn fetch_mode(&self) -> FetchMode { FetchMode::Http }
     fn auto_rules(&self) -> Vec<(String, FetchMode)> { Vec::new() }
     fn auto_exclude(&self) -> HashSet<String> { HashSet::new() }
+    /// 最大爬取深度。默认无限制。
+    fn max_depth(&self) -> u32 { u32::MAX }
+    /// 每次请求随机轮换 User-Agent。
+    fn rotate_ua(&self) -> bool { false }
+    /// 每个请求执行前的异步钩子。默认返回 Proceed。
+    async fn on_before_request(&self, _req: &SpiderRequest) -> RequestAction {
+        RequestAction::Proceed
+    }
+    /// Cron 表达式（标准 5 字段）。返回 None 表示立即执行一次（默认行为）。
+    fn schedule(&self) -> Option<&str> { None }
 }
 
 /// 默认阻塞状态码：401/403/407/429/444/500/502/503/504
@@ -213,55 +245,57 @@ impl CrawlStream {
     }
 }
 
-/// Engine configuration.
-pub struct EngineConfig {
-    pub max_pages: usize,
-    pub max_concurrent: usize,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self { max_pages: 1000, max_concurrent: 8 }
-    }
-}
-
-/// The crawling engine that drives a Spider.
-pub struct Engine<S: Spider> {
-    spider: S,
-    config: EngineConfig,
+/// 统一爬虫引擎。支持单/多 Spider，共享连接池/缓存/代理池。
+pub struct Engine {
+    spiders: Vec<Box<dyn Spider>>,
+    max_pages: usize,
+    max_concurrent: Option<usize>,
+    max_depth: Option<u32>,
     checkpoint_store: Option<Arc<crate::storage::Store>>,
     checkpoint_interval: usize,
     cache_store: Option<Arc<crate::storage::Store>>,
     development_mode: bool,
     proxy_pool: Option<Arc<crate::proxy::ProxyPool>>,
-    rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
-    auto_exclude: HashSet<String>,
+    request_cache: Option<RequestCache>,
 }
 
-impl<S: Spider> Engine<S> {
-    pub fn new(spider: S) -> Self {
-        let max_concurrent = spider.concurrent_requests() as usize;
-        let mut rule_engine = auto::ModeRuleEngine::new();
-        for (pattern, mode) in spider.auto_rules() {
-            let _ = rule_engine.add_user_rule(&pattern, mode);
-        }
-        let auto_exclude = spider.auto_exclude();
+impl Engine {
+    /// 单 Spider 便捷构造。
+    pub fn new(spider: impl Spider) -> Self {
         Self {
-            spider,
-            config: EngineConfig { max_concurrent, ..Default::default() },
+            spiders: vec![Box::new(spider)],
+            max_pages: 1000,
+            max_concurrent: None,
+            max_depth: None,
             checkpoint_store: None,
             checkpoint_interval: 100,
             cache_store: None,
             development_mode: false,
             proxy_pool: None,
-            rule_engine: Arc::new(Mutex::new(rule_engine)),
-            auto_exclude,
+            request_cache: None,
         }
     }
 
-    pub fn builder(spider: S) -> Self { Self::new(spider) }
-    pub fn max_pages(mut self, n: usize) -> Self { self.config.max_pages = n; self }
-    pub fn max_concurrent(mut self, n: usize) -> Self { self.config.max_concurrent = n; self }
+    /// 多 Spider 构造。
+    pub fn spiders(spiders: Vec<Box<dyn Spider>>) -> Self {
+        Self {
+            spiders,
+            max_pages: 1000,
+            max_concurrent: None,
+            max_depth: None,
+            checkpoint_store: None,
+            checkpoint_interval: 100,
+            cache_store: None,
+            development_mode: false,
+            proxy_pool: None,
+            request_cache: None,
+        }
+    }
+
+    pub fn builder(spider: impl Spider) -> Self { Self::new(spider) }
+    pub fn max_pages(mut self, n: usize) -> Self { self.max_pages = n; self }
+    pub fn max_concurrent(mut self, n: usize) -> Self { self.max_concurrent = Some(n); self }
+    pub fn max_depth(mut self, n: u32) -> Self { self.max_depth = Some(n); self }
 
     pub fn with_checkpoint(mut self, store: Arc<crate::storage::Store>) -> Self {
         self.checkpoint_store = Some(store); self
@@ -281,18 +315,32 @@ impl<S: Spider> Engine<S> {
     pub fn checkpoint(mut self, store: Arc<crate::storage::Store>, interval: usize) -> Self {
         self.checkpoint_store = Some(store); self.checkpoint_interval = interval; self
     }
+    pub fn request_cache(mut self, cache: RequestCache) -> Self {
+        self.request_cache = Some(cache); self
+    }
 
-    pub async fn run(self) -> Result<CrawlStats> {
+    /// 运行所有 Spider。有 schedule() 的按 cron 循环，无的执行一次。
+    /// 单 Spider 时返回包含一个元素的 Vec。
+    pub async fn run(self) -> Result<Vec<CrawlStats>> {
         self.run_with_sender(None).await
     }
 
-    /// 流式运行：边爬边产出事件。
+    /// 单 Spider 便捷运行，直接返回 CrawlStats。
+    pub async fn run_one(self) -> Result<CrawlStats> {
+        let mut results = self.run_with_sender(None).await?;
+        Ok(results.pop().unwrap_or_default())
+    }
+
+    /// 流式运行：边爬边产出事件（仅单 Spider 模式）。
     pub fn stream(self) -> CrawlStream {
         let (tx, rx) = tokio::sync::mpsc::channel::<CrawlEvent>(128);
         let driver = async move {
-            let stats = self.run_with_sender(Some(tx.clone())).await;
-            match stats {
-                Ok(s) => { let _ = tx.send(CrawlEvent::Done(s)).await; }
+            let results = self.run_with_sender(Some(tx.clone())).await;
+            match results {
+                Ok(mut stats) => {
+                    let s = stats.pop().unwrap_or_default();
+                    let _ = tx.send(CrawlEvent::Done(s)).await;
+                }
                 Err(e) => {
                     let _ = tx.send(CrawlEvent::Error { url: "*".into(), error: e.to_string() }).await;
                     let _ = tx.send(CrawlEvent::Done(CrawlStats::default())).await;
@@ -326,148 +374,229 @@ impl<S: Spider> Engine<S> {
         CrawlStream { inner: Box::pin(s) }
     }
 
-    /// 内部运行逻辑（委托给 engine.rs 的 process_request）。
-    async fn run_with_sender(self, tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>) -> Result<CrawlStats> {
-        let start = std::time::Instant::now();
-        let max_pages = self.config.max_pages;
-        let max_concurrent = self.config.max_concurrent;
-        let checkpoint_store = self.checkpoint_store.clone();
-        let checkpoint_interval = self.checkpoint_interval;
-        let spider_name = self.spider.name().to_string();
-        let fetcher_config = self.spider.fetcher_config();
+    /// 内部运行逻辑：对每个 Spider 启动独立 task，共享连接池/代理池。
+    async fn run_with_sender(self, tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>) -> Result<Vec<CrawlStats>> {
+        // 构建共享 HTTP 客户端（用第一个 spider 的 fetcher_config，或默认）
+        let fetcher_config = self.spiders.first()
+            .map(|s| s.fetcher_config())
+            .unwrap_or_default();
+        let client = Arc::new(
+            Client::builder()
+                .timeout(fetcher_config.timeout)
+                .build()?
+        );
 
-        let client = Client::builder()
-            .timeout(fetcher_config.timeout)
-            .build()?;
+        let mut futures_list: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Result<CrawlStats>>>>> = Vec::new();
+        for spider in self.spiders {
+            let client = client.clone();
+            let proxy_pool = self.proxy_pool.clone();
+            let cache_store = self.cache_store.clone();
+            let checkpoint_store = self.checkpoint_store.clone();
+            let tx = tx.clone();
+            let max_pages = self.max_pages;
+            let max_concurrent = self.max_concurrent.unwrap_or(spider.concurrent_requests() as usize);
+            let max_depth = self.max_depth.unwrap_or(spider.max_depth());
+            let checkpoint_interval = self.checkpoint_interval;
+            let dev_mode = self.development_mode;
+            let request_cache = self.request_cache.clone();
 
-        // checkpoint 恢复
-        let mut restored_state: Option<CrawlState> = None;
-        if let Some(ref store) = checkpoint_store {
-            if let Some(blob) = store.load_checkpoint(&spider_name)? {
-                match bincode::deserialize::<CrawlState>(&blob) {
-                    Ok(state) => { restored_state = Some(state); }
-                    Err(e) => { tracing::warn!("checkpoint 反序列化失败: {}", e); }
+            match spider.schedule() {
+                None => {
+                    // 立即执行一次
+                    let spider: Arc<dyn Spider> = Arc::from(spider);
+                    futures_list.push(Box::pin(async move {
+                        run_spider_once(
+                            spider, client, proxy_pool, cache_store, checkpoint_store,
+                            tx, max_pages, max_concurrent, max_depth, checkpoint_interval, dev_mode,
+                            request_cache,
+                        ).await
+                    }));
+                }
+                Some(expr) => {
+                    // Cron 定时循环
+                    let cron = cron::CronExpr::parse(expr)?;
+                    let spider: Arc<dyn Spider> = Arc::from(spider);
+                    futures_list.push(Box::pin(async move {
+                        loop {
+                            cron.wait_until_next().await;
+                            if control::is_shutdown() { break; }
+                            let _ = run_spider_once(
+                                spider.clone(), client.clone(), proxy_pool.clone(),
+                                cache_store.clone(), checkpoint_store.clone(),
+                                tx.clone(), max_pages, max_concurrent, max_depth,
+                                checkpoint_interval, dev_mode, request_cache.clone(),
+                            ).await;
+                        }
+                        Ok(CrawlStats::default())
+                    }));
                 }
             }
         }
 
-        let start_urls = self.spider.start_urls();
-        let allowed = self.spider.allowed_domains();
-        let obey_robots = self.spider.obey_robots();
-        let fetch_mode = self.spider.fetch_mode();
-        self.spider.on_start().await;
+        let results = futures::future::join_all(futures_list).await;
+        Ok(results.into_iter().filter_map(|s| s.ok()).collect())
+    }
+}
 
-        let spider: Arc<dyn Spider> = Arc::new(self.spider);
-        let sched = Arc::new(scheduler::Scheduler::new());
-        let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
+/// 运行单个 Spider 一轮爬取。
+#[allow(clippy::too_many_arguments)]
+async fn run_spider_once(
+    spider: Arc<dyn Spider>,
+    client: Arc<Client>,
+    proxy_pool: Option<Arc<crate::proxy::ProxyPool>>,
+    cache_store: Option<Arc<crate::storage::Store>>,
+    checkpoint_store: Option<Arc<crate::storage::Store>>,
+    tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
+    max_pages: usize,
+    max_concurrent: usize,
+    max_depth: u32,
+    checkpoint_interval: usize,
+    dev_mode: bool,
+    request_cache: Option<RequestCache>,
+) -> Result<CrawlStats> {
+    let start = std::time::Instant::now();
+    let spider_name = spider.name().to_string();
+    let fetcher_config = spider.fetcher_config();
 
-        if let Some(ref state) = restored_state {
-            for req in &state.pending_urls { sched.push(req.clone()).await; }
-        } else {
-            for url in start_urls { sched.push(SpiderRequest::get(&url)).await; }
+    // 构建 per-spider rule engine
+    let mut rule_engine = auto::ModeRuleEngine::new();
+    for (pattern, mode) in spider.auto_rules() {
+        let _ = rule_engine.add_user_rule(&pattern, mode);
+    }
+    let auto_exclude = spider.auto_exclude();
+
+    // checkpoint 恢复
+    let mut restored_state: Option<CrawlState> = None;
+    if let Some(ref store) = checkpoint_store {
+        if let Some(blob) = store.load_checkpoint(&spider_name)? {
+            match bincode::deserialize::<CrawlState>(&blob) {
+                Ok(state) => { restored_state = Some(state); }
+                Err(e) => { tracing::warn!("checkpoint 反序列化失败: {}", e); }
+            }
         }
+    }
 
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
+    let start_urls = spider.start_urls();
+    let allowed = spider.allowed_domains();
+    let obey_robots = spider.obey_robots();
+    let fetch_mode = spider.fetch_mode();
+    spider.on_start().await;
 
-        let ctx = Arc::new(engine::EngineContext {
-            spider: spider.clone(),
-            client: Arc::new(client),
-            sched: sched.clone(),
-            robots_cache,
-            follow_tx: follow_tx.clone(),
-            follow_rx: Arc::new(Mutex::new(follow_rx)),
-            stats_items: Arc::new(AtomicUsize::new(0)),
-            stats_pages: Arc::new(AtomicUsize::new(0)),
-            stats_errors: Arc::new(AtomicUsize::new(0)),
-            stats_blocked: Arc::new(AtomicUsize::new(0)),
-            stats_retries: Arc::new(AtomicUsize::new(0)),
-            stats_offsite: Arc::new(AtomicUsize::new(0)),
-            stats_cache_hits: Arc::new(AtomicUsize::new(0)),
-            stats_status_codes: Arc::new(Mutex::new(HashMap::new())),
-            domain_sems: Arc::new(Mutex::new(HashMap::new())),
-            in_flight: Arc::new(AtomicUsize::new(0)),
-            allowed: Arc::new(allowed),
-            proxy_pool: self.proxy_pool.clone(),
-            rule_engine: self.rule_engine.clone(),
-            auto_exclude: self.auto_exclude.clone(),
-            cache_store: self.cache_store.clone(),
-            fetcher_config,
-            fetch_mode,
-            max_pages,
-            max_concurrent,
-            obey_robots,
-            dev_mode: self.development_mode,
-            start,
-            tx: tx.clone(),
-        });
+    let sched = Arc::new(scheduler::Scheduler::new());
+    let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
 
-        // 构建并发流：每次从调度器取请求，委托 process_request 处理
-        let stream = {
+    if let Some(ref state) = restored_state {
+        for req in &state.pending_urls { sched.push(req.clone()).await; }
+    } else {
+        for url in start_urls { sched.push(SpiderRequest::get(&url)).await; }
+    }
+
+    let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
+
+    let ctx = Arc::new(engine::EngineContext {
+        spider: spider.clone(),
+        client,
+        sched: sched.clone(),
+        robots_cache,
+        follow_tx: follow_tx.clone(),
+        follow_rx: Arc::new(Mutex::new(follow_rx)),
+        stats_items: Arc::new(AtomicUsize::new(0)),
+        stats_pages: Arc::new(AtomicUsize::new(0)),
+        stats_errors: Arc::new(AtomicUsize::new(0)),
+        stats_blocked: Arc::new(AtomicUsize::new(0)),
+        stats_retries: Arc::new(AtomicUsize::new(0)),
+        stats_offsite: Arc::new(AtomicUsize::new(0)),
+        stats_cache_hits: Arc::new(AtomicUsize::new(0)),
+        stats_status_codes: Arc::new(Mutex::new(HashMap::new())),
+        domain_sems: Arc::new(Mutex::new(HashMap::new())),
+        in_flight: Arc::new(AtomicUsize::new(0)),
+        allowed: Arc::new(allowed),
+        proxy_pool,
+        rule_engine: Arc::new(Mutex::new(rule_engine)),
+        auto_exclude,
+        cache_store,
+        fetcher_config,
+        fetch_mode,
+        max_pages,
+        max_concurrent,
+        max_depth,
+        obey_robots,
+        dev_mode,
+        request_cache,
+        abort_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        start,
+        tx,
+    });
+
+    // 构建并发流
+    let stream = {
+        let ctx = ctx.clone();
+        stream::unfold((), move |_| {
             let ctx = ctx.clone();
-            stream::unfold((), move |_| {
-                let ctx = ctx.clone();
-                async move {
-                    loop {
-                        // 排空 follow channel 中的新请求
-                        let mut rx_guard = ctx.follow_rx.lock().await;
-                        while let Ok(req) = rx_guard.try_recv() {
-                            ctx.sched.push(req).await;
-                        }
-                        drop(rx_guard);
+            async move {
+                loop {
+                    // 全局停止检查
+                    if control::is_shutdown() || ctx.abort_flag.load(Ordering::SeqCst) {
+                        return None;
+                    }
 
-                        if ctx.stats_pages.load(Ordering::SeqCst) >= max_pages {
+                    let mut rx_guard = ctx.follow_rx.lock().await;
+                    while let Ok(req) = rx_guard.try_recv() {
+                        ctx.sched.push(req).await;
+                    }
+                    drop(rx_guard);
+
+                    if ctx.stats_pages.load(Ordering::SeqCst) + ctx.in_flight.load(Ordering::SeqCst) >= max_pages {
+                        if ctx.in_flight.load(Ordering::SeqCst) == 0 { return None; }
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+
+                    let req = match ctx.sched.pop().await {
+                        Some(req) => req,
+                        None => {
                             if ctx.in_flight.load(Ordering::SeqCst) == 0 { return None; }
                             tokio::task::yield_now().await;
                             continue;
                         }
+                    };
 
-                        let req = match ctx.sched.pop().await {
-                            Some(req) => req,
-                            None => {
-                                if ctx.in_flight.load(Ordering::SeqCst) == 0 { return None; }
-                                tokio::task::yield_now().await;
-                                continue;
-                            }
-                        };
-
-                        ctx.in_flight.fetch_add(1, Ordering::SeqCst);
-                        let ctx_c = ctx.clone();
-                        let fut = async move {
-                            let _guard = engine::InFlightGuard { counter: ctx_c.in_flight.clone() };
-                            engine::process_request(&ctx_c, req).await;
-                        };
-                        return Some((fut, ()));
-                    }
+                    ctx.in_flight.fetch_add(1, Ordering::SeqCst);
+                    let ctx_c = ctx.clone();
+                    let fut = async move {
+                        let _guard = engine::InFlightGuard { counter: ctx_c.in_flight.clone() };
+                        engine::process_request(&ctx_c, req).await;
+                    };
+                    return Some((fut, ()));
                 }
-            })
-            .buffer_unordered(max_concurrent)
-        };
-
-        // 驱动流 + 定期 checkpoint
-        tokio::pin!(stream);
-        let mut pages_since_checkpoint = 0usize;
-        while stream.next().await.is_some() {
-            pages_since_checkpoint += 1;
-            if pages_since_checkpoint >= checkpoint_interval {
-                if let Some(ref store) = checkpoint_store {
-                    engine::save_checkpoint(store, &spider_name, &sched, &ctx).await;
-                }
-                pages_since_checkpoint = 0;
             }
-        }
+        })
+        .buffer_unordered(max_concurrent)
+    };
 
-        spider.on_close().await;
-
-        if let Some(ref store) = checkpoint_store {
-            if let Err(e) = store.delete_checkpoint(&spider_name) {
-                tracing::warn!("删除 checkpoint 失败: {}", e);
+    // 驱动流 + 定期 checkpoint
+    tokio::pin!(stream);
+    let mut pages_since_checkpoint = 0usize;
+    while stream.next().await.is_some() {
+        pages_since_checkpoint += 1;
+        if pages_since_checkpoint >= checkpoint_interval {
+            if let Some(ref store) = checkpoint_store {
+                engine::save_checkpoint(store, &spider_name, &sched, &ctx).await;
             }
+            pages_since_checkpoint = 0;
         }
-
-        let final_status_codes = ctx.stats_status_codes.lock().await.clone();
-        Ok(engine::snapshot_stats(&ctx, final_status_codes))
     }
 
+    spider.on_close().await;
+
+    if let Some(ref store) = checkpoint_store {
+        if let Err(e) = store.delete_checkpoint(&spider_name) {
+            tracing::warn!("删除 checkpoint 失败: {}", e);
+        }
+    }
+
+    let final_status_codes = ctx.stats_status_codes.lock().await.clone();
+    Ok(engine::snapshot_stats(&ctx, final_status_codes))
 }
 
 #[cfg(test)]

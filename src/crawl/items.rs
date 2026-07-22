@@ -46,6 +46,22 @@ impl Items {
         std::fs::write(path, jsonl)?;
         Ok(())
     }
+
+    /// 将所有 item 中的 "html" 字段转为 markdown，返回合并结果。
+    pub fn to_markdown(&self) -> Result<String> {
+        let mut out = String::new();
+        for item in &self.items {
+            if let Some(html) = item.get("html").and_then(|v| v.as_str()) {
+                let md = super::output::html_to_markdown(html)?;
+                out.push_str(&md);
+                out.push_str("\n\n---\n\n");
+            } else if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                out.push_str(text);
+                out.push('\n');
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// 流式 JSONL 写入器（边爬边写，避免内存堆积）

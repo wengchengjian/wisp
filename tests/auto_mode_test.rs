@@ -214,7 +214,7 @@ async fn test_auto_mode_with_local_server() {
     // 杩欓噷涓昏楠岃瘉 Auto 閫昏緫涓?panic 涓旀甯稿畬鎴?
     let stats = Engine::builder(spider)
         .max_pages(1)
-        .run()
+        .run_one()
         .await
         .unwrap();
 
@@ -266,7 +266,7 @@ async fn test_auto_mode_static_page_no_upgrade() {
 
     let stats = Engine::builder(spider)
         .max_pages(1)
-        .run()
+        .run_one()
         .await
         .unwrap();
 

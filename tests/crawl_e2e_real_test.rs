@@ -88,7 +88,7 @@ async fn test_e2e_fetch_single_page_httpbin() {
     }
     let stats = Engine::new(HttpbinHtmlSpider)
         .max_pages(1)
-        .run()
+        .run_one()
         .await
         .unwrap();
     assert_eq!(stats.pages_crawled, 1, "应抓取 1 页");
@@ -140,7 +140,7 @@ impl Spider for QuotesSpider {
 #[tokio::test]
 #[ignore = "requires network access to quotes.toscrape.com"]
 async fn test_e2e_crawl_quotes_toscrape() {
-    let stats = Engine::new(QuotesSpider).max_pages(1).run().await.unwrap();
+    let stats = Engine::new(QuotesSpider).max_pages(1).run_one().await.unwrap();
     assert_eq!(stats.pages_crawled, 1, "应抓取 1 页");
     assert!(
         stats.items_scraped >= 5,
@@ -192,7 +192,7 @@ impl Spider for QuotesFollowSpider {
 async fn test_e2e_follow_links_quotes_toscrape() {
     let stats = Engine::new(QuotesFollowSpider)
         .max_pages(3)
-        .run()
+        .run_one()
         .await
         .unwrap();
     assert_eq!(
@@ -238,7 +238,7 @@ impl Spider for DomainFilterSpider {
 async fn test_e2e_allowed_domains_filter() {
     let stats = Engine::new(DomainFilterSpider)
         .max_pages(5)
-        .run()
+        .run_one()
         .await
         .unwrap();
     assert_eq!(stats.pages_crawled, 0, "example.com 应被过滤");
@@ -280,7 +280,7 @@ impl Spider for Retry503Spider {
 async fn test_e2e_retry_on_blocked_status() {
     let stats = Engine::new(Retry503Spider)
         .max_pages(1)
-        .run()
+        .run_one()
         .await
         .unwrap();
     assert_eq!(stats.pages_crawled, 0, "503 不应计入成功页");
@@ -447,7 +447,7 @@ async fn test_e2e_development_mode_cache_replay() {
     let stats1 = Engine::new(CacheSpider)
         .max_pages(1)
         .development_mode(store.clone())
-        .run()
+        .run_one()
         .await
         .unwrap();
     assert_eq!(stats1.pages_crawled, 1, "第一次应抓取 1 页");
@@ -463,7 +463,7 @@ async fn test_e2e_development_mode_cache_replay() {
     let stats2 = Engine::new(CacheSpider)
         .max_pages(1)
         .development_mode(store.clone())
-        .run()
+        .run_one()
         .await
         .unwrap();
     assert_eq!(stats2.pages_crawled, 1, "第二次应抓取 1 页");

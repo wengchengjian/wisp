@@ -23,7 +23,7 @@ impl Spider for RetrySpider {
 #[tokio::test]
 #[ignore = "requires network access to httpbin.org"]
 async fn test_retry_on_403_status() {
-    let stats = Engine::new(RetrySpider).max_pages(1).run().await.unwrap();
+    let stats = Engine::new(RetrySpider).max_pages(1).run_one().await.unwrap();
     // 403 应触发重试，最终 errors >= 1（重试耗尽后计入 errors）
     assert!(stats.errors >= 1, "应有错误统计: {:?}", stats);
     assert!(stats.pages_crawled == 0, "403 不应计入成功页: {:?}", stats);
@@ -44,7 +44,7 @@ async fn test_retry_on_500_then_success() {
         fn obey_robots(&self) -> bool { false }
         async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) { (vec![], vec![]) }
     }
-    let stats = Engine::new(OkSpider).max_pages(1).run().await.unwrap();
+    let stats = Engine::new(OkSpider).max_pages(1).run_one().await.unwrap();
     assert_eq!(stats.pages_crawled, 1);
     assert_eq!(stats.retry_count, 0);
 }

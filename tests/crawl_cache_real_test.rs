@@ -37,7 +37,7 @@ async fn test_development_mode_caches_response() {
     let stats1 = Engine::new(CacheSpider)
         .max_pages(1)
         .development_mode(store.clone())
-        .run()
+        .run_one()
         .await
         .unwrap();
     assert_eq!(stats1.pages_crawled, 1);
@@ -53,7 +53,7 @@ async fn test_development_mode_caches_response() {
     let stats2 = Engine::new(CacheSpider)
         .max_pages(1)
         .development_mode(store.clone())
-        .run()
+        .run_one()
         .await
         .unwrap();
     assert_eq!(stats2.pages_crawled, 1);

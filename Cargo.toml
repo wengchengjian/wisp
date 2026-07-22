@@ -40,6 +40,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # XPath 1.0 完整查询（阶段 2：sxd-xpath 懒解析）
 sxd-document = "0.3"
 sxd-xpath = "0.4"
+# 内存级请求缓存
+moka = { version = "0.12", features = ["future"] }
+# HTML -> Markdown 转换
+htmd = "0.2"
+# Cron 表达式解析
+croner = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

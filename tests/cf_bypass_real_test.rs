@@ -209,7 +209,7 @@ async fn test_engine_with_proxy_pool() {
     let stats = Engine::builder(spider)
         .max_pages(1)
         .proxy_pool(vec![PROXY.to_string()], RotationStrategy::Sequential)
-        .run()
+        .run_one()
         .await
         .unwrap();
 

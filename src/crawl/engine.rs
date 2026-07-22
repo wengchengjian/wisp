@@ -8,10 +8,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use serde_json::Value;
-use futures::stream::{self, StreamExt};
 use tokio::sync::Mutex;
 
 use crate::error::Result;
@@ -19,7 +18,7 @@ use crate::http::{self, Client};
 use crate::fetcher::FetchMode;
 use super::{
     Spider, SpiderRequest, SpiderResponse, Method,
-    CrawlStats, CrawlEvent, CrawlStream, CrawlState,
+    CrawlStats, CrawlEvent, CrawlState,
     auto, scheduler, robots,
 };
 
@@ -52,15 +51,18 @@ pub(crate) struct EngineContext {
     pub fetch_mode: FetchMode,
     pub max_pages: usize,
     pub max_concurrent: usize,
+    pub max_depth: u32,
     pub obey_robots: bool,
     pub dev_mode: bool,
+    pub request_cache: Option<super::request_cache::RequestCache>,
+    pub abort_flag: Arc<AtomicBool>,
     pub start: std::time::Instant,
     pub tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
 }
 
 // === 核心函数：处理单个请求 ===
 
-/// 处理单个请求的完整流程：域名过滤 → 缓存 → robots → 信号量 → 延迟 → 重试 → Auto 检查 → parse。
+/// 处理单个请求的完整流程：域名过滤 → 深度检查 → 缓存 → robots → 信号量 → 延迟 → 重试 → Auto 检查 → parse。
 pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     // 1. 域名过滤
     if !ctx.allowed.is_empty() {
@@ -74,7 +76,46 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         }
     }
 
-    // 2. 开发模式缓存检查
+    // 1.5. 深度检查
+    if req.depth > ctx.max_depth {
+        return;
+    }
+
+    // 1.6. 全局控制函数检查
+    if super::control::is_cancelled(&req.url).await { return; }
+    if !super::control::wait_if_paused(&req.url).await { return; }
+    if super::control::is_shutdown() { return; }
+
+    // 1.7. 异步钩子检查
+    match ctx.spider.on_before_request(&req).await {
+        super::RequestAction::Proceed => {},
+        super::RequestAction::Skip => { return; },
+        super::RequestAction::Delay(d) => { tokio::time::sleep(d).await; },
+        super::RequestAction::Abort => {
+            ctx.abort_flag.store(true, Ordering::SeqCst);
+            return;
+        }
+    }
+
+    // 2. 内存缓存检查 (RequestCache)
+    if let Some(ref rc) = ctx.request_cache {
+        if let Some(entry) = rc.get(&req.url).await {
+            let resp = SpiderResponse {
+                url: req.url.clone(),
+                status: entry.status,
+                headers: entry.headers,
+                body: entry.body,
+                request: req.clone(),
+                tracker: None,
+            };
+            ctx.stats_cache_hits.fetch_add(1, Ordering::SeqCst);
+            record_status(ctx, resp.status).await;
+            // 直接跳到处理结果阶段
+            return process_response(ctx, resp, &req).await;
+        }
+    }
+
+    // 3. 开发模式 SQLite 缓存检查
     let method_str = match req.method {
         Method::Get => "GET",
         Method::Post => "POST",
@@ -150,49 +191,65 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
                 }
             }
         }
+
+        // 7.5. 写入 RequestCache
+        if let Some(ref rc) = ctx.request_cache {
+            if let Some(ref resp) = final_resp {
+                rc.put(&req.url, super::request_cache::CachedEntry {
+                    status: resp.status,
+                    headers: resp.headers.clone(),
+                    body: resp.body.clone(),
+                }).await;
+            }
+        }
     }
 
     // 8. 处理结果
     if let Some(resp) = final_resp {
-        ctx.stats_pages.fetch_add(1, Ordering::SeqCst);
-        let page_url = resp.url.clone();
-
-        let tracker_ref = resp.tracker.clone();
-        let (mut items, mut follows) = ctx.spider.parse(resp).await;
-
-        // 9. Auto 升级检查
-        if ctx.fetch_mode == FetchMode::Auto {
-            if let Some(result) = auto_upgrade_check(ctx, &tracker_ref, &page_url, &req).await {
-                items = result.0;
-                follows = result.1;
-            }
-        }
-
-        // 10. 发送 items
-        for item in items {
-            if let Some(processed) = ctx.spider.on_item(item).await {
-                ctx.stats_items.fetch_add(1, Ordering::SeqCst);
-                if let Some(ref tx) = ctx.tx {
-                    let _ = tx.send(CrawlEvent::Item(processed)).await;
-                }
-            }
-        }
-        for f in follows {
-            let _ = ctx.follow_tx.send(f);
-        }
-
-        // 11. PageScraped 事件
-        if let Some(ref tx) = ctx.tx {
-            let status_codes_snapshot = ctx.stats_status_codes.lock().await.clone();
-            let _ = tx.send(CrawlEvent::PageScraped {
-                url: page_url,
-                stats: snapshot_stats(ctx, status_codes_snapshot),
-            }).await;
-        }
+        process_response(ctx, resp, &req).await;
     } else if let Some(err) = last_error {
         if let Some(ref tx) = ctx.tx {
             let _ = tx.send(CrawlEvent::Error { url: req.url.clone(), error: err }).await;
         }
+    }
+}
+
+/// 处理已获取的响应：parse → Auto 升级 → items → events。
+pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, req: &SpiderRequest) {
+    ctx.stats_pages.fetch_add(1, Ordering::SeqCst);
+    let page_url = resp.url.clone();
+
+    let tracker_ref = resp.tracker.clone();
+    let (mut items, mut follows) = ctx.spider.parse(resp).await;
+
+    // Auto 升级检查
+    if ctx.fetch_mode == FetchMode::Auto {
+        if let Some(result) = auto_upgrade_check(ctx, &tracker_ref, &page_url, req).await {
+            items = result.0;
+            follows = result.1;
+        }
+    }
+
+    // 发送 items
+    for item in items {
+        if let Some(processed) = ctx.spider.on_item(item).await {
+            ctx.stats_items.fetch_add(1, Ordering::SeqCst);
+            if let Some(ref tx) = ctx.tx {
+                let _ = tx.send(CrawlEvent::Item(processed)).await;
+            }
+        }
+    }
+    for f in follows {
+        let _ = ctx.follow_tx.send(f);
+    }
+
+    // PageScraped 事件
+    if let Some(ref tx) = ctx.tx {
+        let status_codes_snapshot = ctx.stats_status_codes.lock().await.clone();
+        let _ = tx.send(CrawlEvent::PageScraped {
+            url: page_url,
+            stats: snapshot_stats(ctx, status_codes_snapshot),
+        }).await;
     }
 }
 
@@ -395,11 +452,18 @@ pub(crate) async fn fetch_page_inner(
 
     // Http 模式
     let effective_client: Client;
-    let use_client = if let Some(proxy) = proxy_url {
-        effective_client = Client::builder()
-            .timeout(client.config_ref().timeout)
-            .proxy(proxy)
-            .build()?;
+    let need_custom_client = proxy_url.is_some() || config.rotate_ua;
+    let use_client = if need_custom_client {
+        let mut builder = Client::builder()
+            .timeout(client.config_ref().timeout);
+        if let Some(proxy) = proxy_url {
+            builder = builder.proxy(proxy);
+        }
+        if config.rotate_ua {
+            let rotator = crate::http::UaRotator::desktop();
+            builder = builder.user_agent(rotator.next());
+        }
+        effective_client = builder.build()?;
         &effective_client
     } else {
         client

@@ -27,7 +27,7 @@ async fn test_max_concurrent_respected() {
     let spider = ConcurrencySpider;
     let stats = Engine::new(spider)
         .max_pages(10)
-        .run()
+        .run_one()
         .await
         .unwrap();
     // Smoke test: should complete without panic
