@@ -1,166 +1,202 @@
-//! Global crawl control — standalone async functions for pause/resume/cancel.
+//! 引擎级控制状态（per-Engine 隔离，解决 I4）。
 //!
-//! Uses a process-wide static registry with a version counter (watch channel)
-//! to wake up paused tasks. URL is the natural isolation key — no crawl name needed.
+//! 原先为进程级全局 static（`PAUSED_URLS` / `SHUTDOWN_FLAG` 等），多 Engine 实例
+//! 共享同一份状态，导致隔离性差。现重构为 `EngineControl` 结构体，由每个 `Engine`
+//! 独立持有，多 Engine 实例控制状态完全隔离。
 //!
 //! # Usage
 //! ```rust,no_run
-//! use wisp::crawl::control;
+//! use wisp::crawl::Engine;
 //!
-//! # async fn example() {
-//! // From any task / API handler:
-//! control::pause("https://example.com/slow").await;
-//! control::resume("https://example.com/slow").await;
-//! control::cancel("https://example.com/unwanted").await;
-//! control::shutdown();
-//! # }
+//! let engine = Engine::infra().build().unwrap();
+//! let control = engine.control();
+//! // 从任意 task / API handler 调用：
+//! // control.pause("https://example.com/slow").await;
+//! // control.shutdown();
 //! ```
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::LazyLock;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, RwLock};
 
-// === Global state (process-wide singleton) ===
-
-static PAUSED_URLS: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
-static CANCELLED_URLS: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
-static GLOBAL_PAUSED: AtomicBool = AtomicBool::new(false);
-static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);
-
-/// Version counter: bumped on every pause/resume/shutdown to wake waiting tasks.
-static VERSION: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
-
-fn bump() {
-    let v = *VERSION.borrow();
-    VERSION.send(v.wrapping_add(1)).ok();
-}
-
-// === Public API: call from anywhere ===
-
-/// Pause a specific URL. When the engine reaches this URL, it blocks until `resume()`.
-pub async fn pause(url: &str) {
-    PAUSED_URLS.write().await.insert(url.to_string());
-    bump();
-}
-
-/// Resume a specific URL, waking any blocked task waiting on it.
-pub async fn resume(url: &str) {
-    PAUSED_URLS.write().await.remove(url);
-    bump();
-}
-
-/// Cancel a specific URL. The engine will skip it silently.
-pub async fn cancel(url: &str) {
-    CANCELLED_URLS.write().await.insert(url.to_string());
-}
-
-/// Pause all crawling (all URLs block until `resume_all()`).
-pub fn pause_all() {
-    GLOBAL_PAUSED.store(true, Ordering::SeqCst);
-    bump();
-}
-
-/// Resume all crawling.
-pub fn resume_all() {
-    GLOBAL_PAUSED.store(false, Ordering::SeqCst);
-    bump();
-}
-
-/// Gracefully stop all crawling. In-flight requests finish, then the engine exits.
-pub fn shutdown() {
-    SHUTDOWN_FLAG.store(true, Ordering::SeqCst);
-    bump();
-}
-
-/// Reset all control state (call before a new crawl run).
-pub async fn reset() {
-    PAUSED_URLS.write().await.clear();
-    CANCELLED_URLS.write().await.clear();
-    GLOBAL_PAUSED.store(false, Ordering::SeqCst);
-    SHUTDOWN_FLAG.store(false, Ordering::SeqCst);
-    bump();
-}
-
-// === Internal queries (called by Engine, pub(crate)) ===
-
-pub(crate) async fn is_cancelled(url: &str) -> bool {
-    CANCELLED_URLS.read().await.contains(url)
-}
-
-/// If the URL or global pause is active, block until resumed or shutdown.
-/// Returns `false` if shutdown was detected (caller should terminate).
+/// per-Engine 控制状态。
 ///
-/// Wake mechanism: watches the VERSION channel; any pause/resume/shutdown
-/// bumps the version, causing `rx.changed()` to return.
-pub(crate) async fn wait_if_paused(url: &str) -> bool {
-    let mut rx = VERSION.subscribe();
-    loop {
-        if SHUTDOWN_FLAG.load(Ordering::SeqCst) { return false; }
-        let global = GLOBAL_PAUSED.load(Ordering::SeqCst);
-        let url_paused = PAUSED_URLS.read().await.contains(url);
-        if !global && !url_paused { return true; }
-        // 阻塞直到 version 变化（resume/pause_all/shutdown 都会 bump）
-        // 超时 60 秒作为极端 safety
-        tokio::select! {
-            changed = rx.changed() => {
-                if changed.is_err() {
-                    // watch sender dropped（不应发生），退出避免死循环
-                    return !SHUTDOWN_FLAG.load(Ordering::SeqCst);
-                }
+/// 持有与原全局 static 等价的字段，但每个 `Engine` 实例独立一份，
+/// 多 Engine 之间状态完全隔离。
+#[derive(Debug)]
+pub struct EngineControl {
+    paused_urls: Arc<RwLock<HashSet<String>>>,
+    cancelled_urls: Arc<RwLock<HashSet<String>>>,
+    global_paused: AtomicBool,
+    shutdown: AtomicBool,
+    /// 版本计数器：每次 pause/resume/shutdown 时 bump，唤醒等待中的 task。
+    version: watch::Sender<u64>,
+}
+
+impl EngineControl {
+    pub fn new() -> Self {
+        let (tx, _rx) = watch::channel(0u64);
+        Self {
+            paused_urls: Arc::new(RwLock::new(HashSet::new())),
+            cancelled_urls: Arc::new(RwLock::new(HashSet::new())),
+            global_paused: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
+            version: tx,
+        }
+    }
+
+    fn bump(&self) {
+        let _ = self.version.send(self.version.borrow().wrapping_add(1));
+    }
+
+    /// 暂停指定 URL。引擎处理到该 URL 时会阻塞直到 `resume()`。
+    pub async fn pause(&self, url: &str) {
+        self.paused_urls.write().await.insert(url.to_string());
+        self.bump();
+    }
+
+    /// 恢复指定 URL，唤醒阻塞在该 URL 上的 task。
+    pub async fn resume(&self, url: &str) {
+        self.paused_urls.write().await.remove(url);
+        self.bump();
+    }
+
+    /// 取消指定 URL。引擎会静默跳过。
+    pub async fn cancel(&self, url: &str) {
+        self.cancelled_urls.write().await.insert(url.to_string());
+        self.bump();
+    }
+
+    /// 暂停所有爬取（所有 URL 阻塞直到 `resume_all()`）。
+    pub fn pause_all(&self) {
+        self.global_paused.store(true, Ordering::SeqCst);
+        self.bump();
+    }
+
+    /// 恢复所有爬取。
+    pub fn resume_all(&self) {
+        self.global_paused.store(false, Ordering::SeqCst);
+        self.bump();
+    }
+
+    /// 优雅关闭：in-flight 请求完成后引擎退出。
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.bump();
+    }
+
+    /// 重置所有控制状态（每次 run 开始前调用）。
+    pub async fn reset(&self) {
+        self.paused_urls.write().await.clear();
+        self.cancelled_urls.write().await.clear();
+        self.global_paused.store(false, Ordering::SeqCst);
+        self.shutdown.store(false, Ordering::SeqCst);
+        self.bump();
+    }
+
+    pub async fn is_cancelled(&self, url: &str) -> bool {
+        self.cancelled_urls.read().await.contains(url)
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// 若该 URL 或全局暂停生效，阻塞直到 resume 或 shutdown。
+    ///
+    /// 返回 `false` 表示检测到 shutdown（调用方应终止）。
+    ///
+    /// 唤醒机制：监听 `version` watch channel；任何 pause/resume/shutdown
+    /// 都会 bump 版本，使 `rx.changed()` 返回。
+    pub async fn wait_if_paused(&self, url: &str) -> bool {
+        let mut rx = self.version.subscribe();
+        loop {
+            if self.shutdown.load(Ordering::SeqCst) {
+                return false;
             }
-            _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                // safety fallback：60 秒后重新检查状态
+            let global = self.global_paused.load(Ordering::SeqCst);
+            let url_paused = self.paused_urls.read().await.contains(url);
+            if !global && !url_paused {
+                return true;
+            }
+            tokio::select! {
+                changed = rx.changed() => {
+                    if changed.is_err() {
+                        // watch sender dropped（不应发生），退出避免死循环
+                        return !self.shutdown.load(Ordering::SeqCst);
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                    // safety fallback：60 秒后重新检查状态
+                }
             }
         }
     }
 }
 
-pub(crate) fn is_shutdown() -> bool {
-    SHUTDOWN_FLAG.load(Ordering::SeqCst)
+impl Default for EngineControl {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // All control tests in one function to avoid global state interference.
     #[tokio::test]
-    async fn test_control_all() {
-        reset().await;
+    async fn test_engine_control_pause_resume() {
+        let ctrl = EngineControl::new();
+        ctrl.pause("https://example.com/a").await;
+        assert!(ctrl.paused_urls.read().await.contains("https://example.com/a"));
+        ctrl.resume("https://example.com/a").await;
+        assert!(!ctrl.paused_urls.read().await.contains("https://example.com/a"));
+    }
 
-        // pause / resume
-        pause("https://example.com/a").await;
-        assert!(PAUSED_URLS.read().await.contains("https://example.com/a"));
-        resume("https://example.com/a").await;
-        assert!(!PAUSED_URLS.read().await.contains("https://example.com/a"));
+    #[tokio::test]
+    async fn test_engine_control_cancel() {
+        let ctrl = EngineControl::new();
+        ctrl.cancel("https://example.com/bad").await;
+        assert!(ctrl.is_cancelled("https://example.com/bad").await);
+        assert!(!ctrl.is_cancelled("https://example.com/good").await);
+    }
 
-        // cancel
-        cancel("https://example.com/bad").await;
-        assert!(is_cancelled("https://example.com/bad").await);
-        assert!(!is_cancelled("https://example.com/good").await);
+    #[tokio::test]
+    async fn test_engine_control_shutdown_and_reset() {
+        let ctrl = EngineControl::new();
+        assert!(!ctrl.is_shutdown());
+        ctrl.shutdown();
+        assert!(ctrl.is_shutdown());
+        ctrl.reset().await;
+        assert!(!ctrl.is_shutdown());
+    }
 
-        // shutdown flag
-        assert!(!is_shutdown());
-        shutdown();
-        assert!(is_shutdown());
-        reset().await;
-        assert!(!is_shutdown());
+    #[tokio::test]
+    async fn test_engine_control_wait_if_paused_free() {
+        let ctrl = EngineControl::new();
+        assert!(ctrl.wait_if_paused("https://example.com/free").await);
+    }
 
-        // wait_if_paused returns true when not paused
-        assert!(wait_if_paused("https://example.com/free").await);
+    #[tokio::test]
+    async fn test_engine_control_wait_if_paused_shutdown() {
+        let ctrl = EngineControl::new();
+        ctrl.shutdown();
+        assert!(!ctrl.wait_if_paused("https://example.com/any").await);
+    }
 
-        // wait_if_paused returns false on shutdown
-        shutdown();
-        assert!(!wait_if_paused("https://example.com/any").await);
-        reset().await;
+    #[tokio::test]
+    async fn test_engine_control_isolation_between_instances() {
+        // 验证两个 EngineControl 实例状态完全隔离
+        let ctrl_a = EngineControl::new();
+        let ctrl_b = EngineControl::new();
 
-        // pause + resume sequence
-        pause("https://example.com/p1").await;
-        assert!(PAUSED_URLS.read().await.contains("https://example.com/p1"));
-        resume("https://example.com/p1").await;
-        assert!(!PAUSED_URLS.read().await.contains("https://example.com/p1"));
-        assert!(wait_if_paused("https://example.com/p1").await);
+        ctrl_a.pause_all();
+        ctrl_a.shutdown();
+
+        // B 不受 A 影响
+        assert!(!ctrl_b.is_shutdown());
+        assert!(ctrl_b.wait_if_paused("https://example.com/x").await);
     }
 }
