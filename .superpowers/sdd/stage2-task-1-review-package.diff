@@ -1,0 +1,58 @@
+﻿=== COMMITS (27f134f..0f86b54) ===
+0f86b54 feat: 新增 sxd-document/sxd-xpath 依赖与 ParseError 变体
+
+=== STAT ===
+ Cargo.toml   | 3 +++
+ src/error.rs | 3 +++
+ 2 files changed, 6 insertions(+)
+
+=== FULL DIFF ===
+diff --git a/Cargo.toml b/Cargo.toml
+index db631ee..1a30cb5 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -28,20 +28,23 @@ async-trait = "0.1"
+ reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+ regex = "1"
+ # SQLite 统一存储（阶段 1：adaptive + checkpoint）
+ rusqlite = { version = "0.32", features = ["bundled"] }
+ # checkpoint blob 序列化
+ bincode = "1"
+ # 流式输出（阶段 1 内部用，阶段 3 对外暴露）
+ tokio-stream = "0.1"
+ # 时间戳（CrawlState 用）
+ chrono = { version = "0.4", features = ["serde"] }
++# XPath 1.0 完整查询（阶段 2：sxd-xpath 懒解析）
++sxd-document = "0.3"
++sxd-xpath = "0.4"
+ 
+ [dev-dependencies]
+ tokio = { version = "1", features = ["full", "test-util"] }
+ criterion = { version = "0.5", features = ["html_reports"] }
+ 
+ [[bench]]
+ name = "bench"
+ harness = false
+ 
+ [[bin]]
+diff --git a/src/error.rs b/src/error.rs
+index 809eaec..af1021b 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -30,13 +30,16 @@ pub enum WispError {
+     Storage(String),
+ 
+     #[error("Adaptive relocation failed: {0}")]
+     AdaptiveError(String),
+ 
+     #[error("Serialize error: {0}")]
+     Serialize(String),
+ 
+     #[error("MCP error: {0}")]
+     McpError(String),
++
++    #[error("Parse error: {0}")]
++    ParseError(String),
+ }
+ 
+ pub type Result<T> = std::result::Result<T, WispError>;

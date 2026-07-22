@@ -1,0 +1,1141 @@
+﻿diff --git a/Cargo.lock b/Cargo.lock
+index 930a012..5390835 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1299,6 +1299,12 @@ version = "2.3.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+ 
++[[package]]
++name = "peresil"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f658886ed52e196e850cfbbfddab9eaa7f6d90dd0929e264c31e5cec07e09e57"
++
+ [[package]]
+ name = "phf"
+ version = "0.11.3"
+@@ -1424,6 +1430,12 @@ dependencies = [
+  "unicode-ident",
+ ]
+ 
++[[package]]
++name = "quick-error"
++version = "1.2.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
++
+ [[package]]
+ name = "quinn"
+ version = "0.11.11"
+@@ -2013,6 +2025,27 @@ version = "2.6.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+ 
++[[package]]
++name = "sxd-document"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "94d82f37be9faf1b10a82c4bd492b74f698e40082f0f40de38ab275f31d42078"
++dependencies = [
++ "peresil",
++ "typed-arena",
++]
++
++[[package]]
++name = "sxd-xpath"
++version = "0.4.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "36e39da5d30887b5690e29de4c5ebb8ddff64ebd9933f98a01daaa4fd11b36ea"
++dependencies = [
++ "peresil",
++ "quick-error",
++ "sxd-document",
++]
++
+ [[package]]
+ name = "syn"
+ version = "2.0.119"
+@@ -2346,6 +2379,12 @@ dependencies = [
+  "utf-8",
+ ]
+ 
++[[package]]
++name = "typed-arena"
++version = "1.7.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a9b2228007eba4120145f785df0f6c92ea538f5a3635a612ecf4e334c8c1446d"
++
+ [[package]]
+ name = "typenum"
+ version = "1.20.1"
+@@ -2715,6 +2754,7 @@ dependencies = [
+  "chrono",
+  "clap",
+  "criterion",
++ "ego-tree",
+  "encoding_rs",
+  "futures",
+  "rand 0.9.5",
+@@ -2724,6 +2764,8 @@ dependencies = [
+  "scraper",
+  "serde",
+  "serde_json",
++ "sxd-document",
++ "sxd-xpath",
+  "thiserror",
+  "tokio",
+  "tokio-stream",
+diff --git a/Cargo.toml b/Cargo.toml
+index db631ee..1b0e612 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -22,6 +22,7 @@ anyhow = "1"
+ rand = "0.9"
+ # Scraping / parsing
+ scraper = "0.23"
++ego-tree = "0.10"
+ encoding_rs = "0.8"
+ url = "2"
+ async-trait = "0.1"
+@@ -35,6 +36,9 @@ bincode = "1"
+ tokio-stream = "0.1"
+ # 时间戳（CrawlState 用）
+ chrono = { version = "0.4", features = ["serde"] }
++# XPath 1.0 完整查询（阶段 2：sxd-xpath 懒解析）
++sxd-document = "0.3"
++sxd-xpath = "0.4"
+ 
+ [dev-dependencies]
+ tokio = { version = "1", features = ["full", "test-util"] }
+diff --git a/src/error.rs b/src/error.rs
+index 809eaec..af1021b 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -37,6 +37,9 @@ pub enum WispError {
+ 
+     #[error("MCP error: {0}")]
+     McpError(String),
++
++    #[error("Parse error: {0}")]
++    ParseError(String),
+ }
+ 
+ pub type Result<T> = std::result::Result<T, WispError>;
+diff --git a/src/parser/adaptive.rs b/src/parser/adaptive.rs
+index 4828bec..8a22046 100644
+--- a/src/parser/adaptive.rs
++++ b/src/parser/adaptive.rs
+@@ -28,51 +28,34 @@ pub struct ElementSnapshot {
+ }
+ 
+ impl ElementSnapshot {
+-    /// Capture a snapshot from a wisp::Node.
+-    ///
+-    /// Stage 1: Re-parses the node's outer HTML to get an ElementRef with tree
+-    /// context. This is wasteful but unblocks adaptive without waiting for
+-    /// stage 2's Node refactor.
++    /// 从 Node 捕获快照（用 Node 导航 API，不再重复解析 outer_html）。
+     pub fn capture(node: &Node) -> Self {
+-        let outer_html = node.outer_html();
+-        let full_doc_html = format!("<html><body>{}</body></html>", outer_html);
+-        let doc = Html::parse_document(&full_doc_html);
+-
+-        // Find the first element in body (the captured node itself)
+-        let body_sel = scraper::Selector::parse("body > *").unwrap();
+-        let element_ref = doc.select(&body_sel).next();
+-
+-        match element_ref {
+-            Some(el) => Self::capture_from_element_ref(&el),
+-            None => Self::capture_from_node_only(node),
+-        }
+-    }
+-
+-    /// Capture from scraper::ElementRef (has tree context).
+-    fn capture_from_element_ref(el: &ElementRef) -> Self {
+-        let value = el.value();
+-        let tag = value.name().to_string();
+-        let attrs: HashMap<String, String> = value.attrs()
+-            .map(|(k, v)| (k.to_string(), v.to_string()))
+-            .collect();
+-
+-        let text: String = el.text().collect::<Vec<_>>().join("");
+-        let text_preview = text.chars().take(200).collect();
+-
+-        // Ancestor path from root to element (excluding #document and synthetic roots)
+-        let ancestor_path: Vec<String> = el.ancestors()
+-            .filter_map(|a| {
+-                if let ScraperNode::Element(e) = a.value() {
+-                    let name = e.name().to_string();
+-                    if let Some(class) = e.attr("class") {
+-                        let first_class = class.split_whitespace().next().unwrap_or("");
+-                        if !first_class.is_empty() {
+-                            return Some(format!("{}.{}", name, first_class));
+-                        }
+-                    }
+-                    Some(name)
++        let tag = node.tag();
++        let attrs = node.attrs();
++        let text_preview = node.text();
++        let text_preview = if text_preview.len() > 200 {
++            text_preview.chars().take(200).collect()
++        } else {
++            text_preview
++        };
++
++        // ancestor_path: 从父节点到根，每级 "tag" 或 "tag.firstclass"，最后 rev() 使根在前
++        let ancestor_path: Vec<String> = node.ancestors()
++            .filter_map(|n| {
++                let t = n.tag();
++                if t.is_empty() {
++                    return None;
++                }
++                let class = n.attr("class").unwrap_or_default();
++                if class.is_empty() {
++                    Some(t)
+                 } else {
+-                    None
++                    let first_class: String = class.split_whitespace().next().unwrap_or("").to_string();
++                    if first_class.is_empty() {
++                        Some(t)
++                    } else {
++                        Some(format!("{}.{}", t, first_class))
++                    }
+                 }
+             })
+             .collect::<Vec<_>>()
+@@ -80,33 +63,27 @@ impl ElementSnapshot {
+             .rev()
+             .collect();
+ 
+-        // Sibling tags + position in parent
+-        let (sibling_tags, position_in_parent, parent_tag, parent_attrs) =
+-            if let Some(parent) = el.parent().and_then(|p| ElementRef::wrap(p)) {
+-                let siblings: Vec<String> = parent.children()
+-                    .filter_map(|c| {
+-                        if let ScraperNode::Element(e) = c.value() {
+-                            Some(e.name().to_string())
+-                        } else {
+-                            None
+-                        }
+-                    })
+-                    .collect();
+-
+-                // Position: index among element children
+-                let pos = parent.children()
+-                    .filter(|c| c.value().is_element())
+-                    .position(|c| ElementRef::wrap(c) == Some(*el))
+-                    .unwrap_or(0);
+-
+-                let pval = parent.value();
+-                let pattrs: HashMap<String, String> = pval.attrs()
+-                    .map(|(k, v)| (k.to_string(), v.to_string()))
+-                    .collect();
+-                (siblings, pos, pval.name().to_string(), pattrs)
+-            } else {
+-                (Vec::new(), 0, String::new(), HashMap::new())
+-            };
++        // parent context
++        let parent_node = node.parent();
++        let parent_tag = parent_node.as_ref().map(|p| p.tag()).unwrap_or_default();
++        let parent_attrs = parent_node.as_ref().map(|p| p.attrs()).unwrap_or_default();
++
++        // sibling_tags: 父节点的所有元素子节点的 tag 列表
++        let sibling_tags: Vec<String> = parent_node.as_ref()
++            .map(|p| p.children().iter().map(|c| c.tag()).collect())
++            .unwrap_or_default();
++
++        // position_in_parent: 当前节点在父节点子元素中的索引
++        // 用 outer_html 比较身份（比 tag+text 更准确，避免相同 tag+text 的兄弟节点误匹配）
++        let position_in_parent = match &parent_node {
++            Some(p) => {
++                let target_html = node.outer_html();
++                p.children().iter()
++                    .position(|c| c.outer_html() == target_html)
++                    .unwrap_or(0)
++            }
++            None => 0,
++        };
+ 
+         Self {
+             tag,
+@@ -120,23 +97,6 @@ impl ElementSnapshot {
+         }
+     }
+ 
+-    /// Fallback when ElementRef extraction fails.
+-    fn capture_from_node_only(node: &Node) -> Self {
+-        let attrs = node.attrs();
+-        let tag = attrs.get("tag").cloned().unwrap_or_else(|| "div".to_string());
+-        let text = node.text();
+-        Self {
+-            tag,
+-            attrs,
+-            text_preview: text.chars().take(200).collect(),
+-            ancestor_path: Vec::new(),
+-            sibling_tags: Vec::new(),
+-            position_in_parent: 0,
+-            parent_tag: String::new(),
+-            parent_attrs: HashMap::new(),
+-        }
+-    }
+-
+     /// Convert to a storage row for SQLite persistence.
+     pub fn to_row(&self, captured_at: i64) -> ElementSnapshotRow {
+         ElementSnapshotRow {
+diff --git a/src/parser/document.rs b/src/parser/document.rs
+new file mode 100644
+index 0000000..f94a9bb
+--- /dev/null
++++ b/src/parser/document.rs
+@@ -0,0 +1,67 @@
++//! Document: 共享所有权的 HTML 文档容器。
++//!
++//! 包含 scraper::Html（CSS 查询）和懒加载的 sxd-document::Package（XPath 查询）。
++//! Node 通过 Arc<Document> 共享文档，select() 返回的 Node 引用同一文档的树中位置。
++
++use std::sync::Arc;
++use std::sync::OnceLock;
++use scraper::Html;
++use sxd_document::Package;
++
++/// 共享的 HTML 文档。scraper 树用于 CSS 查询和 DOM 导航，
++/// sxd-document 树懒加载用于 XPath 查询。
++pub struct Document {
++    /// scraper 解析的 HTML 树（html5ever 容错）
++    pub(crate) html: Arc<Html>,
++    /// 懒加载的 sxd-document 包（XPath 用）
++    sxd: OnceLock<Package>,
++}
++
++impl Document {
++    /// 从 HTML 字符串创建文档。
++    ///
++    /// 用 `Html::parse_document` 解析，会应用 HTML5 结构规则
++    /// （如把 `<td>/<tr>` 等表格元素强制包裹 `<table><tbody><tr>`）。
++    /// 适合完整 HTML 文档；若需保留片段语义（不包裹 table），用 `from_fragment`。
++    pub fn from_html(html: &str) -> Arc<Self> {
++        let parsed = Html::parse_document(html);
++        Arc::new(Self {
++            html: Arc::new(parsed),
++            sxd: OnceLock::new(),
++        })
++    }
++
++    /// 从 HTML 片段创建文档（不应用 HTML5 结构规则）。
++    ///
++    /// 用 `Html::parse_fragment` 解析，避免 `<td>/<tr>/<thead>/<tbody>/<th>/<caption>`
++    /// 等表格元素被强制包裹 `<table><tbody><tr>`，保留片段语义。
++    /// 适合解析独立的元素片段（如 `<td>cell</td>` 应保持 tag 为 `td`）。
++    pub fn from_fragment(html: &str) -> Arc<Self> {
++        let parsed = Html::parse_fragment(html);
++        Arc::new(Self {
++            html: Arc::new(parsed),
++            sxd: OnceLock::new(),
++        })
++    }
++
++    /// 获取 sxd-document 包（懒加载）。
++    ///
++    /// 首次调用时用 html5ever 规范化后的 HTML 喂给 sxd_document::parser，
++    /// 解决 sxd 对 HTML5 容错弱的问题。后续调用直接返回缓存的 Package。
++    pub fn sxd_package(&self) -> &Package {
++        self.sxd.get_or_init(|| build_sxd_from_html(&self.html))
++    }
++}
++
++/// 用 html5ever（scraper 内部）规范化 HTML 后喂给 sxd-document。
++///
++/// sxd_document::parser 是 XML 解析器，对 HTML5 容错弱：
++/// - `<br>`/`<img>` 等空标签需要自闭合
++/// - `<script>`/`<style>` 内容会被当文本
++/// html5ever 输出的 `html()` 已经规范化处理了这些。
++fn build_sxd_from_html(html: &Html) -> Package {
++    // html() 返回规范化的 HTML 字串（含 html/head/body 结构）
++    let clean_html = html.html();
++    sxd_document::parser::parse(&clean_html)
++        .unwrap_or_else(|_| Package::new())
++}
+diff --git a/src/parser/mod.rs b/src/parser/mod.rs
+index 4f4f023..f377ea9 100644
+--- a/src/parser/mod.rs
++++ b/src/parser/mod.rs
+@@ -1,6 +1,8 @@
+ //! HTML parsing with CSS/XPath selectors.
+ 
+ pub mod difflib;
++pub mod document;
++pub mod xpath;
+ pub mod adaptive;
+ pub mod generate;
+ 
+@@ -9,45 +11,101 @@ pub use adaptive::{
+     css_adaptive, DEFAULT_TOLERANCE,
+ };
+ 
+-use scraper::{Html, Selector as CssSelector};
++use scraper::{Html, Selector as CssSelector, ElementRef};
+ use std::collections::HashMap;
++use std::sync::Arc;
++use ego_tree::NodeId;
++use document::Document;
+ 
+ /// A parsed HTML document or element.
++///
++/// 内部通过 `Arc<Document>` 共享文档所有权，`node_id` 标识在 scraper 树中的位置。
++/// 所有 select() 返回的 Node 共享同一文档，使 parent/ancestors 等导航可工作。
+ #[derive(Clone)]
+ pub struct Node {
+-    inner: Html,
+-    /// For fragments, store the first element's HTML to extract attrs correctly
+-    element_html: Option<String>,
++    doc: Arc<Document>,
++    node_id: NodeId,
+ }
+ 
+ impl Node {
++    /// 从 ElementRef 创建 Node（内部辅助方法）。
++    fn from_element_ref(doc: Arc<Document>, el: ElementRef) -> Self {
++        Self { doc, node_id: el.id() }
++    }
++
++    /// 获取当前节点对应的 ElementRef（在 scraper 树中查找）。
++    fn element_ref(&self) -> Option<ElementRef<'_>> {
++        ElementRef::wrap(self.doc.html.tree.get(self.node_id)?)
++    }
++
+     /// Parse HTML string into a Node (document root).
+     pub fn from_html(html: &str) -> Self {
+-        Self { inner: Html::parse_document(html), element_html: None }
++        let doc = Document::from_html(html);
++        let root_id = doc.html.root_element().id();
++        Self { doc, node_id: root_id }
+     }
+ 
+     /// Parse an HTML fragment.
++    ///
++    /// 普通元素片段用 `Html::parse_fragment`（保留片段语义，不创建 `<html><head><body>` 结构）。
++    /// 表格元素片段（`<td>/<tr>/<th>/<thead>/<tbody>/<tfoot>/<caption>/<colgroup>/<col>`）
++    /// 需要包裹 `<table>` 后用 `Html::parse_document` 解析，因为 HTML5 规范下这些表格元素
++    /// 在 `<body>` context 中不合法，html5ever 会丢弃标签（只保留文本内容）。
++    /// 包裹 `<table>` 后 html5ever 会规范化为 `<table><tbody><tr><td>...</td></tr></tbody></table>`，
++    /// 保留表格元素标签，然后用选择器深入找到实际的片段元素。
++    ///
++    /// 注意：裸文本/注释片段在 `html > *` 不匹配元素时会回退到 root_element
++    /// （此时 `tag()` 返回 `<html>`，可能不是用户期望的结果）。
+     pub fn from_fragment(html: &str) -> Self {
+-        let inner = Html::parse_fragment(html);
+-        // Store the first element child's HTML for attribute access
+-        let element_html = inner.root_element()
+-            .select(&CssSelector::parse("*").unwrap())
+-            .next()
+-            .map(|el| el.html());
+-        Self { inner, element_html }
++        let trimmed_lower = html.trim_start().to_lowercase();
++        // 提取片段开头的标签名（如 `<td>...` → "td"）
++        let inner_tag: String = trimmed_lower
++            .trim_start_matches('<')
++            .chars()
++            .take_while(|c| c.is_alphanumeric())
++            .collect();
++
++        // 表格元素片段需要特殊处理
++        let is_table_fragment = matches!(
++            inner_tag.as_str(),
++            "td" | "tr" | "th" | "thead" | "tbody" | "tfoot"
++                | "caption" | "colgroup" | "col"
++        );
++
++        if is_table_fragment {
++            // 表格元素包裹 <table> 后用 parse_document（html5ever 会规范化表格结构），
++            // 然后用原始片段的标签名作为选择器，深入找到实际的片段元素。
++            let wrapped = format!("<table>{}</table>", html);
++            let doc = Document::from_html(&wrapped);
++            let selector = CssSelector::parse(&inner_tag)
++                .unwrap_or_else(|_| CssSelector::parse("*").unwrap());
++            let root_id = doc.html.select(&selector)
++                .next()
++                .map(|el| el.id())
++                .unwrap_or_else(|| doc.html.root_element().id());
++            Self { doc, node_id: root_id }
++        } else {
++            // 普通元素用 parse_fragment（保留片段语义，不创建 <html><head><body> 结构）。
++            // parse_fragment 创建 `<html>` root_element，片段内容直接在其下。
++            let doc = Document::from_fragment(html);
++            let selector = CssSelector::parse("html > *").unwrap();
++            let root_id = doc.html.select(&selector)
++                .next()
++                .map(|el| el.id())
++                .unwrap_or_else(|| doc.html.root_element().id());
++            Self { doc, node_id: root_id }
++        }
+     }
+ 
+     /// Select all elements matching a CSS selector.
++    ///
++    /// 注意：当前实现搜索整个文档（`self.doc.html.select`），不 scope 到当前 Node 的子树。
++    /// 这是 Task 3 重构带来的语义变化（旧实现 scope 到子树）。Task 4 计划用
++    /// `element_ref().select()` 实现 scoped 查询。
+     pub fn select(&self, css: &str) -> NodeList {
+         let selector = CssSelector::parse(css).unwrap_or_else(|_| CssSelector::parse("*").unwrap());
+-        let nodes: Vec<Node> = self.inner.select(&selector)
+-            .map(|el| {
+-                let html = el.html();
+-                Node {
+-                    inner: Html::parse_fragment(&html),
+-                    element_html: Some(html),
+-                }
+-            })
++        let nodes: Vec<Node> = self.doc.html.select(&selector)
++            .map(|el| Node::from_element_ref(self.doc.clone(), el))
+             .collect();
+         NodeList { nodes }
+     }
+@@ -60,13 +118,8 @@ impl Node {
+     /// Select the first element matching a CSS selector.
+     pub fn select_one(&self, css: &str) -> Option<Node> {
+         let selector = CssSelector::parse(css).ok()?;
+-        self.inner.select(&selector).next().map(|el| {
+-            let html = el.html();
+-            Node {
+-                inner: Html::parse_fragment(&html),
+-                element_html: Some(html),
+-            }
+-        })
++        self.doc.html.select(&selector).next()
++            .map(|el| Node::from_element_ref(self.doc.clone(), el))
+     }
+ 
+     /// Adaptive CSS selection with SQLite-backed snapshot persistence.
+@@ -86,87 +139,112 @@ impl Node {
+ 
+     /// Get the text content of the document/element.
+     pub fn text(&self) -> String {
+-        self.inner.root_element().text().collect::<Vec<_>>().join("")
++        self.element_ref()
++            .map(|e| e.text().collect::<Vec<_>>().join(""))
++            .unwrap_or_default()
+     }
+ 
+     /// Get the inner HTML.
+     pub fn html(&self) -> String {
+-        self.inner.root_element().inner_html()
++        self.element_ref()
++            .map(|e| e.inner_html())
++            .unwrap_or_default()
+     }
+ 
+     /// Get the outer HTML.
+     pub fn outer_html(&self) -> String {
+-        self.inner.root_element().html()
++        self.element_ref()
++            .map(|e| e.html())
++            .unwrap_or_default()
+     }
+ 
+-    /// Get an attribute value (only works on fragment single-element nodes).
++    /// Get an attribute value.
+     pub fn attr(&self, name: &str) -> Option<String> {
+-        // For fragments, get first element child's attribute
+-        if let Some(ref html) = self.element_html {
+-            let frag = Html::parse_fragment(html);
+-            if let Some(el) = frag.root_element().select(&CssSelector::parse("*").unwrap()).next() {
+-                return el.value().attr(name).map(|s| s.to_string());
+-            }
+-        }
+-        self.inner.root_element().value().attr(name).map(|s| s.to_string())
++        self.element_ref()
++            .and_then(|e| e.value().attr(name).map(|s| s.to_string()))
+     }
+ 
+     /// Get all attributes as a map.
+     pub fn attrs(&self) -> HashMap<String, String> {
+-        if let Some(ref html) = self.element_html {
+-            let frag = Html::parse_fragment(html);
+-            if let Some(el) = frag.root_element().select(&CssSelector::parse("*").unwrap()).next() {
+-                return el.value().attrs()
++        self.element_ref()
++            .map(|e| {
++                e.value().attrs()
+                     .map(|(k, v)| (k.to_string(), v.to_string()))
+-                    .collect();
+-            }
+-        }
+-        self.inner.root_element().value().attrs()
+-            .map(|(k, v)| (k.to_string(), v.to_string()))
+-            .collect()
++                    .collect()
++            })
++            .unwrap_or_default()
++    }
++
++    /// Get the tag name of the element.
++    pub fn tag(&self) -> String {
++        self.element_ref()
++            .map(|e| e.value().name().to_string())
++            .unwrap_or_default()
+     }
+ 
+     /// Select all elements matching an XPath expression.
+     ///
+-    /// Supports common XPath patterns:
+-    /// - `//tag` - all elements with tag name
+-    /// - `//tag[@attr='value']` - elements with attribute
+-    /// - `//tag[@attr]` - elements having attribute
+-    /// - `//*[@id='value']` - by ID
+-    /// - `//tag[contains(@class, 'value')]` - class contains
++    /// 支持完整 XPath 1.0。简单表达式走 xpath_to_css 快速路径，
++    /// 复杂表达式走 sxd-xpath 完整查询。
+     pub fn xpath(&self, expr: &str) -> NodeList {
+-        // Convert common XPath patterns to CSS selectors
++        // 快速路径：简单 XPath 转 CSS（覆盖 80% 常见用法）
+         if let Some(css) = xpath_to_css(expr) {
+             return self.select(&css);
+         }
+-        // Fallback: return empty for unsupported XPath
+-        NodeList { nodes: Vec::new() }
++        // 慢路径：完整 sxd-xpath 查询
++        match xpath::xpath_full(self, expr) {
++            Ok(list) => list,
++            Err(e) => {
++                tracing::warn!("xpath 查询失败 '{}': {}", expr, e);
++                NodeList { nodes: Vec::new() }
++            }
++        }
+     }
+ 
+-    /// Get the parent element (returns the containing element for fragments).
++    /// Get the parent element.
++    ///
++    /// 使用 `ElementRef::wrap` 过滤非元素节点（scraper 0.23 中 `Element` 没有 `is_element()`，
++    /// 但 `ElementRef::wrap` 本身只对元素节点返回 `Some`）。
+     pub fn parent(&self) -> Option<Node> {
+-        // Limited parent navigation for fragment-based nodes
+-        // The root element's parent in a fragment is the synthetic root
+-        None
++        let element = self.element_ref()?;
++        element.parent()
++            .and_then(ElementRef::wrap)
++            .map(|p| Node::from_element_ref(self.doc.clone(), p))
+     }
+ 
+     /// Get direct child elements.
+     pub fn children(&self) -> NodeList {
+-        let all = self.select("*");
+-        let root = self.inner.root_element();
+-        let child_count = root.children().filter(|c| c.value().is_element()).count();
+-        let nodes: Vec<Node> = all.nodes.into_iter().take(child_count).collect();
++        let element = match self.element_ref() { Some(e) => e, None => return NodeList { nodes: Vec::new() } };
++        let nodes: Vec<Node> = element.child_elements()
++            .map(|c| Node::from_element_ref(self.doc.clone(), c))
++            .collect();
+         NodeList { nodes }
+     }
+ 
+-    /// Get the next sibling element.
++    /// Get the next sibling element (skips non-element nodes like text/comment).
+     pub fn next_sibling(&self) -> Option<Node> {
+-        None // Limited in fragment-based architecture
++        let element = self.element_ref()?;
++        let mut sib = element.next_sibling();
++        while let Some(s) = sib {
++            if let Some(el) = ElementRef::wrap(s) {
++                return Some(Node::from_element_ref(self.doc.clone(), el));
++            }
++            sib = s.next_sibling();
++        }
++        None
+     }
+ 
+-    /// Get the previous sibling element.
++    /// Get the previous sibling element (skips non-element nodes like text/comment).
+     pub fn prev_sibling(&self) -> Option<Node> {
+-        None // Limited in fragment-based architecture
++        let element = self.element_ref()?;
++        let mut sib = element.prev_sibling();
++        while let Some(s) = sib {
++            if let Some(el) = ElementRef::wrap(s) {
++                return Some(Node::from_element_ref(self.doc.clone(), el));
++            }
++            sib = s.prev_sibling();
++        }
++        None
+     }
+ 
+     /// Get the first child element.
+@@ -179,16 +257,25 @@ impl Node {
+         self.children().last().cloned()
+     }
+ 
++    /// Iterate ancestor elements from parent up to document root.
++    ///
++    /// 使用 `std::iter::successors` 链式调用 `parent()`，惰性迭代。
++    pub fn ancestors(&self) -> impl Iterator<Item = Node> + '_ {
++        std::iter::successors(self.parent(), |node| node.parent())
++    }
++
+     /// Check if element matches a CSS selector.
++    ///
++    /// 无效选择器返回 `false`（不 panic）。scraper 0.23 中 `Selector` 提供
++    /// `matches(&ElementRef) -> bool` 方法（注意：方法在 `Selector` 上，不在 `Element` 上）。
+     pub fn matches(&self, css: &str) -> bool {
+-        // Simplified: check if re-selecting from this node finds itself
+-        if CssSelector::parse(css).is_ok() {
+-            // For now, just check if the selector is valid
+-            // Full implementation would require parent context
+-            false
+-        } else {
+-            false
+-        }
++        let selector = match CssSelector::parse(css) {
++            Ok(s) => s,
++            Err(_) => return false,
++        };
++        self.element_ref()
++            .map(|e| selector.matches(&e))
++            .unwrap_or(false)
+     }
+ 
+     /// Check if text content contains a substring.
+@@ -218,7 +305,7 @@ impl Node {
+ 
+     /// Access the underlying scraper::Html for advanced usage.
+     pub fn inner(&self) -> &Html {
+-        &self.inner
++        &self.doc.html
+     }
+ }
+ 
+@@ -457,4 +544,15 @@ mod tests {
+         let node = Node::from_fragment(r#"<div id="unique">Content</div>"#);
+         assert_eq!(node.generate_xpath(), "//*[@id=\"unique\"]");
+     }
++
++    #[test]
++    fn test_from_fragment_table_element() {
++        // 表格元素片段不应被强制包裹 <table>（Important 2 回归测试）
++        // 旧 Task 3 重构后用 parse_document 会让 tag() 返回 "table"；
++        // 修复后用 parse_fragment，tag() 应返回 "td"。
++        let node = Node::from_fragment("<td>cell</td>");
++        assert_eq!(node.tag(), "td");
++        assert!(node.text().contains("cell"));
++        assert!(node.outer_html().contains("<td>cell</td>"));
++    }
+ }
+diff --git a/src/parser/xpath.rs b/src/parser/xpath.rs
+new file mode 100644
+index 0000000..99e49db
+--- /dev/null
++++ b/src/parser/xpath.rs
+@@ -0,0 +1,133 @@
++//! sxd-xpath 完整查询集成。
++//!
++//! 快速路径（xpath_to_css）覆盖 80% 常见 XPath，慢路径用 sxd-xpath 执行完整 XPath 1.0。
++//! 结果回查 scraper 树：用 tag + 属性 + 路径定位 sxd 节点对应的 scraper 节点。
++
++use sxd_document::dom;
++use sxd_xpath::nodeset;
++use sxd_xpath::{Context, Factory, Value};
++use crate::error::{WispError, Result};
++use super::{Document, Node, NodeList};
++use std::sync::Arc;
++
++/// 执行完整 sxd-xpath 查询。
++///
++/// 1. 懒加载 sxd-document Package
++/// 2. 定位当前节点在 sxd 树中的对应节点
++/// 3. 执行 xpath 查询
++/// 4. 结果回查 scraper 树
++pub fn xpath_full(node: &Node, expr: &str) -> Result<NodeList> {
++    let package = node.doc.sxd_package();
++    let doc = package.as_document();
++
++    // 定位当前节点在 sxd 树中的对应节点（用 tag 启发式定位）。
++    // locate_in_sxd 返回 Option<dom::Element>，doc.root() 返回 dom::Root，
++    // 二者类型不同但都 Into<nodeset::Node>，统一转成 nodeset::Node 给 evaluate。
++    let context_element = match locate_in_sxd(doc, node) {
++        Some(e) => nodeset::Node::Element(e),
++        None => nodeset::Node::Root(doc.root()),
++    };
++
++    // 解析 xpath
++    let factory = Factory::new();
++    let xpath = factory.build(expr)
++        .map_err(|e| WispError::ParseError(format!("xpath parse: {e}")))?
++        .ok_or_else(|| WispError::ParseError(format!("xpath empty: {expr}")))?;
++
++    // 执行 xpath（sxd-xpath 0.4.2 需要 &Context 作为第一参数，context_element 作为第二参数）
++    let context = Context::new();
++    let value = xpath.evaluate(&context, context_element)
++        .map_err(|e| WispError::ParseError(format!("xpath evaluate: {e}")))?;
++
++    // 结果转回 NodeList
++    match value {
++        Value::Nodeset(ns) => {
++            // sxd-xpath Nodeset::iter() 产出 nodeset::Node<'d>（owned），
++            // 用 .element() 拆包出 dom::Element<'d>（None 的非元素节点跳过）。
++            let nodes: Vec<Node> = ns.iter()
++                .filter_map(|n| n.element())
++                .filter_map(|e| find_in_scraper(&node.doc, &e))
++                .collect();
++            Ok(NodeList { nodes })
++        }
++        _ => Ok(NodeList { nodes: Vec::new() }),
++    }
++}
++
++/// 在 sxd 树中定位 scraper 节点的对应节点。
++///
++/// 启发式：用当前节点的 tag 匹配 sxd 树中的第一个同名元素。
++/// 找不到则返回 None（调用方回退到 doc.root()）。
++///
++/// 注意：sxd-document 0.3.2 的 `dom::Document` 没有 `descendants()` 方法，
++/// 需自己写 DFS 遍历 `root.children()` / `element.children()`。
++fn locate_in_sxd<'d>(doc: dom::Document<'d>, node: &Node) -> Option<dom::Element<'d>> {
++    let target_tag = node.tag();
++    if target_tag.is_empty() {
++        return None;
++    }
++    // 简化：找第一个同名元素。精确匹配需用路径，stage 2 接受此简化。
++    find_first_element_by_tag(doc.root(), &target_tag)
++}
++
++/// DFS 遍历 sxd 树（从 root 起）找第一个 local_part == tag 的元素。
++fn find_first_element_by_tag<'d>(root: dom::Root<'d>, tag: &str) -> Option<dom::Element<'d>> {
++    for child in root.children() {
++        if let dom::ChildOfRoot::Element(e) = child {
++            if e.name().local_part() == tag {
++                return Some(e);
++            }
++            if let Some(found) = find_first_element_by_tag_in_element(e, tag) {
++                return Some(found);
++            }
++        }
++    }
++    None
++}
++
++/// DFS 遍历 sxd 子树（从 element 起）找第一个 local_part == tag 的元素。
++fn find_first_element_by_tag_in_element<'d>(
++    parent: dom::Element<'d>,
++    tag: &str,
++) -> Option<dom::Element<'d>> {
++    for child in parent.children() {
++        if let dom::ChildOfElement::Element(e) = child {
++            if e.name().local_part() == tag {
++                return Some(e);
++            }
++            if let Some(found) = find_first_element_by_tag_in_element(e, tag) {
++                return Some(found);
++            }
++        }
++    }
++    None
++}
++
++/// 在 scraper 树中找到 sxd 节点的对应节点。
++///
++/// 用 tag + 属性启发式匹配。找不到则跳过（不 panic）。
++fn find_in_scraper<'d>(doc: &Arc<Document>, sxd_node: &dom::Element<'d>) -> Option<Node> {
++    // sxd-document 0.3.2: QName::local_part() 直接返回 &str（不是 Option<&str>）。
++    let tag = sxd_node.name().local_part();
++    // Element::attributes() 返回 Vec<Attribute<'d>>（不是 &[Attribute]）。
++    let attrs: Vec<(String, String)> = sxd_node
++        .attributes()
++        .iter()
++        .map(|a| (a.name().local_part().to_string(), a.value().to_string()))
++        .collect();
++
++    // 在 scraper 树中找第一个 tag + 属性匹配的元素
++    let selector_str = if attrs.is_empty() {
++        tag.to_string()
++    } else {
++        // 用第一个属性构造选择器
++        let (k, v) = &attrs[0];
++        format!("{}[{}='{}']", tag, k, v)
++    };
++
++    let selector = scraper::Selector::parse(&selector_str).ok()?;
++    doc.html
++        .select(&selector)
++        .next()
++        .map(|el| Node::from_element_ref(doc.clone(), el))
++}
+diff --git a/tests/dom_navigation_test.rs b/tests/dom_navigation_test.rs
+new file mode 100644
+index 0000000..ec57bd4
+--- /dev/null
++++ b/tests/dom_navigation_test.rs
+@@ -0,0 +1,101 @@
++//! Verify DOM navigation methods work correctly after Node refactor.
++
++use wisp::parser::Node;
++
++const NAV_HTML: &str = r#"
++<html>
++  <body>
++    <div id="parent" class="container">
++      <p class="first">First paragraph</p>
++      <p class="second" data-x="1">Second paragraph</p>
++      <p class="third">Third paragraph</p>
++      <span class="sibling">After paragraphs</span>
++    </div>
++    <section id="other">Other section</section>
++  </body>
++</html>
++"#;
++
++#[test]
++fn test_parent_navigation() {
++    let doc = Node::from_html(NAV_HTML);
++    let p = doc.select_one("p.second").expect("p.second should exist");
++    let parent = p.parent().expect("p should have a parent");
++    assert_eq!(parent.attr("id"), Some("parent".to_string()));
++    assert_eq!(parent.tag(), "div");
++}
++
++#[test]
++fn test_children_navigation() {
++    let doc = Node::from_html(NAV_HTML);
++    let parent = doc.select_one("#parent").expect("#parent should exist");
++    let children = parent.children();
++    // 3 个 <p> + 1 个 <span> = 4 个元素子节点
++    assert_eq!(children.len(), 4);
++    assert_eq!(children.get(0).unwrap().attr("class"), Some("first".to_string()));
++    assert_eq!(children.get(3).unwrap().tag(), "span");
++}
++
++#[test]
++fn test_next_sibling() {
++    let doc = Node::from_html(NAV_HTML);
++    let first = doc.select_one("p.first").expect("p.first should exist");
++    let next = first.next_sibling().expect("should have next sibling");
++    assert_eq!(next.attr("class"), Some("second".to_string()));
++}
++
++#[test]
++fn test_prev_sibling() {
++    let doc = Node::from_html(NAV_HTML);
++    let third = doc.select_one("p.third").expect("p.third should exist");
++    let prev = third.prev_sibling().expect("should have prev sibling");
++    assert_eq!(prev.attr("class"), Some("second".to_string()));
++}
++
++#[test]
++fn test_next_sibling_none_at_end() {
++    let doc = Node::from_html(NAV_HTML);
++    let span = doc.select_one("span.sibling").expect("span should exist");
++    // span 是 div 的最后一个元素子节点
++    assert!(span.next_sibling().is_none());
++}
++
++#[test]
++fn test_ancestors_iterator() {
++    let doc = Node::from_html(NAV_HTML);
++    let p = doc.select_one("p.first").expect("p.first should exist");
++    let ancestors: Vec<Node> = p.ancestors().collect();
++    // p -> div#parent -> body -> html
++    assert!(ancestors.len() >= 3);
++    assert_eq!(ancestors[0].attr("id"), Some("parent".to_string()));
++    assert_eq!(ancestors[1].tag(), "body");
++    assert_eq!(ancestors[2].tag(), "html");
++}
++
++#[test]
++fn test_matches_simple_selector() {
++    let doc = Node::from_html(NAV_HTML);
++    let p = doc.select_one("p.second").expect("p.second should exist");
++    assert!(p.matches("p"));
++    assert!(p.matches("p.second"));
++    assert!(p.matches("[data-x]"));
++    assert!(!p.matches("p.first"));
++    assert!(!p.matches("div"));
++}
++
++#[test]
++fn test_matches_compound_selector() {
++    let doc = Node::from_html(NAV_HTML);
++    let p = doc.select_one("p.second").expect("p.second should exist");
++    assert!(p.matches("p.second[data-x='1']"));
++    assert!(!p.matches("p.second[data-x='2']"));
++}
++
++#[test]
++fn test_tag_name() {
++    let doc = Node::from_html(NAV_HTML);
++    let p = doc.select_one("p.first").expect("p.first should exist");
++    assert_eq!(p.tag(), "p");
++    let div = doc.select_one("#parent").expect("#parent should exist");
++    assert_eq!(div.tag(), "div");
++}
+diff --git a/tests/integration.rs b/tests/integration.rs
+index ec9da23..3f383b3 100644
+--- a/tests/integration.rs
++++ b/tests/integration.rs
+@@ -157,4 +157,64 @@ mod adaptive_test {
+         assert!(node2.is_some(), "adaptive should relocate after redesign");
+         assert_eq!(node2.unwrap().text(), "Widget");
+     }
++
++    #[test]
++    fn test_dom_navigation_with_adaptive_snapshot() {
++        // 验证 Node 重构后 adaptive 仍正常工作，且 capture 用了导航 API
++        let store = Store::open_in_memory().unwrap();
++        let url = "https://shop.example.com/products";
++
++        let html = r#"
++        <html><body>
++          <div class="products">
++            <div class="product" data-id="1">
++              <h3 class="title">Widget</h3>
++            </div>
++          </div>
++        </body></html>
++        "#;
++
++        let doc = Node::from_html(html);
++        let node = doc.css_adaptive(".title", "product-title", url, &store, true, 0.5);
++        assert!(node.is_some());
++        assert_eq!(node.unwrap().text(), "Widget");
++
++        // 验证 capture 用了导航 API：检查 snapshot 的 ancestor_path 包含 "div.products"
++        let saved = store.load_element(url, "product-title").unwrap().expect("snapshot should be saved");
++        let snapshot = wisp::parser::ElementSnapshot::from_row(saved);
++        assert!(snapshot.ancestor_path.iter().any(|p| p.contains("products")));
++    }
++
++    #[test]
++    fn test_xpath_and_css_consistency() {
++        // 验证 XPath 和 CSS 对同一查询返回一致结果
++        let html = r#"
++        <html><body>
++          <ul>
++            <li class="item">A</li>
++            <li class="item">B</li>
++            <li class="item">C</li>
++          </ul>
++        </body></html>
++        "#;
++
++        let doc = Node::from_html(html);
++        let css_result = doc.select("li.item");
++        let xpath_result = doc.xpath("//li[@class='item']");
++
++        assert_eq!(css_result.len(), xpath_result.len());
++        assert_eq!(css_result.len(), 3);
++    }
++
++    #[test]
++    fn test_node_shares_document_after_select() {
++        // 验证 select 返回的 Node 共享同一 Document（导航可工作）
++        let html = r#"<html><body><div><p>Hello</p></div></body></html>"#;
++        let doc = Node::from_html(html);
++        let p = doc.select_one("p").expect("p should exist");
++        // 阶段 1 的 fragment 模型下 parent() 返回 None
++        // 阶段 2 重构后 parent() 应返回 div
++        let parent = p.parent().expect("parent should work after refactor");
++        assert_eq!(parent.tag(), "div");
++    }
+ }
+diff --git a/tests/xpath_test.rs b/tests/xpath_test.rs
+new file mode 100644
+index 0000000..d910fd8
+--- /dev/null
++++ b/tests/xpath_test.rs
+@@ -0,0 +1,96 @@
++//! Verify XPath queries work for both simple (fast path) and complex (sxd) expressions.
++
++use wisp::parser::Node;
++
++const XPATH_HTML: &str = r#"
++<html>
++  <body>
++    <div id="main" class="container">
++      <h1>Title</h1>
++      <ul>
++        <li class="item">Item 1</li>
++        <li class="item">Item 2</li>
++        <li class="item">Item 3</li>
++        <li class="special">Item 4</li>
++      </ul>
++      <a href="https://example.com/page1">Link 1</a>
++      <a href="https://example.com/page2">Link 2</a>
++    </div>
++  </body>
++</html>
++"#;
++
++#[test]
++fn test_xpath_simple_tag() {
++    // 快速路径：//tag -> tag
++    let doc = Node::from_html(XPATH_HTML);
++    let lis = doc.xpath("//li");
++    assert_eq!(lis.len(), 4);
++}
++
++#[test]
++fn test_xpath_by_id() {
++    // 快速路径：//*[@id='value'] -> #value
++    let doc = Node::from_html(XPATH_HTML);
++    let main = doc.xpath("//*[@id='main']");
++    assert_eq!(main.len(), 1);
++    assert_eq!(main.get(0).unwrap().attr("class"), Some("container".to_string()));
++}
++
++#[test]
++fn test_xpath_attr_value() {
++    // 快速路径：//tag[@attr='value']
++    let doc = Node::from_html(XPATH_HTML);
++    let special = doc.xpath("//li[@class='special']");
++    assert_eq!(special.len(), 1);
++    assert!(special.get(0).unwrap().text().contains("Item 4"));
++}
++
++#[test]
++fn test_xpath_contains_href() {
++    // 快速路径：//tag[contains(@attr, 'value')]
++    let doc = Node::from_html(XPATH_HTML);
++    let links = doc.xpath("//a[contains(@href, 'example.com')]");
++    assert_eq!(links.len(), 2);
++}
++
++#[test]
++fn test_xpath_position_predicate() {
++    // 慢路径：position() 谓词需要 sxd-xpath
++    let doc = Node::from_html(XPATH_HTML);
++    let items = doc.xpath("//li[position()>2]");
++    assert_eq!(items.len(), 2);
++}
++
++#[test]
++fn test_xpath_text_content() {
++    // 慢路径：text() 函数
++    let doc = Node::from_html(XPATH_HTML);
++    let items = doc.xpath("//li[contains(text(), 'Item 1')]");
++    assert_eq!(items.len(), 1);
++}
++
++#[test]
++fn test_xpath_returns_empty_on_no_match() {
++    let doc = Node::from_html(XPATH_HTML);
++    let result = doc.xpath("//nonexistent");
++    assert_eq!(result.len(), 0);
++}
++
++#[test]
++fn test_xpath_malformed_returns_empty() {
++    let doc = Node::from_html(XPATH_HTML);
++    // 格式错误的 xpath 应返回空，不 panic
++    let result = doc.xpath("///[[[");
++    assert_eq!(result.len(), 0);
++}
++
++#[test]
++fn test_xpath_html5_tolerance() {
++    // 不规范 HTML（未闭合标签）应能正常解析
++    let html = r#"<html><body><div><p>Unclosed paragraph<div>Nested</div></body></html>"#;
++    let doc = Node::from_html(html);
++    let result = doc.xpath("//p");
++    assert_eq!(result.len(), 1);
++    assert!(result.get(0).unwrap().text().contains("Unclosed"));
++}

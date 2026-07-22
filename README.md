@@ -10,7 +10,7 @@ Pure Rust CDP (Chrome DevTools Protocol) over WebSocket with anti-detection patc
 - **Anti-Detection** — Patches navigator.webdriver, CDP leaks, automation flags; passes Browserscan 4/4
 - **Cloudflare Bypass** — Auto-detects and solves JS Challenge, Turnstile, and Managed Challenge
 - **Adaptive Parsing** — CSS/XPath selectors + element relocation when site structure changes
-- **Spider Engine** — Concurrent crawling with priority scheduling, robots.txt, checkpoint/resume, streaming
+- **Spider Engine** — Concurrent crawling with priority scheduling, callback label routing, per-spider stop conditions, checkpoint/resume, streaming
 - **Human Simulation** — Bezier mouse movements, random scrolling, human-like typing
 - **Proxy Rotation** — Built-in pool with Sequential/Random/Sticky strategies
 - **MCP Server** — AI-assisted scraping via Model Context Protocol (stdio JSON-RPC)
@@ -79,15 +79,15 @@ session.close().await;
 
 ```rust
 use wisp::{SpiderBuilder, Engine, FetchMode};
+use wisp::crawl::SpiderRequest;
 use serde_json::json;
 
 let spider = SpiderBuilder::new("quotes")
     .start_urls(vec!["https://quotes.toscrape.com/"])
     .mode(FetchMode::Http)
-    .concurrent(8)
     .delay_ms(200)
     .obey_robots(false)
-    .parse(|resp| {
+    .on("default", |resp| async move {
         let items = resp.css(".quote").iter().map(|q| {
             json!({
                 "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
@@ -95,7 +95,7 @@ let spider = SpiderBuilder::new("quotes")
             })
         }).collect();
 
-        let follows = resp.select_one(".next a")
+        let follows: Vec<SpiderRequest> = resp.css(".next a").first()
             .and_then(|a| a.attr("href"))
             .and_then(|href| resp.follow(&href))
             .map(|r| vec![r])
@@ -105,13 +105,38 @@ let spider = SpiderBuilder::new("quotes")
     })
     .build();
 
-let stats = Engine::builder(spider)
-    .max_pages(10)
-    .proxy_pool(vec!["http://127.0.0.1:7897".into()], wisp::RotationStrategy::Sequential)
-    .run()
-    .await?;
+let engine = Engine::infra().max_pages(10).build()?;
+let (stats, _items) = engine.run(spider).await?;
 
 println!("{}", stats.summary());
+```
+
+### Multi-callback Pipeline
+
+Single Spider with multiple handlers for list → detail → content flows:
+
+```rust
+let spider = SpiderBuilder::new("pipeline")
+    .start_urls(vec!["https://example.com/list"])
+    .on("default", |resp| async move {
+        let follows: Vec<_> = resp.css(".item a").iter()
+            .filter_map(|a| resp.follow_with(a.attr("href").unwrap_or(""), "detail"))
+            .collect();
+        (vec![], follows)
+    })
+    .on("detail", |resp| async move {
+        let follows: Vec<_> = resp.css("article a").iter()
+            .filter_map(|a| resp.follow_with(a.attr("href").unwrap_or(""), "content"))
+            .collect();
+        (vec![], follows)
+    })
+    .on("content", |resp| async move {
+        (vec![json!({"title": resp.css("h1").text()})], vec![])
+    })
+    .build();
+
+let engine = Engine::infra().max_pages(1000).build()?;
+let (stats, items) = engine.run(spider).await?;
 ```
 
 ## Architecture
@@ -122,13 +147,20 @@ src/
     mod.rs          Fetcher struct, FetchMode enum, FetcherBuilder
     response.rs     Unified Response/Request types
     session.rs      Session with cookie persistence
+  http/             HTTP client with TLS fingerprint emulation
   parser/           HTML parsing (CSS/XPath/adaptive/text search)
-  crawl/            Spider engine (scheduler, robots, checkpoint, streaming)
+  crawl/            Spider engine (Spider trait, SpiderBuilder, Engine)
+    builder.rs      ClosureSpider + SpiderBuilder::on(label, handler)
+    engine.rs       Engine run loop (demand-driven unfold + buffer_unordered)
+    stop.rs         StopCondition (MaxPages/MaxItems/MaxErrors/Timeout)
+    scheduler.rs    Priority scheduler + dedup
+    request_cache.rs  Request-level cache (from_cache flag)
   browser/          CDP browser automation (internal)
-  challenge/        Cloudflare challenge solver (internal)
-  human/            Human behavior simulation (internal)
-  fetch/            HTTP client with TLS emulation (internal)
-  proxy/            Proxy pool with rotation strategies
+  stealth/          Anti-detection + Cloudflare bypass (internal)
+    challenge.rs    JS Challenge / Managed Challenge solver
+    turnstile.rs    Cloudflare Turnstile solver
+    human.rs        Human behavior simulation
+  proxy.rs          Proxy pool with rotation strategies
   storage/          SQLite storage (adaptive snapshots, checkpoints, cache)
   mcp/              MCP server for AI-assisted scraping
 ```
@@ -160,10 +192,15 @@ cargo test --lib
 # Builder & unified API tests
 cargo test --test builder_api_test --test unified_fetcher_test
 
+# Callback routing & Engine::infra() (new API)
+cargo test --test callback_routing_test --test engine_infra_test --test sitemap_test
+
+# Stop conditions & multi-spider routing
+cargo test --test stop_condition_test --test multi_spider_test
+
 # Real network tests (requires internet, uses proxy 127.0.0.1:7897)
 cargo test --test cf_bypass_real_test -- --ignored
 cargo test --test real_scrape_test -- --ignored
-cargo test --test session_test -- --ignored
 ```
 
 ## Requirements

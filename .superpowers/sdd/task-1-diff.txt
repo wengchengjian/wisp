@@ -1,0 +1,889 @@
+﻿=== COMMITS ===
+b6aa2da refactor(crawl): 删除 SessionManager 整模块
+
+=== STAT ===
+ src/crawl/builder.rs            |  14 ---
+ src/crawl/mod.rs                |   7 --
+ src/crawl/session.rs            | 163 -----------------------------
+ src/lib.rs                      |   2 +-
+ tests/builder_api_test.rs       |  27 -----
+ tests/cr_fix_t4_test.rs         |  55 ----------
+ tests/crawl_concurrency_test.rs |   1 -
+ tests/session_test.rs           | 224 ----------------------------------------
+ 8 files changed, 1 insertion(+), 492 deletions(-)
+
+=== DIFF ===
+diff --git a/src/crawl/builder.rs b/src/crawl/builder.rs
+index abf8fd7..2dbda20 100644
+--- a/src/crawl/builder.rs
++++ b/src/crawl/builder.rs
+@@ -3,21 +3,20 @@
+ //! # 示例
+ //!
+ //! ## 简单爬虫（单 parse 闭包）
+ //!
+ //! ```rust,no_run
+ //! use wisp::crawl::SpiderBuilder;
+ //! use std::time::Duration;
+ //!
+ //! let spider = SpiderBuilder::new("quotes")
+ //!     .start_urls(vec!["https://quotes.toscrape.com/"])
+-//!     .concurrent(10)
+ //!     .delay(Duration::from_millis(500))
+ //!     .obey_robots(false)
+ //!     .parse(|resp| {
+ //!         let doc = resp.parse().unwrap();
+ //!         let items = doc.select(".quote").iter().map(|q| {
+ //!             serde_json::json!({ "text": q.select_one(".text").map(|n| n.text()) })
+ //!         }).collect();
+ //!         (items, vec![])
+ //!     })
+ //!     .build();
+@@ -80,21 +79,20 @@ pub type Handler = Arc<
+ >;
+ 
+ /// 闭包式 Spider 构建器。
+ ///
+ /// 允许通过链式调用 + 闭包定义 Spider，避免为简单爬虫手写 trait impl。
+ pub struct SpiderBuilder {
+     name: String,
+     start_urls: Vec<String>,
+     handlers: HashMap<String, Handler>,
+     allowed_domains: HashSet<String>,
+-    concurrent: u32,
+     delay: Duration,
+     obey_robots: bool,
+     max_retries: u32,
+     fetcher_config: http::Config,
+     fetch_mode: crate::fetcher::FetchMode,
+     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
+     auto_exclude: HashSet<String>,
+     parse_fn: Option<ParseFn>,
+     async_parse_fn: Option<AsyncParseFn>,
+     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
+@@ -102,21 +100,20 @@ pub struct SpiderBuilder {
+ }
+ 
+ impl SpiderBuilder {
+     /// 创建新 SpiderBuilder（name 为必填）。
+     pub fn new(name: &str) -> Self {
+         Self {
+             name: name.to_string(),
+             start_urls: Vec::new(),
+             handlers: HashMap::new(),
+             allowed_domains: HashSet::new(),
+-            concurrent: 8,
+             delay: Duration::ZERO,
+             obey_robots: true,
+             max_retries: 3,
+             fetcher_config: http::Config::default(),
+             fetch_mode: crate::fetcher::FetchMode::Http,
+             auto_rules: Vec::new(),
+             auto_exclude: HashSet::new(),
+             parse_fn: None,
+             async_parse_fn: None,
+             is_blocked_fn: None,
+@@ -129,26 +126,20 @@ impl SpiderBuilder {
+         self.start_urls = urls.into_iter().map(|u| u.into()).collect();
+         self
+     }
+ 
+     /// 设置允许的域名集合。
+     pub fn allowed_domains(mut self, domains: Vec<impl Into<String>>) -> Self {
+         self.allowed_domains = domains.into_iter().map(|d| d.into()).collect();
+         self
+     }
+ 
+-    /// 设置并发请求数。
+-    pub fn concurrent(mut self, n: u32) -> Self {
+-        self.concurrent = n;
+-        self
+-    }
+-
+     /// 设置下载延迟。
+     pub fn delay(mut self, d: Duration) -> Self {
+         self.delay = d;
+         self
+     }
+ 
+     /// 设置下载延迟（毫秒）。
+     pub fn delay_ms(mut self, ms: u64) -> Self {
+         self.delay = Duration::from_millis(ms);
+         self
+@@ -252,21 +243,20 @@ impl SpiderBuilder {
+     pub fn build(self) -> ClosureSpider {
+         assert!(
+             self.parse_fn.is_some() || self.async_parse_fn.is_some() || !self.handlers.is_empty(),
+             "SpiderBuilder: 必须设置 parse() / parse_async() / on() 之一"
+         );
+         ClosureSpider {
+             name: self.name,
+             start_urls: self.start_urls,
+             handlers: self.handlers,
+             allowed_domains: self.allowed_domains,
+-            concurrent: self.concurrent,
+             delay: self.delay,
+             obey_robots: self.obey_robots,
+             max_retries: self.max_retries,
+             fetcher_config: self.fetcher_config,
+             fetch_mode: self.fetch_mode,
+             auto_rules: self.auto_rules,
+             auto_exclude: self.auto_exclude,
+             parse_fn: self.parse_fn,
+             async_parse_fn: self.async_parse_fn,
+             is_blocked_fn: self.is_blocked_fn,
+@@ -274,40 +264,38 @@ impl SpiderBuilder {
+         }
+     }
+ }
+ 
+ /// 由 SpiderBuilder 构建的闭包式 Spider。
+ pub struct ClosureSpider {
+     name: String,
+     start_urls: Vec<String>,
+     handlers: HashMap<String, Handler>,
+     allowed_domains: HashSet<String>,
+-    concurrent: u32,
+     delay: Duration,
+     obey_robots: bool,
+     max_retries: u32,
+     fetcher_config: http::Config,
+     fetch_mode: crate::fetcher::FetchMode,
+     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
+     auto_exclude: HashSet<String>,
+     parse_fn: Option<ParseFn>,
+     async_parse_fn: Option<AsyncParseFn>,
+     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
+     until_cond: Arc<dyn super::stop::StopCondition>,
+ }
+ 
+ #[async_trait]
+ impl Spider for ClosureSpider {
+     fn name(&self) -> &str { &self.name }
+     fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
+     fn allowed_domains(&self) -> HashSet<String> { self.allowed_domains.clone() }
+-    fn concurrent_requests(&self) -> u32 { self.concurrent }
+     fn download_delay(&self) -> Duration { self.delay }
+     fn obey_robots(&self) -> bool { self.obey_robots }
+     fn max_retries(&self) -> u32 { self.max_retries }
+     fn fetcher_config(&self) -> http::Config { self.fetcher_config.clone() }
+     fn fetch_mode(&self) -> crate::fetcher::FetchMode { self.fetch_mode }
+     fn auto_rules(&self) -> Vec<(String, crate::fetcher::FetchMode)> { self.auto_rules.clone() }
+     fn auto_exclude(&self) -> HashSet<String> { self.auto_exclude.clone() }
+ 
+     /// callback 路由：根据 `resp.request.callback` 查表分发。
+     ///
+@@ -358,32 +346,30 @@ impl Spider for ClosureSpider {
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use serde_json::json;
+ 
+     #[test]
+     fn test_spider_builder_basic() {
+         let spider = SpiderBuilder::new("test")
+             .start_urls(vec!["https://example.com/"])
+-            .concurrent(4)
+             .delay_ms(100)
+             .obey_robots(false)
+             .parse(|resp| {
+                 let _ = resp;
+                 (vec![json!({"ok": true})], vec![])
+             })
+             .build();
+ 
+         assert_eq!(spider.name(), "test");
+         assert_eq!(spider.start_urls(), vec!["https://example.com/"]);
+-        assert_eq!(spider.concurrent_requests(), 4);
+         assert_eq!(spider.download_delay(), Duration::from_millis(100));
+         assert!(!spider.obey_robots());
+     }
+ 
+     #[test]
+     fn test_spider_builder_allowed_domains() {
+         let spider = SpiderBuilder::new("test")
+             .start_urls(vec!["https://example.com/"])
+             .allowed_domains(vec!["example.com"])
+             .parse(|_| (vec![], vec![]))
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index 22198cc..39e641d 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -2,31 +2,29 @@
+ 
+ pub mod scheduler;
+ pub mod robots;
+ pub mod cache;
+ pub mod templates;
+ pub mod state;
+ pub mod stats;
+ pub mod stop;
+ pub mod items;
+ pub mod builder;
+-pub mod session;
+ pub mod auto;
+ pub mod engine;
+ pub mod request_cache;
+ pub mod control;
+ pub mod output;
+ pub mod cron;
+ pub use state::CrawlState;
+ pub use items::{Items, JsonlWriter};
+ pub use builder::{SpiderBuilder, ClosureSpider};
+-pub use session::{SessionManager, FetcherType};
+ pub use auto::{SelectorTracker, ModeRuleEngine};
+ pub use request_cache::RequestCache;
+ pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
+ 
+ use std::collections::{HashMap, HashSet};
+ use std::time::Duration;
+ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use async_trait::async_trait;
+ use serde::{Serialize, Deserialize};
+@@ -172,41 +170,36 @@ pub trait Spider: Send + Sync + 'static {
+     ///
+     /// # 路由约定
+     /// - `resp.request.callback` 为 `None` 或 `"default"`：入口请求
+     /// - 其他字符串：用户自定义 label（通过 `resp.follow_with(url, "detail")` 指定）
+     async fn handle(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+         self.parse(resp).await
+     }
+ 
+     // Optional with defaults
+     fn allowed_domains(&self) -> HashSet<String> { HashSet::new() }
+-    fn concurrent_requests(&self) -> u32 { 8 }
+     fn download_delay(&self) -> Duration { Duration::from_millis(0) }
+     fn obey_robots(&self) -> bool { true }
+     fn max_retries(&self) -> u32 { 3 }
+     fn fetcher_config(&self) -> http::Config { http::Config::default() }
+     async fn on_start(&self) {}
+     async fn on_close(&self) {}
+     async fn on_error(&self, _req: &SpiderRequest, _err: &str) {}
+     async fn on_item(&self, item: Value) -> Option<Value> { Some(item) }
+     fn is_blocked(&self, resp: &SpiderResponse) -> bool {
+         BLOCKED_STATUS_CODES.contains(&resp.status)
+     }
+-    fn configure_sessions(&self, _mgr: &mut session::SessionManager) {}
+-    fn session_for(&self, _req: &SpiderRequest) -> &str { "default" }
+     fn fetch_mode(&self) -> FetchMode { FetchMode::Http }
+     fn auto_rules(&self) -> Vec<(String, FetchMode)> { Vec::new() }
+     fn auto_exclude(&self) -> HashSet<String> { HashSet::new() }
+     /// 最大爬取深度。默认无限制。
+     fn max_depth(&self) -> u32 { u32::MAX }
+-    /// 每次请求随机轮换 User-Agent。
+-    fn rotate_ua(&self) -> bool { false }
+     /// 每个请求执行前的异步钩子。默认返回 Proceed。
+     async fn on_before_request(&self, _req: &SpiderRequest) -> RequestAction {
+         RequestAction::Proceed
+     }
+ 
+     // === 终止条件（保留） ===
+ 
+     /// 终止条件。默认永不停止（由引擎 max_pages 兜底）。
+     fn until(&self) -> Arc<dyn StopCondition> {
+         Arc::new(NeverStop)
+diff --git a/src/crawl/session.rs b/src/crawl/session.rs
+deleted file mode 100644
+index b2f4626..0000000
+--- a/src/crawl/session.rs
++++ /dev/null
+@@ -1,163 +0,0 @@
+-//! Multi-session Spider support.
+-//!
+-//! 允许在单个 Spider 中使用多种 Fetcher 类型（快速 HTTP / 隐身浏览器）。
+-//! 通过 session ID 路由请求到不同的会话。
+-//!
+-//! # 示例
+-//!
+-//! ```rust,no_run
+-//! use wisp::crawl::session::{SessionManager, FetcherType};
+-//! use wisp::http;
+-//!
+-//! let mut mgr = SessionManager::new();
+-//! mgr.add("fast", FetcherType::Http(http::Config::default()));
+-//! mgr.add("stealth", FetcherType::Http(http::Config {
+-//!     proxy: Some("http://127.0.0.1:7897".into()),
+-//!     ..Default::default()
+-//! }));
+-//! ```
+-
+-use std::collections::HashMap;
+-use crate::http;
+-
+-/// Fetcher 类型枚举。
+-#[derive(Debug, Clone)]
+-pub enum FetcherType {
+-    /// 快速 HTTP 请求（reqwest TLS 指纹模拟）。
+-    Http(http::Config),
+-    /// 隐身浏览器模式（通过 Scraper 绕过 CF）。
+-    /// 存储代理和 headless 配置。
+-    Stealth {
+-        headless: bool,
+-        proxy: Option<String>,
+-        challenge_timeout_secs: u64,
+-    },
+-}
+-
+-impl Default for FetcherType {
+-    fn default() -> Self {
+-        FetcherType::Http(http::Config::default())
+-    }
+-}
+-
+-/// 多会话管理器。
+-///
+-/// 管理多个命名的 Fetcher 会话，Spider 可通过 session ID 路由请求。
+-#[derive(Default)]
+-pub struct SessionManager {
+-    sessions: HashMap<String, FetcherType>,
+-}
+-
+-impl SessionManager {
+-    /// 创建空的会话管理器。
+-    pub fn new() -> Self {
+-        Self { sessions: HashMap::new() }
+-    }
+-
+-    /// 添加一个命名会话。
+-    pub fn add(&mut self, id: &str, fetcher: FetcherType) {
+-        self.sessions.insert(id.to_string(), fetcher);
+-    }
+-
+-    /// 获取指定 ID 的会话配置。
+-    pub fn get(&self, id: &str) -> Option<&FetcherType> {
+-        self.sessions.get(id)
+-    }
+-
+-    /// 获取默认会话（"default"）。
+-    pub fn default_session(&self) -> Option<&FetcherType> {
+-        self.sessions.get("default")
+-    }
+-
+-    /// 会话数量。
+-    pub fn len(&self) -> usize {
+-        self.sessions.len()
+-    }
+-
+-    pub fn is_empty(&self) -> bool {
+-        self.sessions.is_empty()
+-    }
+-
+-    /// 所有会话 ID 列表。
+-    pub fn session_ids(&self) -> Vec<&str> {
+-        self.sessions.keys().map(|k| k.as_str()).collect()
+-    }
+-}
+-
+-/// SpiderRequest 扩展：携带 session ID。
+-///
+-/// 通过 SpiderRequest.meta 中的 "__sid" 字段传递。
+-pub fn request_with_session(mut req: super::SpiderRequest, sid: &str) -> super::SpiderRequest {
+-    // 合并而非覆盖：保留原有 meta（如分页信息），仅注入/更新 __sid
+-    if !req.meta.is_object() {
+-        req.meta = serde_json::json!({});
+-    }
+-    if let Some(obj) = req.meta.as_object_mut() {
+-        obj.insert("__sid".to_string(), serde_json::Value::String(sid.to_string()));
+-    }
+-    req
+-}
+-
+-/// 从 SpiderRequest 提取 session ID。
+-pub fn session_id_of(req: &super::SpiderRequest) -> &str {
+-    req.meta.get("__sid")
+-        .and_then(|v| v.as_str())
+-        .unwrap_or("default")
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-
+-    #[test]
+-    fn test_session_manager_basic() {
+-        let mut mgr = SessionManager::new();
+-        assert!(mgr.is_empty());
+-
+-        mgr.add("fast", FetcherType::Http(http::Config::default()));
+-        mgr.add("stealth", FetcherType::Stealth {
+-            headless: true,
+-            proxy: Some("http://127.0.0.1:7897".into()),
+-            challenge_timeout_secs: 60,
+-        });
+-
+-        assert_eq!(mgr.len(), 2);
+-        assert!(mgr.get("fast").is_some());
+-        assert!(mgr.get("stealth").is_some());
+-        assert!(mgr.get("nonexistent").is_none());
+-    }
+-
+-    #[test]
+-    fn test_session_ids() {
+-        let mut mgr = SessionManager::new();
+-        mgr.add("a", FetcherType::default());
+-        mgr.add("b", FetcherType::default());
+-
+-        let ids = mgr.session_ids();
+-        assert!(ids.contains(&"a"));
+-        assert!(ids.contains(&"b"));
+-    }
+-
+-    #[test]
+-    fn test_request_with_session() {
+-        let req = super::super::SpiderRequest::get("https://example.com");
+-        let req = request_with_session(req, "stealth");
+-        assert_eq!(session_id_of(&req), "stealth");
+-    }
+-
+-    #[test]
+-    fn test_request_with_session_preserves_meta() {
+-        let req = super::super::SpiderRequest::get("https://example.com")
+-            .with_meta(serde_json::json!({"page": 2, "category": "books"}));
+-        let req = request_with_session(req, "stealth");
+-        assert_eq!(session_id_of(&req), "stealth");
+-        assert_eq!(req.meta["page"], 2);
+-        assert_eq!(req.meta["category"], "books");
+-    }
+-
+-    #[test]
+-    fn test_session_id_default() {
+-        let req = super::super::SpiderRequest::get("https://example.com");
+-        assert_eq!(session_id_of(&req), "default");
+-    }
+-}
+diff --git a/src/lib.rs b/src/lib.rs
+index f93f193..a32e700 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -46,15 +46,15 @@ pub use fetcher::{Response, Request, Method, Session};
+ // === 核心类型 ===
+ pub use browser::{Browser, Page};
+ pub use config::{LaunchOptions, ProxyConfig};
+ pub use error::{WispError, Result};
+ 
+ pub use parser::{Node, NodeList};
+ pub use proxy::RotationStrategy;
+ pub use storage::Store;
+ 
+ // === 爬虫引擎 ===
+-pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider, SessionManager, FetcherType, RequestCache};
++pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider, RequestCache};
+ pub use http::UaRotator;
+ 
+ // === 兼容层 ===
+ pub use http::{Client, HttpSession, DomainBlocker};
+diff --git a/tests/builder_api_test.rs b/tests/builder_api_test.rs
+index f0a0863..349381a 100644
+--- a/tests/builder_api_test.rs
++++ b/tests/builder_api_test.rs
+@@ -1,47 +1,43 @@
+ //! Builder pattern API tests (no network required).
+ 
+ use std::time::Duration;
+ use std::collections::HashSet;
+ use async_trait::async_trait;
+ use serde_json::{json, Value};
+ use wisp::crawl::{
+     Spider, SpiderBuilder, ClosureSpider, Engine, SpiderRequest, SpiderResponse,
+-    SessionManager, FetcherType,
+ };
+-use wisp::crawl::session::{request_with_session, session_id_of};
+ use wisp::crawl::CrawlEvent;
+ use wisp::http;
+ use wisp::parser::Node;
+ use wisp::FetchMode;
+ use futures::StreamExt;
+ 
+ // === SpiderBuilder tests ===
+ 
+ #[test]
+ fn test_spider_builder_full_config() {
+     let spider = SpiderBuilder::new("full-test")
+         .start_urls(vec!["https://a.com/", "https://b.com/"])
+         .allowed_domains(vec!["a.com", "b.com"])
+-        .concurrent(16)
+         .delay(Duration::from_millis(500))
+         .obey_robots(false)
+         .max_retries(5)
+         .parse(|resp| {
+             let _ = resp;
+             (vec![json!({"ok": true})], vec![])
+         })
+         .build();
+ 
+     assert_eq!(spider.name(), "full-test");
+     assert_eq!(spider.start_urls().len(), 2);
+-    assert_eq!(spider.concurrent_requests(), 16);
+     assert_eq!(spider.download_delay(), Duration::from_millis(500));
+     assert!(!spider.obey_robots());
+     assert_eq!(spider.max_retries(), 5);
+ }
+ 
+ #[test]
+ fn test_spider_builder_delay_ms() {
+     let spider = SpiderBuilder::new("delay-test")
+         .start_urls(vec!["https://x.com/"])
+         .delay_ms(250)
+@@ -170,43 +166,20 @@ async fn test_engine_builder_local_server() {
+         .max_pages(1)
+         .max_concurrent(2)
+         .build()
+         .unwrap();
+     let (stats, _items) = engine.run(spider).await.unwrap();
+ 
+     assert_eq!(stats.pages_crawled, 1);
+     assert_eq!(stats.items_scraped, 1);
+ }
+ 
+-// === Multi-Session tests ===
+-
+-#[test]
+-fn test_session_manager_routing() {
+-    let mut mgr = SessionManager::new();
+-    mgr.add("default", FetcherType::Http(wisp::http::Config::default()));
+-    mgr.add("stealth", FetcherType::Stealth {
+-        headless: true,
+-        proxy: Some("http://127.0.0.1:7897".into()),
+-        challenge_timeout_secs: 60,
+-    });
+-
+-    let req = SpiderRequest::get("https://protected.site.com/");
+-    let req = request_with_session(req, "stealth");
+-    assert_eq!(session_id_of(&req), "stealth");
+-}
+-
+-#[test]
+-fn test_session_default_routing() {
+-    let req = SpiderRequest::get("https://normal.site.com/");
+-    assert_eq!(session_id_of(&req), "default");
+-}
+-
+ // === Node.find_by_text / find_similar tests ===
+ 
+ #[test]
+ fn test_find_by_text_exact() {
+     let doc = Node::from_html(r#"<html><body>
+         <div class="item">Apple</div>
+         <div class="item">Banana</div>
+         <div class="item">Apple Pie</div>
+     </body></html>"#);
+ 
+diff --git a/tests/cr_fix_t4_test.rs b/tests/cr_fix_t4_test.rs
+deleted file mode 100644
+index 0aea4e0..0000000
+--- a/tests/cr_fix_t4_test.rs
++++ /dev/null
+@@ -1,55 +0,0 @@
+-//! Task 4 回归测试：request_with_session 合并 meta。
+-//!
+-//! 验证 `request_with_session` 不再覆盖原有 meta，而是合并 `__sid` 字段。
+-use wisp::crawl::session::request_with_session;
+-use wisp::crawl::session::session_id_of;
+-use wisp::crawl::SpiderRequest;
+-use serde_json::json;
+-
+-#[test]
+-fn test_request_with_session_preserves_meta() {
+-    // 通过 with_meta 设置原有 meta（如分页信息）
+-    let req = SpiderRequest::get("https://example.com")
+-        .with_meta(json!({"page": 2, "category": "books"}));
+-    let req = request_with_session(req, "stealth");
+-
+-    // __sid 应被注入
+-    assert_eq!(req.meta["__sid"], "stealth", "应注入 __sid");
+-    // 原有 meta 不应丢失
+-    assert_eq!(req.meta["page"], 2, "原有 meta 不应丢失");
+-    assert_eq!(req.meta["category"], "books", "原有 meta 不应丢失");
+-}
+-
+-#[test]
+-fn test_request_with_session_still_extractable() {
+-    let req = SpiderRequest::get("https://example.com")
+-        .with_meta(json!({"depth": 3}));
+-    let req = request_with_session(req, "fast");
+-
+-    // session_id_of 仍能正确提取
+-    assert_eq!(session_id_of(&req), "fast", "session ID 应可提取");
+-    // 原有字段保留
+-    assert_eq!(req.meta["depth"], 3, "原有 meta 不应丢失");
+-}
+-
+-#[test]
+-fn test_request_with_session_null_meta() {
+-    // meta 默认为 Null，应被规范化为空对象后注入 __sid
+-    let req = SpiderRequest::get("https://example.com");
+-    let req = request_with_session(req, "default");
+-
+-    assert_eq!(session_id_of(&req), "default", "session ID 应可提取");
+-    assert!(req.meta.is_object(), "meta 应为对象");
+-    assert_eq!(req.meta["__sid"], "default", "应注入 __sid");
+-}
+-
+-#[test]
+-fn test_request_with_session_overwrites_existing_sid() {
+-    // 若已有 __sid，应被新值覆盖
+-    let req = SpiderRequest::get("https://example.com")
+-        .with_meta(json!({"__sid": "old", "keep": true}));
+-    let req = request_with_session(req, "new");
+-
+-    assert_eq!(session_id_of(&req), "new", "__sid 应被更新为新值");
+-    assert_eq!(req.meta["keep"], true, "其他 meta 字段应保留");
+-}
+diff --git a/tests/crawl_concurrency_test.rs b/tests/crawl_concurrency_test.rs
+index 80f1531..b1b3cb0 100644
+--- a/tests/crawl_concurrency_test.rs
++++ b/tests/crawl_concurrency_test.rs
+@@ -6,21 +6,20 @@ use serde_json::Value;
+ 
+ struct ConcurrencySpider;
+ 
+ #[async_trait]
+ impl Spider for ConcurrencySpider {
+     fn name(&self) -> &str { "concurrency-test" }
+     fn start_urls(&self) -> Vec<String> {
+         // 10 URLs that each take 100ms to respond
+         (0..10).map(|i| format!("https://httpbin.org/delay/0.1?i={}", i)).collect()
+     }
+-    fn concurrent_requests(&self) -> u32 { 4 }
+     async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+         (vec![], vec![])
+     }
+     async fn on_start(&self) {}
+     async fn on_close(&self) {}
+ }
+ 
+ #[tokio::test]
+ #[ignore = "requires network access to httpbin.org"]
+ async fn test_max_concurrent_respected() {
+diff --git a/tests/session_test.rs b/tests/session_test.rs
+deleted file mode 100644
+index 0f087cf..0000000
+--- a/tests/session_test.rs
++++ /dev/null
+@@ -1,224 +0,0 @@
+-//! HTTP Session 复用测试。
+-//!
+-//! 运行方式：`cargo test --test session_test -- --ignored`
+-//!
+-//! 验证 HttpSession 的 cookie 持久化、跨请求状态保持、代理组合。
+-
+-use std::time::Duration;
+-use wisp::http::{Client, HttpSession};
+-use wreq_util::Profile;
+-
+-const PROXY: &str = "http://127.0.0.1:7897";
+-
+-/// 检测 httpbin.org 是否可达
+-async fn httpbin_available(client: &Client) -> bool {
+-    match client.get("https://httpbin.org/status/200").await {
+-        Ok(r) => r.status == 200,
+-        Err(_) => false,
+-    }
+-}
+-
+-/// 创建可用的 client（直连或代理）
+-async fn working_client() -> Option<Client> {
+-    let direct = Client::builder()
+-        .timeout(Duration::from_secs(10))
+-        .emulation(Profile::Chrome136)
+-        .build()
+-        .unwrap();
+-
+-    if httpbin_available(&direct).await {
+-        return Some(direct);
+-    }
+-
+-    let proxied = Client::builder()
+-        .timeout(Duration::from_secs(20))
+-        .proxy(PROXY)
+-        .emulation(Profile::Chrome136)
+-        .build()
+-        .unwrap();
+-
+-    if httpbin_available(&proxied).await {
+-        return Some(proxied);
+-    }
+-
+-    None
+-}
+-
+-// === 测试 1: Cookie 设置与持久化 ===
+-
+-#[tokio::test]
+-#[ignore = "requires network access to httpbin.org"]
+-async fn test_session_cookie_persistence() {
+-    let Some(client) = working_client().await else {
+-        eprintln!("SKIP: httpbin.org 不可达");
+-        return;
+-    };
+-
+-    let session = HttpSession::from_client(client);
+-
+-    // 设置 cookie
+-    let resp1 = session.get("https://httpbin.org/cookies/set?token=secret123&user=wisp").await;
+-    if resp1.is_err() {
+-        eprintln!("SKIP: 设置 cookie 失败");
+-        return;
+-    }
+-
+-    // 验证 cookie 被持久化
+-    let resp2 = session.get("https://httpbin.org/cookies").await.unwrap();
+-    let json = resp2.json().unwrap();
+-
+-    let cookies = &json["cookies"];
+-    assert_eq!(
+-        cookies["token"].as_str().unwrap_or(""),
+-        "secret123",
+-        "token cookie 应被保持"
+-    );
+-    assert_eq!(
+-        cookies["user"].as_str().unwrap_or(""),
+-        "wisp",
+-        "user cookie 应被保持"
+-    );
+-
+-    println!("PASS: Cookie 持久化验证通过");
+-}
+-
+-// === 测试 2: 多请求间状态保持 ===
+-
+-#[tokio::test]
+-#[ignore = "requires network access to httpbin.org"]
+-async fn test_session_state_across_requests() {
+-    let Some(client) = working_client().await else {
+-        eprintln!("SKIP: httpbin.org 不可达");
+-        return;
+-    };
+-
+-    let session = HttpSession::from_client(client);
+-
+-    // 第一次请求设置 session_id
+-    let _ = session.get("https://httpbin.org/cookies/set?session_id=abc-def-ghi").await;
+-
+-    // 第二次请求设置另一个 cookie
+-    let _ = session.get("https://httpbin.org/cookies/set?theme=dark").await;
+-
+-    // 第三次请求验证两个 cookie 都存在
+-    let resp = session.get("https://httpbin.org/cookies").await.unwrap();
+-    let json = resp.json().unwrap();
+-
+-    assert_eq!(json["cookies"]["session_id"].as_str().unwrap_or(""), "abc-def-ghi");
+-    assert_eq!(json["cookies"]["theme"].as_str().unwrap_or(""), "dark");
+-
+-    println!("PASS: 多请求状态保持验证通过");
+-}
+-
+-// === 测试 3: Cookie 清除 ===
+-
+-#[tokio::test]
+-#[ignore = "requires network access to httpbin.org"]
+-async fn test_session_clear_cookies() {
+-    let Some(client) = working_client().await else {
+-        eprintln!("SKIP: httpbin.org 不可达");
+-        return;
+-    };
+-
+-    let session = HttpSession::from_client(client);
+-
+-    // 设置 cookie
+-    let _ = session.get("https://httpbin.org/cookies/set?temp=value").await;
+-
+-    // 清除所有 cookie
+-    session.clear_cookies().await;
+-
+-    // 验证清除后请求不带 cookie
+-    let resp = session.get("https://httpbin.org/cookies").await.unwrap();
+-    let json = resp.json().unwrap();
+-
+-    // cookies 对象应为空或不含 temp
+-    let has_temp = json["cookies"]["temp"].as_str().is_some();
+-    assert!(!has_temp, "清除后不应携带旧 cookie");
+-
+-    println!("PASS: Cookie 清除验证通过");
+-}
+-
+-// === 测试 4: 手动设置 Cookie ===
+-
+-#[tokio::test]
+-#[ignore = "requires network access to httpbin.org"]
+-async fn test_session_manual_cookie() {
+-    let Some(client) = working_client().await else {
+-        eprintln!("SKIP: httpbin.org 不可达");
+-        return;
+-    };
+-
+-    let session = HttpSession::from_client(client);
+-
+-    // 手动设置 cookie（不通过网络）
+-    session.set_cookie("httpbin.org", "manual_key", "manual_value").await;
+-
+-    // 请求应携带手动设置的 cookie
+-    let resp = session.get("https://httpbin.org/cookies").await.unwrap();
+-    let json = resp.json().unwrap();
+-
+-    assert_eq!(
+-        json["cookies"]["manual_key"].as_str().unwrap_or(""),
+-        "manual_value",
+-        "手动设置的 cookie 应被发送"
+-    );
+-
+-    println!("PASS: 手动 Cookie 设置验证通过");
+-}
+-
+-// === 测试 5: 代理 + Session 组合 ===
+-
+-#[tokio::test]
+-#[ignore = "requires network + proxy 127.0.0.1:7897"]
+-async fn test_session_with_proxy() {
+-    let client = Client::builder()
+-        .timeout(Duration::from_secs(20))
+-        .proxy(PROXY)
+-        .emulation(Profile::Chrome136)
+-        .build()
+-        .unwrap();
+-
+-    if !httpbin_available(&client).await {
+-        eprintln!("SKIP: 通过代理无法访问 httpbin.org");
+-        return;
+-    }
+-
+-    let session = HttpSession::from_client(client);
+-
+-    // 通过代理设置 cookie
+-    let _ = session.get("https://httpbin.org/cookies/set?via=proxy").await;
+-
+-    // 验证 cookie 保持
+-    let resp = session.get("https://httpbin.org/cookies").await.unwrap();
+-    let json = resp.json().unwrap();
+-
+-    assert_eq!(json["cookies"]["via"].as_str().unwrap_or(""), "proxy");
+-    println!("PASS: 代理 + Session 组合验证通过");
+-}
+-
+-// === 测试 6: Session Builder 模式 ===
+-
+-#[tokio::test]
+-#[ignore = "requires network access to httpbin.org"]
+-async fn test_session_builder() {
+-    let session = HttpSession::builder()
+-        .timeout(Duration::from_secs(20))
+-        .user_agent("WispBot/1.0")
+-        .build()
+-        .unwrap();
+-
+-    // 验证基本请求工作
+-    let resp = session.get("https://httpbin.org/user-agent").await;
+-    match resp {
+-        Ok(r) => {
+-            let json = r.json().unwrap();
+-            // 注意：wreq 的 user_agent 设置方式可能不同于 header
+-            println!("User-Agent response: {:?}", json);
+-            println!("PASS: Session Builder 基本功能正常");
+-        }
+-        Err(e) => {
+-            eprintln!("SKIP: 请求失败: {}", e);
+-        }
+-    }
+-}
