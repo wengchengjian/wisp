@@ -108,12 +108,13 @@ pub async fn crawl_site(args: Value, _store: &Arc<Store>) -> Result<Value> {
 
     struct SimpleSpider {
         css: String,
+        start_urls: Vec<String>,
     }
 
     #[async_trait]
     impl Spider for SimpleSpider {
         fn name(&self) -> &str { "mcp_simple" }
-        fn start_urls(&self) -> Vec<String> { vec![] }
+        fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
         async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
             let text = resp.text().unwrap_or_default();
             let doc = Node::from_html(&text);
@@ -126,8 +127,8 @@ pub async fn crawl_site(args: Value, _store: &Arc<Store>) -> Result<Value> {
         fn obey_robots(&self) -> bool { false }
     }
 
-    // SimpleSpider 用空 start_urls，手动构造 start requests
-    let spider = SimpleSpider { css: css_selector.clone() };
+    // SimpleSpider 接收 start_urls，由 Engine 推入共享队列
+    let spider = SimpleSpider { css: css_selector.clone(), start_urls };
     let engine = Engine::new(spider).max_pages(max_pages);
     let stream = engine.stream().items();
 
