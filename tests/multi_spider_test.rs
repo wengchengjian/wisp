@@ -1,8 +1,11 @@
-//! StopCondition 终止策略单元测试 + 多 Spider E2E 测试。
+//! 多 Spider 独立运行测试（Task 6 重构）。
+//!
+//! 原 patterns 路由已废弃，改为多次 `engine.run(spider)` 独立运行。
+//! 每个 Spider 拥有独立队列/去重/stats，共享底层资源（HTTP/缓存/代理）。
 //!
 //! - `test_max_pages_condition`: 验证 MaxPages 停止条件的判定逻辑。
-//! - `test_multi_spider_routing_by_pattern`: 验证 patterns 路由将 URL 分发到对应 Spider。
-//! - `test_multi_spider_until_stops_one`: 验证 per-spider until 终止策略只停止对应 Spider。
+//! - `test_multiple_runs_independent_stats`: 同一 Engine 多次 run，stats 独立。
+//! - `test_until_stops_one_spider_without_affecting_other`: per-spider until 隔离。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -46,8 +49,8 @@ async fn spawn_html_server(html: &'static str) -> String {
 }
 
 #[tokio::test]
-async fn test_multi_spider_routing_by_pattern() {
-    // 两个 Spider 各自声明 patterns，引擎应按 URL 路由到匹配的 Spider。
+async fn test_multiple_runs_independent_stats() {
+    // 同一 Engine 多次 run 不同 Spider，各自独立 stats（替代原 patterns 路由测试）。
     let server_a = spawn_html_server("<html><body>page A</body></html>").await;
     let server_b = spawn_html_server("<html><body>page B</body></html>").await;
 
@@ -56,7 +59,6 @@ async fn test_multi_spider_routing_by_pattern() {
     impl Spider for SpiderA {
         fn name(&self) -> &str { "spider-a" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        fn patterns(&self) -> Vec<String> { vec![r"/a$".to_string()] }
         async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
@@ -69,7 +71,6 @@ async fn test_multi_spider_routing_by_pattern() {
     impl Spider for SpiderB {
         fn name(&self) -> &str { "spider-b" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        fn patterns(&self) -> Vec<String> { vec![r"/b$".to_string()] }
         async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
@@ -79,21 +80,27 @@ async fn test_multi_spider_routing_by_pattern() {
 
     let parsed_a = Arc::new(AtomicUsize::new(0));
     let parsed_b = Arc::new(AtomicUsize::new(0));
-    let engine = Engine::spiders(vec![
-        Box::new(SpiderA { url: format!("{}/a", server_a), parsed: parsed_a.clone() }),
-        Box::new(SpiderB { url: format!("{}/b", server_b), parsed: parsed_b.clone() }),
-    ]).max_pages(10);
+    let engine = Engine::infra().max_pages(10).build().unwrap();
 
-    let results = engine.run().await.unwrap();
-    assert_eq!(results.len(), 2, "应返回 2 个 Spider 的统计");
+    let (stats_a, _) = engine
+        .run(SpiderA { url: server_a, parsed: parsed_a.clone() })
+        .await
+        .unwrap();
+    let (stats_b, _) = engine
+        .run(SpiderB { url: server_b, parsed: parsed_b.clone() })
+        .await
+        .unwrap();
+
     assert_eq!(parsed_a.load(Ordering::SeqCst), 1, "SpiderA 应爬 1 页");
     assert_eq!(parsed_b.load(Ordering::SeqCst), 1, "SpiderB 应爬 1 页");
+    assert_eq!(stats_a.pages_crawled, 1, "SpiderA stats 应为 1 页");
+    assert_eq!(stats_b.pages_crawled, 1, "SpiderB stats 应为 1 页");
 }
 
 #[tokio::test]
-async fn test_multi_spider_until_stops_one() {
-    // StoppingSpider 声明 MaxPages(1)，parse 时 follow 一个仍匹配自身 patterns 的 URL。
-    // 引擎应在该 Spider 爬完 1 页后因 until 阻止后续请求派发，且不影响 NormalSpider。
+async fn test_until_stops_one_spider_without_affecting_other() {
+    // StoppingSpider 声明 MaxPages(1)，parse 时 follow 一个 URL。
+    // until 应阻止 StoppingSpider 后续请求派发，但不影响同 Engine 下 NormalSpider 的 run。
     let server = spawn_html_server("<html><body>page</body></html>").await;
 
     struct StoppingSpider { url: String }
@@ -101,9 +108,8 @@ async fn test_multi_spider_until_stops_one() {
     impl Spider for StoppingSpider {
         fn name(&self) -> &str { "stopping" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        fn patterns(&self) -> Vec<String> { vec![r"/stop".to_string()] }
         async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-            // follow 一个仍然匹配 /stop 的 URL，验证 until 会阻止它被处理
+            // follow 一个 URL，验证 until 会阻止它被处理
             (vec![], vec![SpiderRequest::get(&format!("{}/2", self.url))])
         }
         fn obey_robots(&self) -> bool { false }
@@ -117,7 +123,6 @@ async fn test_multi_spider_until_stops_one() {
     impl Spider for NormalSpider {
         fn name(&self) -> &str { "normal" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        fn patterns(&self) -> Vec<String> { vec![r"/normal$".to_string()] }
         async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
@@ -126,14 +131,18 @@ async fn test_multi_spider_until_stops_one() {
     }
 
     let parsed = Arc::new(AtomicUsize::new(0));
-    let engine = Engine::spiders(vec![
-        Box::new(StoppingSpider { url: format!("{}/stop", server) }),
-        Box::new(NormalSpider { url: format!("{}/normal", server), parsed: parsed.clone() }),
-    ]).max_pages(10);
+    let engine = Engine::infra().max_pages(10).build().unwrap();
 
-    let results = engine.run().await.unwrap();
-    assert_eq!(results.len(), 2, "应返回 2 个 Spider 的统计");
-    assert_eq!(results[0].pages_crawled, 1, "StoppingSpider 应只爬 1 页");
-    assert_eq!(results[1].pages_crawled, 1, "NormalSpider 应爬 1 页");
+    let (stats_stopping, _) = engine
+        .run(StoppingSpider { url: format!("{}/stop", server) })
+        .await
+        .unwrap();
+    let (stats_normal, _) = engine
+        .run(NormalSpider { url: format!("{}/normal", server), parsed: parsed.clone() })
+        .await
+        .unwrap();
+
+    assert_eq!(stats_stopping.pages_crawled, 1, "StoppingSpider 应只爬 1 页");
+    assert_eq!(stats_normal.pages_crawled, 1, "NormalSpider 应爬 1 页");
     assert_eq!(parsed.load(Ordering::SeqCst), 1, "NormalSpider parse 应被调用 1 次");
 }

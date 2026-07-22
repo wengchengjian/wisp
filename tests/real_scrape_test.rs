@@ -1,9 +1,9 @@
-//! 鐪熷疄鏁版嵁鎶撳彇娴嬭瘯濂椾欢銆?
+//! 真实数据抓取测试套件。
 //!
-//! 杩愯鏂瑰紡锛歚cargo test --test real_scrape_test -- --ignored`
+//! 运行方式：`cargo test --test real_scrape_test -- --ignored`
 //!
-//! 浣跨敤鐪熷疄缃戠珯楠岃瘉 wisp 鐨勬姄鍙栥€佽В鏋愩€乆Path銆佺紪鐮佹娴嬬瓑鍔熻兘銆?
-//! 浠ｇ悊锛?27.0.0.1:7897锛堢綉缁滀笉閫氭椂鑷姩浣跨敤锛夈€?
+//! 使用真实网站验证 wisp 的抓取、解析、XPath、编码检测等功能。
+//! 代理：127.0.0.1:7897（网络不通时自动使用）。
 
 use std::time::Duration;
 use wisp::http::Client;
@@ -15,9 +15,9 @@ use serde_json::Value;
 
 const PROXY: &str = "http://127.0.0.1:7897";
 
-/// 鍒涘缓甯︿唬鐞嗙殑 client锛堢綉缁滅洿杩炲け璐ユ椂鍥為€€鍒颁唬鐞嗭級
+/// 创建带代理的 client（网络直连失败时回退到代理）
 async fn smart_client() -> Client {
-    // 鍏堝皾璇曠洿杩?
+    // 先尝试直连
     let direct = Client::builder()
         .timeout(Duration::from_secs(10))
         .emulation(Profile::Chrome136)
@@ -28,7 +28,7 @@ async fn smart_client() -> Client {
         return direct;
     }
 
-    // 鐩磋繛澶辫触锛屼娇鐢ㄤ唬鐞?
+    // 直连失败，使用代理
     Client::builder()
         .timeout(Duration::from_secs(30))
         .proxy(PROXY)
@@ -37,17 +37,17 @@ async fn smart_client() -> Client {
         .unwrap()
 }
 
-// === 娴嬭瘯 1: quotes.toscrape.com 瀹屾暣鐖彇锛堝椤碉級===
+// === 测试 1: quotes.toscrape.com 完整抓取（多页）===
 
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_quotes_full_crawl_10_pages() {
     let client = smart_client().await;
 
-    // 楠岃瘉棣栭〉鍙揪
+    // 验证首页可达
     let resp = client.get("https://quotes.toscrape.com/").await;
     if resp.is_err() {
-        eprintln!("SKIP: quotes.toscrape.com 涓嶅彲杈?);
+        eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
     }
 
@@ -66,7 +66,7 @@ async fn test_quotes_full_crawl_10_pages() {
                 })
             }).collect();
 
-            // 璺熼殢鍒嗛〉
+            // 跟踪分页
             let follows: Vec<SpiderRequest> = doc.select_one(".next a")
                 .and_then(|a| a.attr("href"))
                 .and_then(|href| resp.follow(&href))
@@ -77,19 +77,16 @@ async fn test_quotes_full_crawl_10_pages() {
         })
         .build();
 
-    let stats = Engine::builder(spider)
-        .max_pages(10)
-        .run_one()
-        .await
-        .unwrap();
+    let engine = Engine::infra().max_pages(10).build().unwrap();
+    let (stats, _items) = engine.run(spider).await.unwrap();
 
-    assert_eq!(stats.pages_crawled, 10, "搴旂埇鍙?10 椤?);
-    assert!(stats.items_scraped >= 80, "10 椤靛簲鑷冲皯 80 鏉″悕瑷€, 瀹為檯: {}", stats.items_scraped);
-    assert_eq!(stats.errors, 0, "涓嶅簲鏈夐敊璇?);
-    println!("瀹屾暣鐖彇: {}", stats.summary());
+    assert_eq!(stats.pages_crawled, 10, "应爬取 10 页");
+    assert!(stats.items_scraped >= 80, "10 页应至少 80 条名言, 实际: {}", stats.items_scraped);
+    assert_eq!(stats.errors, 0, "不应有错误");
+    println!("完整抓取: {}", stats.summary());
 }
 
-// === 娴嬭瘯 2: books.toscrape.com 涔︾睄淇℃伅鎻愬彇 ===
+// === 测试 2: books.toscrape.com 书籍信息提取 ===
 
 #[tokio::test]
 #[ignore = "requires network access"]
@@ -98,15 +95,15 @@ async fn test_books_toscrape_extraction() {
 
     let resp = client.get("https://books.toscrape.com/").await;
     if resp.is_err() {
-        eprintln!("SKIP: books.toscrape.com 涓嶅彲杈?);
+        eprintln!("SKIP: books.toscrape.com 不可达");
         return;
     }
     let resp = resp.unwrap();
     let doc = resp.parse().unwrap();
 
-    // 鎻愬彇涔︾睄淇℃伅
+    // 提取书籍信息
     let books = doc.select("article.product_pod");
-    assert!(books.len() >= 10, "棣栭〉搴旀湁鑷冲皯 10 鏈功, 瀹為檯: {}", books.len());
+    assert!(books.len() >= 10, "首页应至少 10 本书, 实际: {}", books.len());
 
     for book in books.iter() {
         let title = book.select_one("h3 a")
@@ -119,15 +116,15 @@ async fn test_books_toscrape_extraction() {
             .and_then(|n| n.attr("class"))
             .unwrap_or_default();
 
-        assert!(!title.is_empty(), "涔﹀悕涓嶅簲涓虹┖");
-        assert!(price.contains('拢') || price.contains("脗拢"), "浠锋牸搴斿惈 拢 绗﹀彿: {}", price);
-        assert!(rating.contains("star-rating"), "搴旀湁璇勫垎 class: {}", rating);
+        assert!(!title.is_empty(), "书名不应为空");
+        assert!(price.contains('£'), "价格应含 £ 符号: {}", price);
+        assert!(rating.contains("star-rating"), "应有评分 class: {}", rating);
     }
 
-    println!("PASS: 鎴愬姛鎻愬彇 {} 鏈功鐨勪俊鎭?, books.len());
+    println!("PASS: 成功提取 {} 本书的信息", books.len());
 }
 
-// === 娴嬭瘯 3: XPath 澶嶆潅琛ㄨ揪寮忕湡瀹為〉闈㈡祴璇?===
+// === 测试 3: XPath 复杂表达式真实页面测试 ===
 
 #[tokio::test]
 #[ignore = "requires network access"]
@@ -136,28 +133,28 @@ async fn test_xpath_real_page() {
 
     let resp = client.get("https://quotes.toscrape.com/").await;
     if resp.is_err() {
-        eprintln!("SKIP: quotes.toscrape.com 涓嶅彲杈?);
+        eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
     }
     let resp = resp.unwrap();
     let doc = resp.parse().unwrap();
 
-    // 绠€鍗?XPath
+    // 简单 XPath
     let quotes = doc.xpath("//div[@class='quote']");
-    assert!(quotes.len() >= 5, "XPath 搴旀壘鍒拌嚦灏?5 涓?quote div");
+    assert!(quotes.len() >= 5, "XPath 应找到至少 5 个 quote div");
 
-    // 灞炴€ч€夋嫨
+    // 属性选择
     let authors = doc.xpath("//small[@class='author']");
-    assert!(authors.len() >= 5, "XPath 搴旀壘鍒拌嚦灏?5 涓綔鑰?);
+    assert!(authors.len() >= 5, "XPath 应找到至少 5 个作者");
 
-    // 楠岃瘉 CSS 鍜?XPath 缁撴灉涓€鑷?
+    // 验证 CSS 和 XPath 结果一致
     let css_quotes = doc.select(".quote");
-    assert_eq!(css_quotes.len(), quotes.len(), "CSS 鍜?XPath 缁撴灉鏁伴噺搴斾竴鑷?);
+    assert_eq!(css_quotes.len(), quotes.len(), "CSS 和 XPath 结果数量应一致");
 
-    println!("PASS: XPath 鐪熷疄椤甸潰娴嬭瘯閫氳繃 ({} quotes)", quotes.len());
+    println!("PASS: XPath 真实页面测试通过 ({} quotes)", quotes.len());
 }
 
-// === 娴嬭瘯 4: find_by_text 鐪熷疄椤甸潰娴嬭瘯 ===
+// === 测试 4: find_by_text 真实页面测试 ===
 
 #[tokio::test]
 #[ignore = "requires network access"]
@@ -166,24 +163,24 @@ async fn test_find_by_text_real_page() {
 
     let resp = client.get("https://quotes.toscrape.com/").await;
     if resp.is_err() {
-        eprintln!("SKIP: quotes.toscrape.com 涓嶅彲杈?);
+        eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
     }
     let resp = resp.unwrap();
     let doc = resp.parse().unwrap();
 
-    // 鎸夋枃鏈煡鎵句綔鑰?
+    // 按文本查找作者
     let albert = doc.find_by_text("Albert Einstein", Some("small"), true);
-    assert!(!albert.is_empty(), "搴旀壘鍒?Albert Einstein 鐨勫厓绱?);
+    assert!(!albert.is_empty(), "应找到 Albert Einstein 的元素");
 
-    // 鍖呭惈鍖归厤
+    // 包含匹配
     let einstein_mentions = doc.find_by_text("Einstein", None, false);
-    assert!(!einstein_mentions.is_empty(), "搴旀壘鍒板惈 Einstein 鏂囨湰鐨勫厓绱?);
+    assert!(!einstein_mentions.is_empty(), "应找到含 Einstein 文本的元素");
 
-    println!("PASS: find_by_text 鐪熷疄椤甸潰娴嬭瘯閫氳繃");
+    println!("PASS: find_by_text 真实页面测试通过");
 }
 
-// === 娴嬭瘯 5: find_similar 鐪熷疄椤甸潰娴嬭瘯 ===
+// === 测试 5: find_similar 真实页面测试 ===
 
 #[tokio::test]
 #[ignore = "requires network access"]
@@ -192,27 +189,27 @@ async fn test_find_similar_real_page() {
 
     let resp = client.get("https://quotes.toscrape.com/").await;
     if resp.is_err() {
-        eprintln!("SKIP: quotes.toscrape.com 涓嶅彲杈?);
+        eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
     }
     let resp = resp.unwrap();
     let doc = resp.parse().unwrap();
 
-    // 鑾峰彇绗竴涓?quote 鍏冪礌锛屾煡鎵剧浉浼煎厓绱?
-    let first_quote = doc.select_one(".quote").expect("搴旀湁 quote 鍏冪礌");
+    // 获取第一个 quote 元素，查找相似元素
+    let first_quote = doc.select_one(".quote").expect("应有 quote 元素");
     let similar = first_quote.find_similar();
 
-    // 椤甸潰涓婃湁澶氫釜 .quote锛宖ind_similar 搴旀壘鍒板叾浠?quote
+    // 页面上有多个 .quote，find_similar 应找到其他 quote
     assert!(
         similar.len() >= 3,
-        "搴旀壘鍒拌嚦灏?3 涓浉浼煎厓绱? 瀹為檯: {}",
+        "应找到至少 3 个相似元素, 实际: {}",
         similar.len()
     );
 
-    println!("PASS: find_similar 鎵惧埌 {} 涓浉浼煎厓绱?, similar.len());
+    println!("PASS: find_similar 找到 {} 个相似元素", similar.len());
 }
 
-// === 娴嬭瘯 6: response.follow() 渚挎嵎鏂规硶娴嬭瘯 ===
+// === 测试 6: response.follow() 便捷方法测试 ===
 
 #[tokio::test]
 #[ignore = "requires network access"]
@@ -221,13 +218,13 @@ async fn test_response_follow_pagination() {
 
     let resp = client.get("https://quotes.toscrape.com/").await;
     if resp.is_err() {
-        eprintln!("SKIP: quotes.toscrape.com 涓嶅彲杈?);
+        eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
     }
     let fetch_resp = resp.unwrap();
     let doc = fetch_resp.parse().unwrap();
 
-    // 鏋勯€?SpiderResponse 鏉ユ祴璇?follow()
+    // 构造 SpiderResponse 来测试 follow()
     let spider_resp = SpiderResponse {
         url: "https://quotes.toscrape.com/".into(),
         status: 200,
@@ -238,45 +235,45 @@ async fn test_response_follow_pagination() {
         from_cache: false,
     };
 
-    // 鑾峰彇涓嬩竴椤甸摼鎺?
+    // 获取下一页链接
     let next_href = doc.select_one(".next a")
         .and_then(|a| a.attr("href"));
 
     if let Some(href) = next_href {
         let follow_req = spider_resp.follow(&href);
-        assert!(follow_req.is_some(), "follow() 搴旇繑鍥?Some");
+        assert!(follow_req.is_some(), "follow() 应返回 Some");
         let req = follow_req.unwrap();
-        assert!(req.url.starts_with("https://quotes.toscrape.com/"), "URL 搴斾负缁濆璺緞: {}", req.url);
-        println!("PASS: follow() 鐢熸垚 URL: {}", req.url);
+        assert!(req.url.starts_with("https://quotes.toscrape.com/"), "URL 应为绝对路径: {}", req.url);
+        println!("PASS: follow() 生成 URL: {}", req.url);
     } else {
-        eprintln!("WARN: 鏈壘鍒颁笅涓€椤甸摼鎺?);
+        eprintln!("WARN: 未找到下一页链接");
     }
 }
 
-// === 娴嬭瘯 7: 缂栫爜妫€娴嬫祴璇?===
+// === 测试 7: 编码检测测试 ===
 
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_encoding_detection() {
     let client = smart_client().await;
 
-    // quotes.toscrape.com 鏄?UTF-8
+    // quotes.toscrape.com 是 UTF-8
     let resp = client.get("https://quotes.toscrape.com/").await;
     if resp.is_err() {
-        eprintln!("SKIP: quotes.toscrape.com 涓嶅彲杈?);
+        eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
     }
     let resp = resp.unwrap();
     let text = resp.text().unwrap();
 
-    // 楠岃瘉 UTF-8 鍐呭姝ｇ‘瑙ｇ爜锛堝惈鐗规畩瀛楃锛?
-    assert!(text.contains("鈥?) || text.contains("\""), "搴旀纭В鐮?UTF-8 寮曞彿");
-    assert!(!text.contains("茂驴陆"), "涓嶅簲鏈?UTF-8 瑙ｇ爜澶辫触鏍囪");
+    // 验证 UTF-8 内容正确解码（含特殊字符）
+    assert!(text.contains('\u{201C}') || text.contains("\""), "应正确解码 UTF-8 引号");
+    assert!(!text.contains('\u{FFFD}'), "不应有 UTF-8 解码失败标记");
 
-    println!("PASS: 缂栫爜妫€娴嬫甯?);
+    println!("PASS: 编码检测正常");
 }
 
-// === 娴嬭瘯 8: SpiderBuilder + Engine 鑱斿悎娴嬭瘯 ===
+// === 测试 8: SpiderBuilder + Engine 联合测试 ===
 
 #[tokio::test]
 #[ignore = "requires network access"]
@@ -284,7 +281,7 @@ async fn test_spider_builder_engine_integration() {
     let client = smart_client().await;
     let resp = client.get("https://books.toscrape.com/").await;
     if resp.is_err() {
-        eprintln!("SKIP: books.toscrape.com 涓嶅彲杈?);
+        eprintln!("SKIP: books.toscrape.com 不可达");
         return;
     }
 
@@ -303,7 +300,7 @@ async fn test_spider_builder_engine_integration() {
                 })
             }).collect();
 
-            // 璺熼殢涓嬩竴椤?
+            // 跟踪下一页
             let follows: Vec<SpiderRequest> = doc.select_one("li.next a")
                 .and_then(|a| a.attr("href"))
                 .and_then(|href| resp.follow(&href))
@@ -314,13 +311,10 @@ async fn test_spider_builder_engine_integration() {
         })
         .build();
 
-    let stats = Engine::builder(spider)
-        .max_pages(3)
-        .run_one()
-        .await
-        .unwrap();
+    let engine = Engine::infra().max_pages(3).build().unwrap();
+    let (stats, _items) = engine.run(spider).await.unwrap();
 
-    assert_eq!(stats.pages_crawled, 3, "搴旂埇鍙?3 椤?);
-    assert!(stats.items_scraped >= 40, "3 椤靛簲鑷冲皯 40 鏈功, 瀹為檯: {}", stats.items_scraped);
-    println!("Books 鐖彇: {}", stats.summary());
+    assert_eq!(stats.pages_crawled, 3, "应爬取 3 页");
+    assert!(stats.items_scraped >= 40, "3 页应至少 40 本书, 实际: {}", stats.items_scraped);
+    println!("Books 抓取: {}", stats.summary());
 }

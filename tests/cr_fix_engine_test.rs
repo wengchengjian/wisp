@@ -1,49 +1,18 @@
 //! 核心引擎修复回归测试（C1 / C3 / I2 / I7）。
 //!
 //! 覆盖：
-//! - 修复1 (C1): 预编译 per-spider 正则路由（验证 matches 契约 + 性能 smoke）。
-//! - 修复2 (C3): 所有匹配 Spider 均停止时 URL 不静默丢弃（引擎不挂起）。
+//! - 修复2 (C3): Spider until() 停止时引擎不挂起（URL 被跳过后正常结束）。
 //! - 修复3 (I2): StopContext.queue_size 填充真实值。
 //! - 修复5 (I7): fetch_with_retry 重试语义（on_error 调用 1 次）。
+//!
+//! 注意：修复1（patterns 正则路由）已在 Task 1-6 重构中废弃删除，
+//! 对应的 matches/patterns 测试不再适用。
 
 use wisp::crawl::*;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// 修复1 回归：Spider::matches() 在带 patterns 时返回正确结果。
-///
-/// 注意：性能优化（预编译正则）位于引擎层 `EngineContext.compiled_patterns`，
-/// 路由循环不再调用 `spider.matches()`。此处验证 matches() 的功能契约，
-/// 确保引擎预编译逻辑与默认 matches() 语义一致（空 patterns 匹配所有，
-/// 非空 patterns 任一正则命中即匹配）。
-#[test]
-fn test_spider_matches_caches_regex() {
-    let spider = SpiderBuilder::new("test")
-        .start_urls(vec!["https://example.com/"])
-        .patterns(vec![r"^https://example\.com/".to_string()])
-        .parse(|_| (vec![], vec![]))
-        .build();
-
-    // 功能契约：匹配的 URL 返回 true，不匹配的返回 false。
-    assert!(spider.matches("https://example.com/page"));
-    assert!(spider.matches("https://example.com/"));
-    assert!(!spider.matches("https://other.com/page"));
-    assert!(!spider.matches("http://example.com/page"));
-}
-
-/// 修复1 回归：空 patterns 匹配所有 URL（引擎路由的默认行为）。
-#[test]
-fn test_spider_matches_empty_patterns_matches_all() {
-    let spider = SpiderBuilder::new("all")
-        .start_urls(vec!["https://a.com/"])
-        .parse(|_| (vec![], vec![]))
-        .build();
-    assert!(spider.matches("https://a.com/"));
-    assert!(spider.matches("https://b.com/x"));
-    assert!(spider.matches("https://anything.example/foo/bar"));
-}
 
 /// 修复3 回归：StopContext.queue_size 字段可被 FnStopCondition 读取，
 /// 验证终止策略能基于真实队列长度判定。
@@ -75,7 +44,7 @@ fn test_stop_context_queue_size_is_real() {
     );
 }
 
-/// 修复2 回归：当所有匹配 Spider 均已 until() 停止时，
+/// 修复2 回归：当 Spider until() 已停止时，
 /// 引擎不应挂起，应正常结束（URL 被记录后跳过，而非静默丢弃导致死锁）。
 #[tokio::test]
 async fn test_stopped_spider_url_not_silently_dropped() {
@@ -92,17 +61,16 @@ async fn test_stopped_spider_url_not_silently_dropped() {
         fn until(&self) -> Arc<dyn StopCondition> { Arc::new(MaxPages(0)) }
     }
 
-    let engine = Engine::new(StoppedSpider).max_pages(10);
+    let engine = Engine::infra().max_pages(10).build().unwrap();
     // 引擎应在不超时的情况下完成（不挂起）。
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        engine.run(),
+        engine.run(StoppedSpider),
     ).await;
     assert!(result.is_ok(), "引擎应在 10s 内完成，未因 URL 丢弃而挂起");
-    let stats = result.unwrap().expect("run 应返回 Ok");
-    assert_eq!(stats.len(), 1);
+    let (stats, _items) = result.unwrap().expect("run 应返回 Ok");
     // Spider 从未派发请求，pages 应为 0。
-    assert_eq!(stats[0].pages_crawled, 0, "停止的 Spider 不应爬取任何页面");
+    assert_eq!(stats.pages_crawled, 0, "停止的 Spider 不应爬取任何页面");
 }
 
 /// 修复5 回归：max_retries=3 时实际尝试 4 次（attempt 1..=4），
@@ -132,8 +100,8 @@ async fn test_fetch_retry_count_semantics() {
 
     let count = Arc::new(AtomicUsize::new(0));
     let spider = RetrySpider { count: count.clone() };
-    let engine = Engine::new(spider).max_pages(1);
-    let _ = engine.run().await;
+    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let _ = engine.run(spider).await;
 
     assert_eq!(
         count.load(Ordering::SeqCst),

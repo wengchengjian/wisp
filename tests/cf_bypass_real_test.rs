@@ -1,30 +1,31 @@
-//! Cloudflare bypass 鐪熷疄鐜娴嬭瘯銆?
+//! Cloudflare bypass 真实环境测试。
 //!
-//! 杩愯鏂瑰紡锛歚cargo test --test cf_bypass_real_test -- --ignored`
+//! 运行方式：`cargo test --test cf_bypass_real_test -- --ignored`
 //!
-//! 鎵€鏈夋祴璇曟爣娉?`#[ignore]`锛岄渶瑕侊細
-//! - 鏈湴浠ｇ悊 127.0.0.1:7897 鍙敤
-//! - Chrome 娴忚鍣ㄥ凡瀹夎锛坆rowser 娴嬭瘯锛?
-//! - 缃戠粶鍙闂洰鏍囩珯鐐?
+//! 所有测试标注 `#[ignore]`，需要：
+//! - 本地代理 127.0.0.1:7897 可用
+//! - Chrome 浏览器已安装（browser 测试）
+//! - 网络可访问目标站点
 //!
-//! 瑕嗙洊鍦烘櫙锛?
-//! 1. TLS 鎸囩汗楠岃瘉锛坱ls.peet.ws锛?
-//! 2. HTTP fetch 甯︿唬鐞嗙粫杩囧熀纭€鍙?bot
-//! 3. Fetcher::stealth() 缁曡繃 CF Turnstile
-//! 4. CF JS Challenge (5绉掔浘) 鑷姩绛夊緟
-//! 5. Engine + 浠ｇ悊姹犵埇鍙?CF 淇濇姢绔欑偣
+//! 覆盖场景：
+//! 1. TLS 指纹验证（tls.peet.ws）
+//! 2. HTTP fetch 带代理绕过基础检 bot
+//! 3. Fetcher::stealth() 绕过 CF Turnstile
+//! 4. CF JS Challenge (5秒档) 自动等待
+//! 5. Engine + 代理池抓取 CF 保护站点
 
 use std::time::Duration;
 use wisp::http::Client;
-use wisp::httper;
+use wisp::fetcher::Fetcher;
 use wisp::crawl::{Engine, SpiderBuilder};
-use wisp::proxy::RotationStrategy;
+use std::sync::Arc;
+use wisp::proxy::{ProxyPool, RotationStrategy};
 use wreq_util::Profile;
 
-/// 鏈湴浠ｇ悊鍦板潃
+/// 本地代理地址
 const PROXY: &str = "http://127.0.0.1:7897";
 
-/// 妫€娴嬩唬鐞嗘槸鍚﹀彲鐢?
+/// 检测代理是否可用
 async fn proxy_available() -> bool {
     let client = match Client::builder()
         .timeout(Duration::from_secs(5))
@@ -37,13 +38,13 @@ async fn proxy_available() -> bool {
     client.get("https://www.google.com/generate_204").await.is_ok()
 }
 
-// === 娴嬭瘯 1: TLS 鎸囩汗楠岃瘉 ===
+// === 测试 1: TLS 指纹验证 ===
 
 #[tokio::test]
 #[ignore = "requires network + proxy 127.0.0.1:7897"]
 async fn test_tls_fingerprint_chrome() {
     if !proxy_available().await {
-        eprintln!("SKIP: 浠ｇ悊 {} 涓嶅彲鐢?, PROXY);
+        eprintln!("SKIP: 代理 {} 不可用", PROXY);
         return;
     }
 
@@ -55,10 +56,10 @@ async fn test_tls_fingerprint_chrome() {
         .unwrap();
 
     let resp = client.get("https://tls.peet.ws/api/all").await.unwrap();
-    assert_eq!(resp.status, 200, "tls.peet.ws 搴旇繑鍥?200");
+    assert_eq!(resp.status, 200, "tls.peet.ws 应返回 200");
 
     let json = resp.json().unwrap();
-    // 楠岃瘉 TLS 鎸囩汗 - peet.ws 杩斿洖鐨?ja3_text 鎴?ja4 搴斿惈 Chrome 鐗瑰緛
+    // 验证 TLS 指纹 - peet.ws 返回的 ja3_text 或 ja4 应含 Chrome 特征
     let tls_info = &json["tls"];
     let ja3_text = tls_info["ja3_text"].as_str().unwrap_or("");
     let ja4 = tls_info["ja4"].as_str().unwrap_or("");
@@ -66,27 +67,27 @@ async fn test_tls_fingerprint_chrome() {
     println!("JA3: {}", ja3_text);
     println!("JA4: {}", ja4);
 
-    // Chrome 136 鐨?JA4 搴斾互 "t13d1516h2" 寮€澶达紙TLS 1.3, Chrome 鐗瑰緛锛?
-    // 鎴栬€?ja3_text 闈炵┖鍗宠〃绀烘寚绾规ā鎷熺敓鏁?
+    // Chrome 136 的 JA4 应以 "t13d1516h2" 开头（TLS 1.3, Chrome 特征）
+    // 或者 ja3_text 非空即表示指纹模拟生效
     assert!(
         !ja3_text.is_empty() || !ja4.is_empty(),
-        "TLS 鎸囩汗搴旈潪绌猴紙琛ㄧず妯℃嫙鐢熸晥锛?
+        "TLS 指纹应非空（表示模拟生效）"
     );
 
-    // 楠岃瘉 HTTP/2 鎸囩汗瀛樺湪
+    // 验证 HTTP/2 指纹存在
     let http2_info = &json["http2"];
     let akamai_fp = http2_info["akamai_fingerprint_hash"].as_str().unwrap_or("");
     println!("HTTP/2 Akamai FP: {}", akamai_fp);
-    assert!(!akamai_fp.is_empty(), "HTTP/2 鎸囩汗搴斿瓨鍦?);
+    assert!(!akamai_fp.is_empty(), "HTTP/2 指纹应存在");
 }
 
-// === 娴嬭瘯 2: HTTP fetch 甯︿唬鐞?+ TLS 鎸囩汗缁曡繃鍩虹鍙?bot ===
+// === 测试 2: HTTP fetch 带代理 + TLS 指纹绕过基础检 bot ===
 
 #[tokio::test]
 #[ignore = "requires network + proxy 127.0.0.1:7897"]
 async fn test_fetch_with_proxy_bot_detection() {
     if !proxy_available().await {
-        eprintln!("SKIP: 浠ｇ悊 {} 涓嶅彲鐢?, PROXY);
+        eprintln!("SKIP: 代理 {} 不可用", PROXY);
         return;
     }
 
@@ -97,25 +98,25 @@ async fn test_fetch_with_proxy_bot_detection() {
         .build()
         .unwrap();
 
-    // bot.sannysoft.com 妫€娴嬪熀鏈祻瑙堝櫒鐗瑰緛
+    // bot.sannysoft.com 检测基本浏览器特征
     let resp = client.get("https://quotes.toscrape.com/").await.unwrap();
     assert_eq!(resp.status, 200);
 
     let text = resp.text().unwrap();
-    assert!(text.contains("Quotes to Scrape"), "搴旀垚鍔熻幏鍙栭〉闈㈠唴瀹?);
+    assert!(text.contains("Quotes to Scrape"), "应成功获取页面内容");
 }
 
-// === 娴嬭瘯 3: Fetcher::stealth() 缁曡繃 CF Turnstile ===
+// === 测试 3: Fetcher::stealth() 绕过 CF Turnstile ===
 
 #[tokio::test]
 #[ignore = "requires network + proxy + Chrome browser"]
 async fn test_stealth_cf_turnstile_bypass() {
     if !proxy_available().await {
-        eprintln!("SKIP: 浠ｇ悊 {} 涓嶅彲鐢?, PROXY);
+        eprintln!("SKIP: 代理 {} 不可用", PROXY);
         return;
     }
 
-    // nopecha.com/demo/cloudflare 鏄竴涓?CF Turnstile 婕旂ず椤甸潰
+    // nopecha.com/demo/cloudflare 是一个 CF Turnstile 演示页面
     let result = Fetcher::stealth()
         .headless(true)
         .proxy(PROXY)
@@ -131,29 +132,29 @@ async fn test_stealth_cf_turnstile_bypass() {
             println!("Body length: {}", resp.body.len());
 
             let html = resp.text().unwrap_or_default();
-            // 鎴愬姛缁曡繃锛氫笉搴旂湅鍒?CF 鎸戞垬椤甸潰
+            // 成功绕过：不应看到 CF 挑战页面
             assert!(
                 !html.contains("Just a moment") && !html.contains("cf-challenge-running"),
-                "搴旂粫杩?CF 鎸戞垬锛屼絾椤甸潰浠嶅惈鎸戞垬鏍囪"
+                "应绕过 CF 挑战，但页面仍含挑战标记"
             );
         }
         Err(e) => {
-            eprintln!("SKIP: Stealth 娴嬭瘯澶辫触锛堝彲鑳芥棤 Chrome锛? {}", e);
+            eprintln!("SKIP: Stealth 测试失败（可能无 Chrome）: {}", e);
         }
     }
 }
 
-// === 娴嬭瘯 4: CF JS Challenge 鑷姩绛夊緟 ===
+// === 测试 4: CF JS Challenge 自动等待 ===
 
 #[tokio::test]
 #[ignore = "requires network + proxy + Chrome browser"]
 async fn test_stealth_cf_js_challenge() {
     if !proxy_available().await {
-        eprintln!("SKIP: 浠ｇ悊 {} 涓嶅彲鐢?, PROXY);
+        eprintln!("SKIP: 代理 {} 不可用", PROXY);
         return;
     }
 
-    // nowsecure.nl 浼氳Е鍙?CF JS Challenge
+    // nowsecure.nl 会触发 CF JS Challenge
     let result = Fetcher::stealth()
         .headless(true)
         .proxy(PROXY)
@@ -169,9 +170,9 @@ async fn test_stealth_cf_js_challenge() {
 
             let title = resp.title().unwrap_or("");
             if title.contains("Just a moment") {
-                eprintln!("WARN: 浠嶅仠鐣欏湪 CF 鎸戞垬椤甸潰锛堝彲鑳介渶瑕佹洿闀跨瓑寰呮椂闂达級");
+                eprintln!("WARN: 仍停留在 CF 挑战页面（可能需要更长等待时间）");
             } else {
-                println!("PASS: 鎴愬姛閫氳繃 CF JS Challenge");
+                println!("PASS: 成功通过 CF JS Challenge");
             }
         }
         Err(e) => {
@@ -180,13 +181,13 @@ async fn test_stealth_cf_js_challenge() {
     }
 }
 
-// === 娴嬭瘯 5: Engine + 浠ｇ悊姹犵埇鍙?===
+// === 测试 5: Engine + 代理池抓取 ===
 
 #[tokio::test]
 #[ignore = "requires network + proxy 127.0.0.1:7897"]
 async fn test_engine_with_proxy_pool() {
     if !proxy_available().await {
-        eprintln!("SKIP: 浠ｇ悊 {} 涓嶅彲鐢?, PROXY);
+        eprintln!("SKIP: 代理 {} 不可用", PROXY);
         return;
     }
 
@@ -206,29 +207,33 @@ async fn test_engine_with_proxy_pool() {
         })
         .build();
 
-    let stats = Engine::builder(spider)
+    let pool = Arc::new(ProxyPool::new(
+        vec![PROXY.to_string()],
+        RotationStrategy::Sequential,
+    ));
+    let engine = Engine::infra()
         .max_pages(1)
-        .proxy_pool(vec![PROXY.to_string()], RotationStrategy::Sequential)
-        .run_one()
-        .await
+        .proxy_pool(pool)
+        .build()
         .unwrap();
+    let (stats, _items) = engine.run(spider).await.unwrap();
 
-    assert_eq!(stats.pages_crawled, 1, "搴旀垚鍔熺埇鍙?1 椤?);
-    assert!(stats.items_scraped >= 5, "搴旀彁鍙栬嚦灏?5 鏉″悕瑷€, 瀹為檯: {}", stats.items_scraped);
-    assert_eq!(stats.errors, 0, "涓嶅簲鏈夐敊璇?);
+    assert_eq!(stats.pages_crawled, 1, "应成功抓取 1 页");
+    assert!(stats.items_scraped >= 5, "应提取至少 5 条名言, 实际: {}", stats.items_scraped);
+    assert_eq!(stats.errors, 0, "不应有错误");
 }
 
-// === 娴嬭瘯 6: 澶氭寚绾硅疆鎹㈡祴璇?===
+// === 测试 6: 多指纹转换测试 ===
 
 #[tokio::test]
 #[ignore = "requires network + proxy 127.0.0.1:7897"]
 async fn test_multiple_tls_fingerprints() {
     if !proxy_available().await {
-        eprintln!("SKIP: 浠ｇ悊 {} 涓嶅彲鐢?, PROXY);
+        eprintln!("SKIP: 代理 {} 不可用", PROXY);
         return;
     }
 
-    // 娴嬭瘯涓嶅悓娴忚鍣ㄦ寚绾归兘鑳芥甯稿伐浣?
+    // 测试不同浏览器指纹都能正常工作
     let profiles = vec![
         (Profile::Chrome136, "Chrome136"),
         (Profile::Firefox128, "Firefox128"),
@@ -246,11 +251,11 @@ async fn test_multiple_tls_fingerprints() {
         let resp = client.get("https://quotes.toscrape.com/").await;
         match resp {
             Ok(r) => {
-                assert_eq!(r.status, 200, "{} 鎸囩汗搴旀垚鍔熻幏鍙栭〉闈?, name);
-                println!("PASS: {} 鎸囩汗姝ｅ父", name);
+                assert_eq!(r.status, 200, "{} 指纹应成功获取页面", name);
+                println!("PASS: {} 指纹正常", name);
             }
             Err(e) => {
-                eprintln!("WARN: {} 鎸囩汗璇锋眰澶辫触: {}", name, e);
+                eprintln!("WARN: {} 指纹请求失败: {}", name, e);
             }
         }
     }

@@ -86,11 +86,8 @@ async fn test_e2e_fetch_single_page_httpbin() {
         );
         return;
     }
-    let stats = Engine::new(HttpbinHtmlSpider)
-        .max_pages(1)
-        .run_one()
-        .await
-        .unwrap();
+    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let (stats, _items) = engine.run(HttpbinHtmlSpider).await.unwrap();
     assert_eq!(stats.pages_crawled, 1, "应抓取 1 页");
     assert!(
         stats.items_scraped >= 1,
@@ -140,7 +137,8 @@ impl Spider for QuotesSpider {
 #[tokio::test]
 #[ignore = "requires network access to quotes.toscrape.com"]
 async fn test_e2e_crawl_quotes_toscrape() {
-    let stats = Engine::new(QuotesSpider).max_pages(1).run_one().await.unwrap();
+    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let (stats, _items) = engine.run(QuotesSpider).await.unwrap();
     assert_eq!(stats.pages_crawled, 1, "应抓取 1 页");
     assert!(
         stats.items_scraped >= 5,
@@ -190,11 +188,8 @@ impl Spider for QuotesFollowSpider {
 #[tokio::test]
 #[ignore = "requires network access to quotes.toscrape.com"]
 async fn test_e2e_follow_links_quotes_toscrape() {
-    let stats = Engine::new(QuotesFollowSpider)
-        .max_pages(3)
-        .run_one()
-        .await
-        .unwrap();
+    let engine = Engine::infra().max_pages(3).build().unwrap();
+    let (stats, _items) = engine.run(QuotesFollowSpider).await.unwrap();
     assert_eq!(
         stats.pages_crawled, 3,
         "应抓取 3 页, 实际: {}",
@@ -236,11 +231,8 @@ impl Spider for DomainFilterSpider {
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_e2e_allowed_domains_filter() {
-    let stats = Engine::new(DomainFilterSpider)
-        .max_pages(5)
-        .run_one()
-        .await
-        .unwrap();
+    let engine = Engine::infra().max_pages(5).build().unwrap();
+    let (stats, _items) = engine.run(DomainFilterSpider).await.unwrap();
     assert_eq!(stats.pages_crawled, 0, "example.com 应被过滤");
     assert!(
         stats.offsite_requests_count >= 1,
@@ -278,11 +270,8 @@ impl Spider for Retry503Spider {
 #[tokio::test]
 #[ignore = "requires network access to httpbin.org"]
 async fn test_e2e_retry_on_blocked_status() {
-    let stats = Engine::new(Retry503Spider)
-        .max_pages(1)
-        .run_one()
-        .await
-        .unwrap();
+    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let (stats, _items) = engine.run(Retry503Spider).await.unwrap();
     assert_eq!(stats.pages_crawled, 0, "503 不应计入成功页");
     assert!(stats.errors >= 1, "应有错误统计, 实际: {}", stats.errors);
     assert!(
@@ -335,8 +324,8 @@ impl Spider for StreamQuotesSpider {
 #[tokio::test]
 #[ignore = "requires network access to quotes.toscrape.com"]
 async fn test_e2e_streaming_events() {
-    let engine = Engine::new(StreamQuotesSpider).max_pages(1);
-    let mut stream = engine.stream().events();
+    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let mut stream = engine.run_stream(StreamQuotesSpider).events();
     let mut item_count = 0;
     let mut page_scraped_count = 0;
     let mut done_count = 0;
@@ -381,8 +370,8 @@ async fn test_e2e_jsonl_export() {
     // 清理可能的旧文件
     let _ = std::fs::remove_file(&path);
 
-    let engine = Engine::new(QuotesSpider).max_pages(1);
-    let mut items_stream = engine.stream().items();
+    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let mut items_stream = engine.run_stream(QuotesSpider).items();
     let mut writer = JsonlWriter::new(&path).unwrap();
     let mut count = 0;
     while let Some(item) = items_stream.next().await {
@@ -444,12 +433,12 @@ async fn test_e2e_development_mode_cache_replay() {
     let store = Arc::new(Store::open_in_memory().unwrap());
 
     // 第一次运行：发网络请求，保存缓存
-    let stats1 = Engine::new(CacheSpider)
+    let engine = Engine::infra()
         .max_pages(1)
-        .development_mode(store.clone())
-        .run_one()
-        .await
+        .dev_mode(store.clone())
+        .build()
         .unwrap();
+    let (stats1, _) = engine.run(CacheSpider).await.unwrap();
     assert_eq!(stats1.pages_crawled, 1, "第一次应抓取 1 页");
     assert_eq!(stats1.cache_hits, 0, "第一次无命中");
 
@@ -460,12 +449,7 @@ async fn test_e2e_development_mode_cache_replay() {
     assert!(cached.is_some(), "响应应已缓存");
 
     // 第二次运行：命中缓存
-    let stats2 = Engine::new(CacheSpider)
-        .max_pages(1)
-        .development_mode(store.clone())
-        .run_one()
-        .await
-        .unwrap();
+    let (stats2, _) = engine.run(CacheSpider).await.unwrap();
     assert_eq!(stats2.pages_crawled, 1, "第二次应抓取 1 页");
     assert_eq!(stats2.cache_hits, 1, "第二次应命中缓存, 实际: {}", stats2.cache_hits);
 }

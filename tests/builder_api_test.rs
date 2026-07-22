@@ -128,7 +128,7 @@ fn test_response_follow_with_callback() {
     assert_eq!(req.callback, Some("parse_detail".to_string()));
 }
 
-// === Engine::builder() test ===
+// === Engine::infra() test ===
 
 #[tokio::test]
 async fn test_engine_builder_local_server() {
@@ -166,12 +166,12 @@ async fn test_engine_builder_local_server() {
         })
         .build();
 
-    let stats = Engine::builder(spider)
+    let engine = Engine::infra()
         .max_pages(1)
         .max_concurrent(2)
-        .run_one()
-        .await
+        .build()
         .unwrap();
+    let (stats, _items) = engine.run(spider).await.unwrap();
 
     assert_eq!(stats.pages_crawled, 1);
     assert_eq!(stats.items_scraped, 1);
@@ -270,8 +270,8 @@ async fn test_stream_with_builder() {
         })
         .build();
 
-    let engine = Engine::builder(spider).max_pages(1);
-    let mut stream = engine.stream().events();
+    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let mut stream = engine.run_stream(spider).events();
 
     let mut items = 0;
     let mut done = false;

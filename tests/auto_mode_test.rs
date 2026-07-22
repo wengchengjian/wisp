@@ -212,11 +212,11 @@ async fn test_auto_mode_with_local_server() {
     // Auto 妯″紡浼氭娴嬪埌 .product 杩斿洖 0 鑺傜偣
     // 浣嗙敱浜庢湰鍦版湇鍔″櫒涓嶆敮鎸?Dynamic锛堟棤 Chrome锛夛紝鍗囩骇浼氬け璐?
     // 杩欓噷涓昏楠岃瘉 Auto 閫昏緫涓?panic 涓旀甯稿畬鎴?
-    let stats = Engine::builder(spider)
+    let engine = Engine::infra()
         .max_pages(1)
-        .run_one()
-        .await
+        .build()
         .unwrap();
+    let (stats, _items) = engine.run(spider).await.unwrap();
 
     // 椤甸潰搴旇琚埇鍙栵紙鍗充娇鍗囩骇澶辫触锛孒TTP 缁撴灉浠嶈浣跨敤锛?
     assert_eq!(stats.pages_crawled, 1);
@@ -264,11 +264,11 @@ async fn test_auto_mode_static_page_no_upgrade() {
         })
         .build();
 
-    let stats = Engine::builder(spider)
+    let engine = Engine::infra()
         .max_pages(1)
-        .run_one()
-        .await
+        .build()
         .unwrap();
+    let (stats, _items) = engine.run(spider).await.unwrap();
 
     // 闈欐€侀〉闈細HTTP 鍗冲彲锛屼笉鍗囩骇锛? 涓?item
     assert_eq!(stats.pages_crawled, 1);

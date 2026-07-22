@@ -34,12 +34,12 @@ async fn test_development_mode_caches_response() {
     let store = Arc::new(Store::open_in_memory().unwrap());
 
     // 第一次运行：发网络请求，保存缓存
-    let stats1 = Engine::new(CacheSpider)
+    let engine = Engine::infra()
         .max_pages(1)
-        .development_mode(store.clone())
-        .run_one()
-        .await
+        .dev_mode(store.clone())
+        .build()
         .unwrap();
+    let (stats1, _) = engine.run(CacheSpider).await.unwrap();
     assert_eq!(stats1.pages_crawled, 1);
     assert_eq!(stats1.cache_hits, 0, "第一次运行不应有缓存命中");
 
@@ -49,13 +49,8 @@ async fn test_development_mode_caches_response() {
         .unwrap();
     assert!(cached.is_some(), "响应应已缓存");
 
-    // 第二次运行：命中缓存
-    let stats2 = Engine::new(CacheSpider)
-        .max_pages(1)
-        .development_mode(store.clone())
-        .run_one()
-        .await
-        .unwrap();
+    // 第二次运行：命中缓存（同一 engine 复用，新 spider 实例）
+    let (stats2, _) = engine.run(CacheSpider).await.unwrap();
     assert_eq!(stats2.pages_crawled, 1);
     assert_eq!(stats2.cache_hits, 1, "第二次应命中缓存");
 }

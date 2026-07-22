@@ -25,11 +25,11 @@ impl Spider for ConcurrencySpider {
 #[ignore = "requires network access to httpbin.org"]
 async fn test_max_concurrent_respected() {
     let spider = ConcurrencySpider;
-    let stats = Engine::new(spider)
+    let engine = Engine::infra()
         .max_pages(10)
-        .run_one()
-        .await
+        .build()
         .unwrap();
+    let (stats, _items) = engine.run(spider).await.unwrap();
     // Smoke test: should complete without panic
     assert_eq!(stats.pages_crawled, 10);
 }
