@@ -326,7 +326,8 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
         let item = if ctx.middleware_chain.is_empty() {
             Some(item)
         } else {
-            ctx.middleware_chain.run_pipelines(item).await
+            let crawl_ctx = build_crawl_context(ctx);
+            ctx.middleware_chain.run_pipelines(item, &crawl_ctx).await
         };
         if let Some(processed) = item {
             stats.items.fetch_add(1, Ordering::SeqCst);

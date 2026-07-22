@@ -236,10 +236,11 @@ impl Engine {
             },
         });
 
-        // 中间件初始化：在爬取开始前调用所有中间件的 init
+        // 中间件初始化：在爬取开始前调用所有中间件的 init + pipeline 的 open
         if !ctx.middleware_chain.is_empty() {
             let crawl_ctx = engine::build_crawl_context(&ctx);
             ctx.middleware_chain.run_init(&crawl_ctx).await;
+            ctx.middleware_chain.run_pipelines_open(&crawl_ctx).await;
         }
 
         // 构建并发流：单 Spider，无路由
@@ -321,6 +322,12 @@ impl Engine {
                 }
                 pages_since_checkpoint = 0;
             }
+        }
+
+        // pipeline 关闭：爬取结束后释放资源
+        if !ctx.middleware_chain.is_empty() {
+            let crawl_ctx = engine::build_crawl_context(&ctx);
+            ctx.middleware_chain.run_pipelines_close(&crawl_ctx).await;
         }
 
         spider.on_close().await;

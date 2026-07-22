@@ -141,10 +141,22 @@ pub trait Middleware: Send + Sync {
 ///
 /// 顺序处理 Spider 产出的 items：清洗 → 验证 → 去重 → 存储。
 /// 返回 None 表示丢弃此 item。
+///
+/// # 生命周期
+///
+/// - `open`：爬取开始前调用，初始化资源（文件句柄、DB 连接）
+/// - `process_item`：每个 item 到来时调用
+/// - `close`：爬取结束后调用，释放资源（flush 缓冲、关闭连接）
 #[async_trait]
 pub trait ItemPipeline: Send + Sync {
+    /// 生命周期：爬取开始前调用（初始化资源）。
+    async fn open(&self, _ctx: &CrawlContext) {}
+
     /// 处理单个 item。返回 Some(item) 继续传递，None 丢弃。
-    async fn process_item(&self, item: Value) -> Option<Value>;
+    async fn process_item(&self, item: Value, _ctx: &CrawlContext) -> Option<Value>;
+
+    /// 生命周期：爬取结束后调用（flush 缓冲、关闭连接）。
+    async fn close(&self, _ctx: &CrawlContext) {}
 }
 
 // === 中间件链执行器 ===
@@ -223,17 +235,31 @@ impl MiddlewareChain {
     }
 
     /// 执行 item 管道链。
-    pub(crate) async fn run_pipelines(&self, item: Value) -> Option<Value> {
+    pub(crate) async fn run_pipelines(&self, item: Value, ctx: &CrawlContext) -> Option<Value> {
         let mut current = Some(item);
         for pipeline in &self.pipelines {
             match current {
                 Some(item) => {
-                    current = pipeline.process_item(item).await;
+                    current = pipeline.process_item(item, ctx).await;
                 }
                 None => return None,
             }
         }
         current
+    }
+
+    /// 打开所有 pipeline（爬取开始前调用）。
+    pub(crate) async fn run_pipelines_open(&self, ctx: &CrawlContext) {
+        for pipeline in &self.pipelines {
+            pipeline.open(ctx).await;
+        }
+    }
+
+    /// 关闭所有 pipeline（爬取结束后调用）。
+    pub(crate) async fn run_pipelines_close(&self, ctx: &CrawlContext) {
+        for pipeline in &self.pipelines {
+            pipeline.close(ctx).await;
+        }
     }
 }
 

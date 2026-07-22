@@ -570,7 +570,7 @@ mod tests {
     async fn test_filter_fields_pipeline() {
         let pipeline = FilterFieldsPipeline::new(vec!["title", "url"]);
         let item = serde_json::json!({"title": "Hello", "url": "http://x.com", "extra": 123});
-        let result = pipeline.process_item(item).await.unwrap();
+        let result = pipeline.process_item(item, &make_ctx()).await.unwrap();
         assert_eq!(result["title"], "Hello");
         assert!(result.get("extra").is_none());
     }
