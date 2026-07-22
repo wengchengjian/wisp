@@ -5,6 +5,9 @@
 //! - `process_request()` 处理单个请求（替代 200 行嵌套闭包）
 //! - `fetch_with_retry()` 重试循环
 //! - `auto_upgrade_check()` Auto 模式升级检查
+//!
+//! Task 3 重构：EngineContext 单 Spider 化（删除 Vec + 路由），process_request
+//! 调 `spider.handle()` 而非 `spider.parse()`，items 收集到 `ctx.items`。
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -19,17 +22,18 @@ use crate::fetcher::FetchMode;
 use super::{
     Spider, SpiderRequest, SpiderResponse, Method,
     CrawlStats, CrawlEvent, CrawlState,
-    auto, scheduler, robots,
+    auto, scheduler, robots, control,
 };
 use super::stats::SpiderStats;
 
 // === EngineContext: 打包所有共享状态 ===
 
-/// Engine 运行时共享上下文（所有 Spider 共用）。
+/// Engine 运行时上下文（单 Spider）。
 ///
 /// 共享字段：client / sched / robots_cache / follow_tx / follow_rx / domain_sems /
-/// proxy_pool / cache_store / request_cache / abort_flag / start / tx / dev_mode。
-/// per-spider 字段以 Vec 数组持有，路由时按下标 `idx` 取值。
+/// proxy_pool / cache_store / request_cache / abort_flag / start / tx / dev_mode /
+/// control / items。
+/// per-Spider 字段单值持有（原 Vec 数组已删除，无路由）。
 pub(crate) struct EngineContext {
     pub client: Arc<Client>,
     pub sched: Arc<scheduler::Scheduler>,
@@ -44,34 +48,35 @@ pub(crate) struct EngineContext {
     pub start: std::time::Instant,
     pub tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
     pub dev_mode: bool,
-    // === per-spider 配置与统计（引擎持有多个，路由时选一个传入）===
-    pub spiders: Vec<Arc<dyn Spider>>,
-    pub stats: Vec<Arc<SpiderStats>>,
-    pub rule_engines: Vec<Arc<Mutex<auto::ModeRuleEngine>>>,
-    pub auto_excludes: Vec<HashSet<String>>,
-    pub allowed_list: Vec<Arc<HashSet<String>>>,
-    pub fetcher_configs: Vec<http::Config>,
-    pub fetch_modes: Vec<FetchMode>,
-    pub max_concurrents: Vec<usize>,
-    pub max_depths: Vec<u32>,
-    pub obey_robots_flags: Vec<bool>,
+    // === 单 Spider 配置与统计 ===
+    pub spider: Arc<dyn Spider>,
+    pub stats: Arc<SpiderStats>,
+    pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
+    pub auto_excludes: HashSet<String>,
+    pub allowed: Arc<HashSet<String>>,
+    pub fetcher_config: http::Config,
+    pub fetch_mode: FetchMode,
+    pub max_concurrent: usize,
+    pub max_depth: u32,
+    pub obey_robots: bool,
     pub global_in_flight: Arc<AtomicUsize>,
     pub engine_max_pages: usize,
-    /// 预编译的 per-spider 正则模式（路由用，避免每次 matches 重新编译）。
-    pub compiled_patterns: Vec<Vec<regex::Regex>>,
+    /// per-Engine 控制状态（替代原全局 static）。
+    pub control: Arc<control::EngineControl>,
+    /// 本次 run 产出的 items 收集（run() 返回时取出）。
+    pub items: Arc<Mutex<Vec<Value>>>,
 }
 
 // === 核心函数：处理单个请求 ===
 
-/// 处理单个请求的完整流程：域名过滤 → 深度检查 → 缓存 → robots → 信号量 → 延迟 → 重试 → Auto 检查 → parse。
-/// idx 为命中的 Spider 在 spiders/stats 数组中的下标。
-pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest, idx: usize) {
-    let spider = &ctx.spiders[idx];
-    let stats = &ctx.stats[idx];
-    let allowed = &ctx.allowed_list[idx];
-    let max_depth = ctx.max_depths[idx];
-    let max_concurrent = ctx.max_concurrents[idx];
-    let obey_robots = ctx.obey_robots_flags[idx];
+/// 处理单个请求的完整流程：域名过滤 → 深度检查 → 缓存 → robots → 信号量 → 延迟 → 重试 → Auto 检查 → handle。
+pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+    let spider = &ctx.spider;
+    let stats = &ctx.stats;
+    let allowed = &ctx.allowed;
+    let max_depth = ctx.max_depth;
+    let max_concurrent = ctx.max_concurrent;
+    let obey_robots = ctx.obey_robots;
 
     // 1. 域名过滤
     if !allowed.is_empty() {
@@ -90,10 +95,10 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest, idx
         return;
     }
 
-    // 1.6. 全局控制函数检查
-    if super::control::is_cancelled(&req.url).await { return; }
-    if !super::control::wait_if_paused(&req.url).await { return; }
-    if super::control::is_shutdown() { return; }
+    // 1.6. per-Engine 控制状态检查（替代原全局 control::is_cancelled 等）
+    if ctx.control.is_cancelled(&req.url).await { return; }
+    if !ctx.control.wait_if_paused(&req.url).await { return; }
+    if ctx.control.is_shutdown() { return; }
 
     // 1.7. 异步钩子检查
     match spider.on_before_request(&req).await {
@@ -121,7 +126,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest, idx
             stats.cache_hits.fetch_add(1, Ordering::SeqCst);
             record_status(stats, resp.status).await;
             // 直接跳到处理结果阶段
-            return process_response(ctx, resp, &req, idx).await;
+            return process_response(ctx, resp, &req).await;
         }
     }
 
@@ -184,7 +189,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest, idx
         apply_delay(ctx, &req.url, spider, obey_robots).await;
 
         // 6. 带重试的抓取
-        let (resp, err) = fetch_with_retry(ctx, &req, idx).await;
+        let (resp, err) = fetch_with_retry(ctx, &req).await;
         final_resp = resp;
         last_error = err;
 
@@ -217,7 +222,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest, idx
 
     // 8. 处理结果
     if let Some(resp) = final_resp {
-        process_response(ctx, resp, &req, idx).await;
+        process_response(ctx, resp, &req).await;
     } else if let Some(err) = last_error {
         if let Some(ref tx) = ctx.tx {
             let _ = tx.send(CrawlEvent::Error { url: req.url.clone(), error: err }).await;
@@ -225,10 +230,13 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest, idx
     }
 }
 
-/// 处理已获取的响应：parse → Auto 升级 → items → events。
-pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, req: &SpiderRequest, idx: usize) {
-    let spider = &ctx.spiders[idx];
-    let stats = &ctx.stats[idx];
+/// 处理已获取的响应：handle → Auto 升级 → items → events。
+///
+/// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
+/// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
+pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, req: &SpiderRequest) {
+    let spider = &ctx.spider;
+    let stats = &ctx.stats;
 
     if !resp.from_cache {
         stats.pages.fetch_add(1, Ordering::SeqCst);
@@ -236,23 +244,25 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
     let page_url = resp.url.clone();
 
     let tracker_ref = resp.tracker.clone();
-    let (mut items, mut follows) = spider.parse(resp).await;
+    // Task 3：调用 handle()（callback 路由），而非 parse()
+    let (mut items, mut follows) = spider.handle(resp).await;
 
     // Auto 升级检查
-    if ctx.fetch_modes[idx] == FetchMode::Auto {
-        if let Some(result) = auto_upgrade_check(ctx, &tracker_ref, &page_url, req, idx).await {
+    if ctx.fetch_mode == FetchMode::Auto {
+        if let Some(result) = auto_upgrade_check(ctx, &tracker_ref, &page_url, req).await {
             items = result.0;
             follows = result.1;
         }
     }
 
-    // 发送 items
+    // 发送 items：同时收集到 ctx.items 和 tx（若有）
     for item in items {
         if let Some(processed) = spider.on_item(item).await {
             stats.items.fetch_add(1, Ordering::SeqCst);
             if let Some(ref tx) = ctx.tx {
-                let _ = tx.send(CrawlEvent::Item(processed)).await;
+                let _ = tx.send(CrawlEvent::Item(processed.clone())).await;
             }
+            ctx.items.lock().await.push(processed);
         }
     }
     for f in follows {
@@ -272,12 +282,12 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
 // === 带重试的抓取 ===
 
 /// 重试循环：fetch → blocked 检测 → 重试/成功/失败。
-async fn fetch_with_retry(ctx: &EngineContext, req: &SpiderRequest, idx: usize) -> (Option<SpiderResponse>, Option<String>) {
-    let spider = &ctx.spiders[idx];
-    let stats = &ctx.stats[idx];
-    let fetch_mode = ctx.fetch_modes[idx];
-    let fetcher_config = &ctx.fetcher_configs[idx];
-    let rule_engine = &ctx.rule_engines[idx];
+async fn fetch_with_retry(ctx: &EngineContext, req: &SpiderRequest) -> (Option<SpiderResponse>, Option<String>) {
+    let spider = &ctx.spider;
+    let stats = &ctx.stats;
+    let fetch_mode = ctx.fetch_mode;
+    let fetcher_config = &ctx.fetcher_config;
+    let rule_engine = &ctx.rule_engine;
     let max_retries = spider.max_retries();
     let mut attempt: u32 = 0;
 
@@ -334,12 +344,11 @@ async fn auto_upgrade_check(
     tracker: &Option<Arc<std::sync::Mutex<auto::SelectorTracker>>>,
     page_url: &str,
     req: &SpiderRequest,
-    idx: usize,
 ) -> Option<(Vec<Value>, Vec<SpiderRequest>)> {
-    let spider = &ctx.spiders[idx];
-    let fetcher_config = &ctx.fetcher_configs[idx];
-    let rule_engine = &ctx.rule_engines[idx];
-    let auto_exclude = &ctx.auto_excludes[idx];
+    let spider = &ctx.spider;
+    let fetcher_config = &ctx.fetcher_config;
+    let rule_engine = &ctx.rule_engine;
+    let auto_exclude = &ctx.auto_excludes;
     let tracker = tracker.as_ref()?;
     let needs = tracker.lock().unwrap().needs_upgrade(auto_exclude);
 
@@ -354,7 +363,8 @@ async fn auto_upgrade_check(
             &ctx.client, req, proxy.as_deref(), FetchMode::Dynamic, fetcher_config,
         ).await;
         if let Ok(new_resp) = dynamic_resp {
-            let (items, follows) = spider.parse(new_resp).await;
+            // Auto 升级时也走 handle() 路由（保持一致）
+            let (items, follows) = spider.handle(new_resp).await;
             return Some((items, follows));
         }
         None
@@ -409,7 +419,7 @@ pub(crate) fn snapshot_stats_for(
     }
 }
 
-/// Checkpoint 保存（仅单 Spider 时调用）。
+/// Checkpoint 保存。
 pub(crate) async fn save_checkpoint(
     store: &crate::storage::Store,
     spider_name: &str,
@@ -577,19 +587,20 @@ mod tests {
             start: Instant::now(),
             tx: None,
             dev_mode: false,
-            spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
-            stats: vec![stats.clone()],
-            rule_engines: vec![Arc::new(Mutex::new(auto::ModeRuleEngine::new()))],
-            auto_excludes: vec![HashSet::new()],
-            allowed_list: vec![Arc::new(HashSet::new())],
-            fetcher_configs: vec![http::Config::default()],
-            fetch_modes: vec![FetchMode::Http],
-            max_concurrents: vec![8],
-            max_depths: vec![u32::MAX],
-            obey_robots_flags: vec![false],
+            spider: Arc::new(DummySpider) as Arc<dyn Spider>,
+            stats: stats.clone(),
+            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+            auto_excludes: HashSet::new(),
+            allowed: Arc::new(HashSet::new()),
+            fetcher_config: http::Config::default(),
+            fetch_mode: FetchMode::Http,
+            max_concurrent: 8,
+            max_depth: u32::MAX,
+            obey_robots: false,
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             engine_max_pages: 100,
-            compiled_patterns: vec![vec![]],
+            control: Arc::new(control::EngineControl::new()),
+            items: Arc::new(Mutex::new(Vec::new())),
         };
         (ctx, stats)
     }
@@ -613,7 +624,7 @@ mod tests {
         let (ctx, stats) = make_ctx();
         let req = SpiderRequest::get("http://example.com/page");
         let resp = make_resp(true);
-        process_response(&ctx, resp, &req, 0).await;
+        process_response(&ctx, resp, &req).await;
         assert_eq!(
             stats.pages.load(Ordering::SeqCst),
             0,
@@ -627,7 +638,7 @@ mod tests {
         let (ctx, stats) = make_ctx();
         let req = SpiderRequest::get("http://example.com/page");
         let resp = make_resp(false);
-        process_response(&ctx, resp, &req, 0).await;
+        process_response(&ctx, resp, &req).await;
         assert_eq!(
             stats.pages.load(Ordering::SeqCst),
             1,

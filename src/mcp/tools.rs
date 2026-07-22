@@ -128,9 +128,10 @@ pub async fn crawl_site(args: Value, _store: &Arc<Store>) -> Result<Value> {
     }
 
     // SimpleSpider 接收 start_urls，由 Engine 推入共享队列
+    // Task 3：Engine 重构为纯基础设施，用 infra().build() + run_stream(spider)
     let spider = SimpleSpider { css: css_selector.clone(), start_urls };
-    let engine = Engine::new(spider).max_pages(max_pages);
-    let stream = engine.stream().items();
+    let engine = Engine::infra().max_pages(max_pages).build()?;
+    let stream = engine.run_stream(spider).items();
 
     use futures::StreamExt;
     let mut items: Vec<Value> = Vec::new();
