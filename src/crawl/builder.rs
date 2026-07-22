@@ -1,6 +1,6 @@
-//! SpiderBuilder: 闂寘寮?Spider 瀹氫箟锛屾棤闇€鎵嬪姩瀹炵幇 trait銆?
+//! SpiderBuilder: 闭包式 Spider 定义，无需手写实现 trait。
 //!
-//! # 绀轰緥
+//! # 示例
 //!
 //! ```rust,no_run
 //! use wisp::crawl::SpiderBuilder;
@@ -30,15 +30,15 @@ use serde_json::Value;
 use super::{Spider, SpiderRequest, SpiderResponse};
 use crate::http;
 
-/// 瑙ｆ瀽闂寘绫诲瀷锛氭帴鏀?SpiderResponse锛岃繑鍥?(items, follow_requests)銆?
+/// 解析闭包类型：接收 SpiderResponse，返回 (items, follow_requests)。
 pub type ParseFn = Box<dyn Fn(SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) + Send + Sync + 'static>;
 
-/// 寮傛瑙ｆ瀽闂寘绫诲瀷銆?
+/// 异步解析闭包类型。
 pub type AsyncParseFn = Box<dyn Fn(SpiderResponse) -> std::pin::Pin<Box<dyn std::future::Future<Output = (Vec<Value>, Vec<SpiderRequest>)> + Send>> + Send + Sync + 'static>;
 
-/// 闂寘寮?Spider 鏋勫缓鍣ㄣ€?
+/// 闭包式 Spider 构建器。
 ///
-/// 鍏佽閫氳繃閾惧紡璋冪敤 + 闂寘瀹氫箟 Spider锛岄伩鍏嶄负绠€鍗曠埇铏墜鍐?trait impl銆?
+/// 允许通过链式调用 + 闭包定义 Spider，避免为简单爬虫手写 trait impl。
 pub struct SpiderBuilder {
     name: String,
     start_urls: Vec<String>,
@@ -59,7 +59,7 @@ pub struct SpiderBuilder {
 }
 
 impl SpiderBuilder {
-    /// 鍒涘缓鏂?SpiderBuilder锛坣ame 涓哄繀濉級銆?
+    /// 创建新 SpiderBuilder（name 为必填）。
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -81,69 +81,69 @@ impl SpiderBuilder {
         }
     }
 
-    /// 璁剧疆璧峰 URL 鍒楄〃銆?
+    /// 设置起始 URL 列表。
     pub fn start_urls(mut self, urls: Vec<impl Into<String>>) -> Self {
         self.start_urls = urls.into_iter().map(|u| u.into()).collect();
         self
     }
 
-    /// 璁剧疆鍏佽鐨勫煙鍚嶉泦鍚堛€?
+    /// 设置允许的域名集合。
     pub fn allowed_domains(mut self, domains: Vec<impl Into<String>>) -> Self {
         self.allowed_domains = domains.into_iter().map(|d| d.into()).collect();
         self
     }
 
-    /// 璁剧疆骞跺彂璇锋眰鏁般€?
+    /// 设置并发请求数。
     pub fn concurrent(mut self, n: u32) -> Self {
         self.concurrent = n;
         self
     }
 
-    /// 璁剧疆涓嬭浇寤惰繜銆?
+    /// 设置下载延迟。
     pub fn delay(mut self, d: Duration) -> Self {
         self.delay = d;
         self
     }
 
-    /// 璁剧疆涓嬭浇寤惰繜锛堟绉掞級銆?
+    /// 设置下载延迟（毫秒）。
     pub fn delay_ms(mut self, ms: u64) -> Self {
         self.delay = Duration::from_millis(ms);
         self
     }
 
-    /// 鏄惁閬靛畧 robots.txt銆?
+    /// 是否遵守 robots.txt。
     pub fn obey_robots(mut self, obey: bool) -> Self {
         self.obey_robots = obey;
         self
     }
 
-    /// 璁剧疆鏈€澶ч噸璇曟鏁般€?
+    /// 设置最大重试次数。
     pub fn max_retries(mut self, n: u32) -> Self {
         self.max_retries = n;
         self
     }
 
-    /// 璁剧疆 fetcher 閰嶇疆銆?
+    /// 设置 fetcher 配置。
     pub fn fetcher_config(mut self, config: http::Config) -> Self {
         self.fetcher_config = config;
         self
     }
 
-    /// 璁剧疆鐖彇妯″紡锛圚ttp / Dynamic / Stealth / Auto锛夈€?
+    /// 设置抓取模式（Http / Dynamic / Stealth / Auto）。
     pub fn mode(mut self, mode: crate::fetcher::FetchMode) -> Self {
         self.fetch_mode = mode;
         self
     }
 
-    /// Auto 妯″紡锛歎RL 姝ｅ垯瑙勫垯锛堜紭鍏堢骇鏈€楂橈級銆?
+    /// Auto 模式：URL 正则规则（优先级最高）。
     ///
-    /// 鍖归厤璇ユ鍒欑殑 URL 鐩存帴浣跨敤鎸囧畾妯″紡锛岃烦杩?Auto 妫€娴嬨€?
+    /// 匹配该规则的 URL 直接使用指定模式，跳过 Auto 嗅探。
     pub fn auto_rule(mut self, pattern: &str, mode: crate::fetcher::FetchMode) -> Self {
         self.auto_rules.push((pattern.to_string(), mode));
         self
     }
 
-    /// Auto 妯″紡锛氬彲閫夐€夋嫨鍣紙杩斿洖 0 鑺傜偣涓嶈Е鍙戝崌绾э級銆?
+    /// Auto 模式：可选选择器（返回 0 节点不触发升级）。
     pub fn auto_exclude(mut self, selectors: Vec<&str>) -> Self {
         for s in selectors {
             self.auto_exclude.insert(s.to_string());
@@ -151,7 +151,7 @@ impl SpiderBuilder {
         self
     }
 
-    /// 璁剧疆鍚屾瑙ｆ瀽闂寘銆?
+    /// 设置同步解析闭包。
     pub fn parse<F>(mut self, f: F) -> Self
     where
         F: Fn(SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) + Send + Sync + 'static,
@@ -160,7 +160,7 @@ impl SpiderBuilder {
         self
     }
 
-    /// 璁剧疆寮傛瑙ｆ瀽闂寘銆?
+    /// 设置异步解析闭包。
     pub fn parse_async<F, Fut>(mut self, f: F) -> Self
     where
         F: Fn(SpiderResponse) -> Fut + Send + Sync + 'static,
@@ -170,7 +170,7 @@ impl SpiderBuilder {
         self
     }
 
-    /// 鑷畾涔夐樆濉炴娴嬮€昏緫銆?
+    /// 自定义阻塞检测逻辑。
     pub fn is_blocked<F>(mut self, f: F) -> Self
     where
         F: Fn(&SpiderResponse) -> bool + Send + Sync + 'static,
@@ -191,14 +191,14 @@ impl SpiderBuilder {
         self
     }
 
-    /// 鏋勫缓 ClosureSpider 瀹炰緥銆?
+    /// 构建 ClosureSpider 实例。
     ///
     /// # Panics
-    /// 鑻ユ湭璁剧疆 parse 鎴?parse_async 闂寘鍒?panic銆?
+    /// 若未设置 parse 或 parse_async 闭包则 panic。
     pub fn build(self) -> ClosureSpider {
         assert!(
             self.parse_fn.is_some() || self.async_parse_fn.is_some(),
-            "SpiderBuilder: 蹇呴』璁剧疆 parse() 鎴?parse_async() 闂寘"
+            "SpiderBuilder: 必须设置 parse() 或 parse_async() 闭包"
         );
         ClosureSpider {
             name: self.name,
@@ -221,7 +221,7 @@ impl SpiderBuilder {
     }
 }
 
-/// 鐢?SpiderBuilder 鏋勫缓鐨勯棴鍖呭紡 Spider銆?
+/// 由 SpiderBuilder 构建的闭包式 Spider。
 pub struct ClosureSpider {
     name: String,
     start_urls: Vec<String>,
@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "蹇呴』璁剧疆 parse()")]
+    #[should_panic(expected = "必须设置 parse()")]
     fn test_spider_builder_no_parse_panics() {
         let _spider = SpiderBuilder::new("test")
             .start_urls(vec!["https://example.com/"])

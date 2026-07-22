@@ -1,9 +1,9 @@
 //! Multi-session Spider support.
 //!
-//! 鍏佽鍦ㄥ崟涓?Spider 涓娇鐢ㄥ绉?Fetcher 绫诲瀷锛堝揩閫?HTTP / 闅愯韩娴忚鍣級锛?
-//! 閫氳繃 session ID 璺敱璇锋眰鍒颁笉鍚岀殑浼氳瘽銆?
+//! 允许在单个 Spider 中使用多种 Fetcher 类型（快速 HTTP / 隐身浏览器）。
+//! 通过 session ID 路由请求到不同的会话。
 //!
-//! # 绀轰緥
+//! # 示例
 //!
 //! ```rust,no_run
 //! use wisp::crawl::session::{SessionManager, FetcherType};
@@ -20,13 +20,13 @@
 use std::collections::HashMap;
 use crate::http;
 
-/// Fetcher 绫诲瀷鏋氫妇銆?
+/// Fetcher 类型枚举。
 #[derive(Debug, Clone)]
 pub enum FetcherType {
-    /// 蹇€?HTTP 璇锋眰锛坵req TLS 鎸囩汗妯℃嫙锛夈€?
+    /// 快速 HTTP 请求（reqwest TLS 指纹模拟）。
     Http(http::Config),
-    /// 闅愯韩娴忚鍣ㄦā寮忥紙閫氳繃 Scraper 缁曡繃 CF锛夈€?
-    /// 瀛樺偍浠ｇ悊鍜?headless 閰嶇疆銆?
+    /// 隐身浏览器模式（通过 Scraper 绕过 CF）。
+    /// 存储代理和 headless 配置。
     Stealth {
         headless: bool,
         proxy: Option<String>,
@@ -40,36 +40,36 @@ impl Default for FetcherType {
     }
 }
 
-/// 澶氫細璇濈鐞嗗櫒銆?
+/// 多会话管理器。
 ///
-/// 绠＄悊澶氫釜鍛藉悕鐨?Fetcher 浼氳瘽锛孲pider 鍙€氳繃 session ID 璺敱璇锋眰銆?
+/// 管理多个命名的 Fetcher 会话，Spider 可通过 session ID 路由请求。
 #[derive(Default)]
 pub struct SessionManager {
     sessions: HashMap<String, FetcherType>,
 }
 
 impl SessionManager {
-    /// 鍒涘缓绌虹殑浼氳瘽绠＄悊鍣ㄣ€?
+    /// 创建空的会话管理器。
     pub fn new() -> Self {
         Self { sessions: HashMap::new() }
     }
 
-    /// 娣诲姞涓€涓懡鍚嶄細璇濄€?
+    /// 添加一个命名会话。
     pub fn add(&mut self, id: &str, fetcher: FetcherType) {
         self.sessions.insert(id.to_string(), fetcher);
     }
 
-    /// 鑾峰彇鎸囧畾 ID 鐨勪細璇濋厤缃€?
+    /// 获取指定 ID 的会话配置。
     pub fn get(&self, id: &str) -> Option<&FetcherType> {
         self.sessions.get(id)
     }
 
-    /// 鑾峰彇榛樿浼氳瘽锛?default"锛夈€?
+    /// 获取默认会话（"default"）。
     pub fn default_session(&self) -> Option<&FetcherType> {
         self.sessions.get("default")
     }
 
-    /// 浼氳瘽鏁伴噺銆?
+    /// 会话数量。
     pub fn len(&self) -> usize {
         self.sessions.len()
     }
@@ -78,21 +78,27 @@ impl SessionManager {
         self.sessions.is_empty()
     }
 
-    /// 鎵€鏈変細璇?ID 鍒楄〃銆?
+    /// 所有会话 ID 列表。
     pub fn session_ids(&self) -> Vec<&str> {
         self.sessions.keys().map(|k| k.as_str()).collect()
     }
 }
 
-/// SpiderRequest 鎵╁睍锛氭惡甯?session ID銆?
+/// SpiderRequest 扩展：携带 session ID。
 ///
-/// 閫氳繃 SpiderRequest.meta 涓殑 "__sid" 瀛楁浼犻€掋€?
+/// 通过 SpiderRequest.meta 中的 "__sid" 字段传递。
 pub fn request_with_session(mut req: super::SpiderRequest, sid: &str) -> super::SpiderRequest {
-    req.meta = serde_json::json!({ "__sid": sid });
+    // 合并而非覆盖：保留原有 meta（如分页信息），仅注入/更新 __sid
+    if !req.meta.is_object() {
+        req.meta = serde_json::json!({});
+    }
+    if let Some(obj) = req.meta.as_object_mut() {
+        obj.insert("__sid".to_string(), serde_json::Value::String(sid.to_string()));
+    }
     req
 }
 
-/// 浠?SpiderRequest 鎻愬彇 session ID銆?
+/// 从 SpiderRequest 提取 session ID。
 pub fn session_id_of(req: &super::SpiderRequest) -> &str {
     req.meta.get("__sid")
         .and_then(|v| v.as_str())
@@ -137,6 +143,16 @@ mod tests {
         let req = super::super::SpiderRequest::get("https://example.com");
         let req = request_with_session(req, "stealth");
         assert_eq!(session_id_of(&req), "stealth");
+    }
+
+    #[test]
+    fn test_request_with_session_preserves_meta() {
+        let req = super::super::SpiderRequest::get("https://example.com")
+            .with_meta(serde_json::json!({"page": 2, "category": "books"}));
+        let req = request_with_session(req, "stealth");
+        assert_eq!(session_id_of(&req), "stealth");
+        assert_eq!(req.meta["page"], 2);
+        assert_eq!(req.meta["category"], "books");
     }
 
     #[test]
