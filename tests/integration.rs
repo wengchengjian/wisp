@@ -17,7 +17,7 @@ async fn test_navigator_webdriver_is_null() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     page.goto("about:blank").await.unwrap();
 
     let webdriver = page.evaluate("navigator.webdriver").await.unwrap();
@@ -36,7 +36,7 @@ async fn test_evaluate_returns_value() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     page.goto("about:blank").await.unwrap();
 
     let result = page.evaluate("1 + 2").await.unwrap();
@@ -55,7 +55,7 @@ async fn test_navigation_and_title() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     page.goto("data:text/html,<title>Test Page</title><h1>Hello</h1>")
         .await
         .unwrap();
@@ -73,7 +73,7 @@ async fn test_element_click_and_fill() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     page.goto("data:text/html,<input id='inp'><button id='btn' onclick='document.getElementById(\"inp\").value=\"clicked\"'>Go</button>")
         .await
         .unwrap();
@@ -96,7 +96,7 @@ async fn test_screenshot_creates_file() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     page.goto("data:text/html,<h1>Screenshot Test</h1>")
         .await
         .unwrap();

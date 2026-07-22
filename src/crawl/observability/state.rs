@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 use serde::{Serialize, Deserialize};
-use super::{SpiderRequest, CrawlStats};
+use crate::crawl::{SpiderRequest, CrawlStats};
 
 /// Serializable crawl state for checkpoint persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]

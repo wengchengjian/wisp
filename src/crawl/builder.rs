@@ -89,6 +89,8 @@ pub struct SpiderBuilder {
     auto_exclude: HashSet<String>,
     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
+    middlewares: Vec<Arc<dyn super::middleware::Middleware>>,
+    pipelines: Vec<Arc<dyn super::middleware::ItemPipeline>>,
 }
 
 impl SpiderBuilder {
@@ -108,6 +110,8 @@ impl SpiderBuilder {
             auto_exclude: HashSet::new(),
             is_blocked_fn: None,
             until_cond: Arc::new(super::NeverStop),
+            middlewares: Vec::new(),
+            pipelines: Vec::new(),
         }
     }
 
@@ -239,6 +243,18 @@ impl SpiderBuilder {
         self
     }
 
+    /// 添加请求/响应中间件。
+    pub fn middleware<M: super::middleware::Middleware + 'static>(mut self, mw: M) -> Self {
+        self.middlewares.push(Arc::new(mw));
+        self
+    }
+
+    /// 添加 Item 管道。
+    pub fn pipeline<P: super::middleware::ItemPipeline + 'static>(mut self, p: P) -> Self {
+        self.pipelines.push(Arc::new(p));
+        self
+    }
+
     /// 构建 ClosureSpider 实例。
     ///
     /// # Panics
@@ -262,6 +278,8 @@ impl SpiderBuilder {
             auto_exclude: self.auto_exclude,
             is_blocked_fn: self.is_blocked_fn,
             until_cond: self.until_cond,
+            middlewares: self.middlewares,
+            pipelines: self.pipelines,
         }
     }
 }
@@ -281,6 +299,8 @@ pub struct ClosureSpider {
     auto_exclude: HashSet<String>,
     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
+    middlewares: Vec<Arc<dyn super::middleware::Middleware>>,
+    pipelines: Vec<Arc<dyn super::middleware::ItemPipeline>>,
 }
 
 #[async_trait]
@@ -335,6 +355,14 @@ impl Spider for ClosureSpider {
 
     fn until(&self) -> Arc<dyn super::stop::StopCondition> {
         Arc::clone(&self.until_cond)
+    }
+
+    fn middlewares(&self) -> Vec<Arc<dyn super::middleware::Middleware>> {
+        self.middlewares.clone()
+    }
+
+    fn pipelines(&self) -> Vec<Arc<dyn super::middleware::ItemPipeline>> {
+        self.pipelines.clone()
     }
 }
 

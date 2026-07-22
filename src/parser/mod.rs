@@ -97,16 +97,18 @@ impl Node {
         }
     }
 
-    /// Select all elements matching a CSS selector.
+    /// Select all elements matching a CSS selector, scoped to this node's subtree.
     ///
-    /// 注意：当前实现搜索整个文档（`self.doc.html.select`），不 scope 到当前 Node 的子树。
-    /// 这是 Task 3 重构带来的语义变化（旧实现 scope 到子树）。Task 4 计划用
-    /// `element_ref().select()` 实现 scoped 查询。
+    /// 使用 `element_ref().select()` 实现 scoped 查询，仅搜索当前节点的子孙元素。
+    /// 对文档根节点（`from_html` 创建），等价于搜索整个文档。
     pub fn select(&self, css: &str) -> NodeList {
         let selector = CssSelector::parse(css).unwrap_or_else(|_| CssSelector::parse("*").unwrap());
-        let nodes: Vec<Node> = self.doc.html.select(&selector)
-            .map(|el| Node::from_element_ref(self.doc.clone(), el))
-            .collect();
+        let nodes: Vec<Node> = match self.element_ref() {
+            Some(el) => el.select(&selector)
+                .map(|child| Node::from_element_ref(self.doc.clone(), child))
+                .collect(),
+            None => vec![],
+        };
         NodeList { nodes }
     }
 
@@ -115,10 +117,10 @@ impl Node {
         self.select(css).nodes
     }
 
-    /// Select the first element matching a CSS selector.
+    /// Select the first element matching a CSS selector, scoped to this node's subtree.
     pub fn select_one(&self, css: &str) -> Option<Node> {
         let selector = CssSelector::parse(css).ok()?;
-        self.doc.html.select(&selector).next()
+        self.element_ref()?.select(&selector).next()
             .map(|el| Node::from_element_ref(self.doc.clone(), el))
     }
 

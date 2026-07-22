@@ -20,6 +20,21 @@ impl Page {
         self.session.execute_with_session(method, params, Some(&self.session_id)).await
     }
 
+    /// 导航后刷新 frame_id（解决跨域导航后 isolated world context 失效问题）。
+    async fn refresh_frame_id(&mut self) {
+        if let Ok(frame_tree) = self.session.execute_with_session(
+            "Page.getFrameTree", json!({}), Some(&self.session_id)
+        ).await {
+            if let Some(id) = frame_tree.get("frameTree")
+                .and_then(|ft| ft.get("frame"))
+                .and_then(|f| f.get("id"))
+                .and_then(|id| id.as_str())
+            {
+                self.frame_id = id.to_string();
+            }
+        }
+    }
+
     /// Create a new page via CDP Target domain.
     pub(crate) async fn create(session: Arc<CdpSession>, headless: bool) -> Result<Self> {
         // Create target
@@ -78,7 +93,7 @@ impl Page {
 
     // --- Public API: Navigation ---
 
-    pub async fn goto(&self, url: &str) -> Result<()> { do_goto(self, url).await }
+    pub async fn goto(&mut self, url: &str) -> Result<()> { do_goto(self, url).await }
     pub async fn reload(&self) -> Result<()> { do_reload(self).await }
     pub async fn go_back(&self) -> Result<()> {
         self.cmd("Page.navigate", json!({"url": "javascript:history.back()"})).await?;
@@ -345,10 +360,13 @@ pub async fn do_evaluate(page: &Page, expression: &str) -> Result<Value> {
 // === navigate (inlined) ===
 
 
-pub async fn do_goto(page: &Page, url: &str) -> Result<()> {
+pub async fn do_goto(page: &mut Page, url: &str) -> Result<()> {
     page.cmd("Page.navigate", json!({ "url": url })).await?;
     // Wait for page load using lifecycle event or timeout
-    wait_for_load(page).await
+    wait_for_load(page).await?;
+    // 导航后刷新 frame_id，避免跨域导航后 isolated world 创建失败
+    page.refresh_frame_id().await;
+    Ok(())
 }
 
 pub async fn do_reload(page: &Page) -> Result<()> {

@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
             use wisp::{Browser, LaunchOptions};
             println!("Opening {url}...");
             let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await?;
-            let page = browser.new_page().await?;
+            let mut page = browser.new_page().await?;
             page.goto(&url).await?;
             println!("✓ Page loaded. Press Ctrl+C to close.");
             tokio::signal::ctrl_c().await?;
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
             use wisp::{Browser, LaunchOptions};
             println!("Screenshot: {url}");
             let browser = Browser::launch(LaunchOptions { headless: !headed, ..Default::default() }).await?;
-            let page = browser.new_page().await?;
+            let mut page = browser.new_page().await?;
             page.goto(&url).await?;
             if wait > 0 { tokio::time::sleep(std::time::Duration::from_millis(wait)).await; }
             page.screenshot(output.to_str().unwrap_or("screenshot.png")).await?;
@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Eval { expression, url, headless } => {
             use wisp::{Browser, LaunchOptions};
             let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await?;
-            let page = browser.new_page().await?;
+            let mut page = browser.new_page().await?;
             if url != "about:blank" { page.goto(&url).await?; }
             let result = page.evaluate(&expression).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
@@ -85,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Dump { url, headless, wait } => {
             use wisp::{Browser, LaunchOptions};
             let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await?;
-            let page = browser.new_page().await?;
+            let mut page = browser.new_page().await?;
             page.goto(&url).await?;
             if wait > 0 { tokio::time::sleep(std::time::Duration::from_millis(wait)).await; }
             let text = page.evaluate_as_string("document.body.innerText").await?;

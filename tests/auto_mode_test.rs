@@ -1,11 +1,11 @@
-//! Auto 妯″紡娴嬭瘯锛歎RL 娉涘寲銆佽鍒欏紩鎿庛€侀€夋嫨鍣ㄨ拷韪€佹嫤鎴娴嬨€?
+//! Auto 模式测试：URL 泛化、规则引擎、选择器追踪、拦截检测。
 
 use std::collections::HashSet;
 use wisp::crawl::auto::{generalize_url, ModeRuleEngine, SelectorTracker, is_blocked_response};
 use wisp::FetchMode;
 use std::collections::HashMap;
 
-// === URL 娉涘寲娴嬭瘯 ===
+// === URL 泛化测试 ===
 
 #[test]
 fn test_generalize_numeric_id() {
@@ -39,16 +39,16 @@ fn test_generalize_mixed() {
     assert_eq!(generalize_url("https://shop.com/api/v2/items/7"), "/api/v2/items/\\d+");
 }
 
-// === 瑙勫垯寮曟搸娴嬭瘯 ===
+// === 规则引擎测试 ===
 
 #[test]
 fn test_user_rule_priority() {
     let mut engine = ModeRuleEngine::new();
     engine.add_user_rule(r"/api/.*", FetchMode::Http).unwrap();
-    // 鑷姩瑙勫垯璇?/api/data 闇€瑕?Dynamic
+    // 自动规则说 /api/data 需要 Dynamic
     engine.learn("https://shop.com/api/data", FetchMode::Dynamic);
 
-    // 鐢ㄦ埛瑙勫垯浼樺厛
+    // 用户规则优先
     assert_eq!(engine.resolve("https://shop.com/api/data"), Some(FetchMode::Http));
 }
 
@@ -57,7 +57,7 @@ fn test_auto_rule_matches_similar_urls() {
     let mut engine = ModeRuleEngine::new();
     engine.learn("https://shop.com/products/1", FetchMode::Dynamic);
 
-    // 鍚屾ā鏉?URL 搴斿懡涓?
+    // 同模板 URL 应命中
     assert_eq!(engine.resolve("https://shop.com/products/2"), Some(FetchMode::Dynamic));
     assert_eq!(engine.resolve("https://shop.com/products/999"), Some(FetchMode::Dynamic));
 }
@@ -74,7 +74,7 @@ fn test_learn_updates_existing_pattern() {
     engine.learn("https://shop.com/products/1", FetchMode::Dynamic);
     engine.learn("https://shop.com/products/2", FetchMode::Stealth);
 
-    // 涓嶆柊澧烇紝鏇存柊
+    // 不新增，更新
     assert_eq!(engine.auto_rule_count(), 1);
     assert_eq!(engine.resolve("https://shop.com/products/3"), Some(FetchMode::Stealth));
 }
@@ -86,11 +86,11 @@ fn test_multiple_patterns_coexist() {
     engine.learn("https://shop.com/blog/hello-world", FetchMode::Http);
 
     assert_eq!(engine.resolve("https://shop.com/products/5"), Some(FetchMode::Dynamic));
-    // /blog/hello-world 娉涘寲鍚庢槸 /blog/hello-world (瀛楅潰閲?锛屼笉鍖归厤鍏朵粬 blog
+    // /blog/hello-world 泛化后是 /blog/hello-world（字面量），不匹配其他 blog
     assert_eq!(engine.resolve("https://shop.com/blog/hello-world"), Some(FetchMode::Http));
 }
 
-// === 閫夋嫨鍣ㄨ拷韪祴璇?===
+// === 选择器追踪测试 ===
 
 #[test]
 fn test_tracker_zero_match_triggers_upgrade() {
@@ -129,7 +129,7 @@ fn test_tracker_empty_records_no_upgrade() {
     assert!(!tracker.needs_upgrade(&HashSet::new()));
 }
 
-// === 鎷︽埅妫€娴嬫祴璇?===
+// === 拦截检测测试 ===
 
 #[test]
 fn test_blocked_status_codes() {
@@ -162,7 +162,7 @@ fn test_normal_page_not_blocked() {
     assert!(!is_blocked_response(200, body, &HashMap::new()));
 }
 
-// === 闆嗘垚娴嬭瘯锛堟湰鍦版湇鍔″櫒锛?==
+// === 集成测试（本地服务器）===
 
 #[tokio::test]
 async fn test_auto_mode_with_local_server() {
@@ -172,7 +172,7 @@ async fn test_auto_mode_with_local_server() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    // 妯℃嫙涓€涓?SPA 椤甸潰锛欻TML 涓?.product 涓虹┖锛堥渶瑕?JS 娓叉煋锛?
+    // 模拟一个 SPA 页面：HTML 中 .product 为空（需要 JS 渲染）
     let html = r#"<html><body><div id="app"></div><script>/* render products */</script></body></html>"#;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -194,13 +194,13 @@ async fn test_auto_mode_with_local_server() {
 
     let base_url = format!("http://{}/products/1", addr);
 
-    // 浣跨敤 Auto 妯″紡 + css() 杩借釜
+    // 使用 Auto 模式 + css() 追踪
     let spider = SpiderBuilder::new("auto-test")
         .start_urls(vec![base_url.clone()])
         .mode(FetchMode::Auto)
         .obey_robots(false)
         .on("default", |resp| async move {
-            // 浣跨敤 resp.css() 瑙﹀彂杩借釜
+            // 使用 resp.css() 触发追踪
             let products = resp.css(".product");
             let items: Vec<Value> = products.iter().map(|p| {
                 serde_json::json!({ "text": p.text() })
@@ -209,16 +209,16 @@ async fn test_auto_mode_with_local_server() {
         })
         .build();
 
-    // Auto 妯″紡浼氭娴嬪埌 .product 杩斿洖 0 鑺傜偣
-    // 浣嗙敱浜庢湰鍦版湇鍔″櫒涓嶆敮鎸?Dynamic锛堟棤 Chrome锛夛紝鍗囩骇浼氬け璐?
-    // 杩欓噷涓昏楠岃瘉 Auto 閫昏緫涓?panic 涓旀甯稿畬鎴?
+    // Auto 模式会检测到 .product 返回 0 节点
+    // 但由于本地服务器不支持 Dynamic（无 Chrome），升级会失败
+    // 这里主要验证 Auto 逻辑不 panic 且正常完成
     let engine = Engine::infra()
         .max_pages(1)
         .build()
         .unwrap();
     let (stats, _items) = engine.run(spider).await.unwrap();
 
-    // 椤甸潰搴旇琚埇鍙栵紙鍗充娇鍗囩骇澶辫触锛孒TTP 缁撴灉浠嶈浣跨敤锛?
+    // 页面应被爬取（即使升级失败，HTTP 结果仍被使用）
     assert_eq!(stats.pages_crawled, 1);
 }
 
@@ -229,7 +229,7 @@ async fn test_auto_mode_static_page_no_upgrade() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    // 闈欐€侀〉闈細.product 鏈夊唴瀹?
+    // 静态页面：.product 有内容
     let html = r#"<html><body><div class="product">Item 1</div><div class="product">Item 2</div></body></html>"#;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -270,7 +270,7 @@ async fn test_auto_mode_static_page_no_upgrade() {
         .unwrap();
     let (stats, _items) = engine.run(spider).await.unwrap();
 
-    // 闈欐€侀〉闈細HTTP 鍗冲彲锛屼笉鍗囩骇锛? 涓?item
+    // 静态页面：HTTP 即可，不升级，2 个 item
     assert_eq!(stats.pages_crawled, 1);
     assert_eq!(stats.items_scraped, 2);
 }

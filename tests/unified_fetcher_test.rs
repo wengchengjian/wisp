@@ -1,13 +1,13 @@
-//! 缁熶竴 Fetcher 鎺ュ彛娴嬭瘯銆?
+//! 统一 Fetcher 接口测试。
 //!
-//! 楠岃瘉涓夌妯″紡锛圚ttp / Dynamic / Stealth锛夎繑鍥炵浉鍚?Response 绫诲瀷锛?
-//! 涓旂粺涓€鐨勮В鏋?API锛坈ss/xpath/find_by_text/follow锛夋甯稿伐浣溿€?
+//! 验证三模式（Http / Dynamic / Stealth）返回相同 Response 类型，
+//! 且统一的解析 API（css/xpath/find_by_text/follow）正常工作。
 
 use std::time::Duration;
 use wisp::{Fetcher, FetchMode, Response, Request, Session};
 use wisp::FetcherConfig;
 
-// === 鍗曞厓娴嬭瘯锛歊esponse 缁熶竴 API ===
+// === 单元测试：Response 统一 API ===
 
 fn html_response(html: &str) -> Response {
     Response::from_http(
@@ -54,11 +54,11 @@ fn test_unified_response_find_by_text() {
         <small class="author">Einstein Smith</small>
     "#);
 
-    // 绮剧‘鍖归厤
+    // 精确匹配
     let exact = resp.find_by_text("Albert Einstein", Some("small"), true);
     assert_eq!(exact.len(), 1);
 
-    // 鍖呭惈鍖归厤
+    // 模糊匹配
     let contains = resp.find_by_text("Einstein", Some("small"), false);
     assert_eq!(contains.len(), 2);
 }
@@ -74,15 +74,15 @@ fn test_unified_response_select_one() {
 fn test_unified_response_follow() {
     let resp = html_response("");
 
-    // 鐩稿璺緞
+    // 相对链接
     let req = resp.follow("/page/2/").unwrap();
     assert_eq!(req.url, "https://quotes.toscrape.com/page/2/");
 
-    // 缁濆璺緞
+    // 绝对链接
     let req = resp.follow("https://other.com/").unwrap();
     assert_eq!(req.url, "https://other.com/");
 
-    // 甯?callback
+    // 带 callback
     let req = resp.follow_with("/page/2/", "parse_page").unwrap();
     assert_eq!(req.callback, Some("parse_page".to_string()));
 }
@@ -111,22 +111,22 @@ fn test_unified_response_parse_and_navigate() {
         </div>
     "#);
 
-    // parse() 杩斿洖 Node锛屽彲浠ヨ繘涓€姝ュ鑸?
+    // parse() 返回 Node，也可以继续导航
     let doc = resp.parse();
     let quote = doc.select_one(".quote").unwrap();
     let text = quote.select_one(".text").unwrap();
     assert_eq!(text.text(), "\"Quote 1\"");
 
-    // 楠岃瘉 parent 瀵艰埅
+    // 验证 parent 导航
     let parent = text.parent().unwrap();
     assert_eq!(parent.attr("class"), Some("quote".to_string()));
 }
 
-// === Fetcher Builder 閰嶇疆娴嬭瘯 ===
+// === Fetcher Builder 配置测试 ===
 
 #[test]
 fn test_fetcher_three_modes_return_same_type() {
-    // 楠岃瘉涓夌妯″紡鐨?builder 閮借兘鏋勫缓锛屼笖杩斿洖鐩稿悓 Fetcher 绫诲瀷
+    // 验证三模式的 builder 都能构建，且返回相同 Fetcher 类型
     let http = Fetcher::http().build();
     let dynamic = Fetcher::dynamic().build();
     let stealth = Fetcher::stealth().build();
@@ -163,7 +163,7 @@ fn test_fetcher_builder_full_config() {
     assert_eq!(config.dns_over_https.as_deref(), Some("https://1.1.1.1/dns-query"));
 }
 
-// === Session 娴嬭瘯 ===
+// === Session 测试 ===
 
 #[test]
 fn test_session_three_modes() {
@@ -196,7 +196,7 @@ async fn test_session_cookie_management() {
     assert!(cookies.is_empty());
 }
 
-// === 鐪熷疄缃戠粶娴嬭瘯锛堥渶瑕佺綉缁滐級===
+// === 真实网络测试（需要网络）===
 
 #[tokio::test]
 #[ignore = "requires network access"]
@@ -211,9 +211,9 @@ async fn test_unified_http_fetch_real() {
             assert!(page.is_ok());
             assert_eq!(page.url, "https://quotes.toscrape.com/");
 
-            // 缁熶竴瑙ｆ瀽 API
+            // 统一解析 API
             let quotes = page.css(".quote");
-            assert!(quotes.len() >= 5, "搴旇嚦灏?5 鏉″悕瑷€");
+            assert!(quotes.len() >= 5, "应至少 5 条名言");
 
             let authors = page.xpath("//small[@class='author']");
             assert!(authors.len() >= 5);
@@ -227,10 +227,10 @@ async fn test_unified_http_fetch_real() {
             assert!(next.is_some());
             assert_eq!(next.unwrap().url, "https://quotes.toscrape.com/page/2/");
 
-            println!("PASS: 缁熶竴 HTTP 鎺ュ彛鐪熷疄娴嬭瘯閫氳繃");
+            println!("PASS: 统一 HTTP 接口真实测试通过");
         }
         Err(e) => {
-            eprintln!("SKIP: 缃戠粶涓嶅彲杈? {}", e);
+            eprintln!("SKIP: 网络不可达: {}", e);
         }
     }
 }

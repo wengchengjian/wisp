@@ -29,6 +29,8 @@ pub struct CdpSession {
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     events: Arc<Mutex<Vec<CdpEvent>>>,
+    /// 已消费事件偏移量（用于定期 drain 防止内存无限增长）。
+    consumed_offset: Arc<Mutex<usize>>,
     event_notify: Arc<tokio::sync::Notify>,
 }
 
@@ -47,6 +49,8 @@ impl CdpSession {
         let pending_clone = Arc::clone(&pending);
         let events_clone = Arc::clone(&events);
         let notify_clone = Arc::clone(&event_notify);
+        let consumed_offset = Arc::new(Mutex::new(0usize));
+        let consumed_clone = Arc::clone(&consumed_offset);
 
         tokio::spawn(async move {
             while let Some(msg) = reader.next().await {
@@ -63,7 +67,15 @@ impl CdpSession {
                                 let params = value.get("params").cloned().unwrap_or(Value::Null);
                                 let session_id = value.get("sessionId").and_then(|s| s.as_str()).map(|s| s.to_string());
                                 let event = CdpEvent { method, params, session_id };
-                                events_clone.lock().await.push(event);
+                                let mut evts = events_clone.lock().await;
+                                evts.push(event);
+                                // 定期 drain 已消费事件，防止内存无限增长
+                                let offset = *consumed_clone.lock().await;
+                                if offset > 100 {
+                                    evts.drain(..offset);
+                                    *consumed_clone.lock().await = 0;
+                                }
+                                drop(evts);
                                 notify_clone.notify_waiters();
                             }
                         }
@@ -75,7 +87,7 @@ impl CdpSession {
             }
         });
 
-        Ok(Arc::new(Self { writer, next_id: AtomicU64::new(1), pending, events, event_notify }))
+        Ok(Arc::new(Self { writer, next_id: AtomicU64::new(1), pending, events, consumed_offset, event_notify }))
     }
 
     /// Send a CDP command and wait for response.
@@ -111,14 +123,20 @@ impl CdpSession {
     }
 
     /// Wait for a CDP event matching predicate.
+    ///
+    /// 匹配成功后更新 consumed_offset，配合 push 端的 drain 防止内存泄漏。
     pub async fn wait_for_event<F>(&self, predicate: F, timeout_ms: u64) -> Result<CdpEvent>
     where F: Fn(&CdpEvent) -> bool {
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
         loop {
             {
                 let events = self.events.lock().await;
-                if let Some(event) = events.iter().find(|e| predicate(e)) {
-                    return Ok(event.clone());
+                if let Some(idx) = events.iter().position(|e| predicate(e)) {
+                    let event = events[idx].clone();
+                    // 更新已消费偏移量（idx+1 之前的都算已消费）
+                    let mut offset = self.consumed_offset.lock().await;
+                    *offset = (*offset).max(idx + 1);
+                    return Ok(event);
                 }
             }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

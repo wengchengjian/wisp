@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     }).await?;
 
-    let page = browser.new_page().await?;
+    let mut page = browser.new_page().await?;
 
     // Navigate
     println!("Navigating to example.com...");

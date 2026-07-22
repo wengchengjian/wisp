@@ -28,6 +28,7 @@
 
 pub mod browser;
 pub mod config;
+pub mod config_file;
 pub mod error;
 pub mod stealth;
 pub mod proxy;

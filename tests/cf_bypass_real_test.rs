@@ -191,9 +191,15 @@ async fn test_engine_with_proxy_pool() {
         return;
     }
 
+    let pool = Arc::new(ProxyPool::new(
+        vec![PROXY.to_string()],
+        RotationStrategy::Sequential,
+    ));
+
     let spider = SpiderBuilder::new("proxy-crawl")
         .start_urls(vec!["https://quotes.toscrape.com/"])
         .obey_robots(false)
+        .middleware(wisp::crawl::middleware::ProxyInjectionMiddleware::new(pool))
         .on("default", |resp| async move {
             let doc = resp.parse().unwrap();
             let items: Vec<serde_json::Value> = doc.select(".quote").iter().map(|q| {
@@ -206,13 +212,8 @@ async fn test_engine_with_proxy_pool() {
         })
         .build();
 
-    let pool = Arc::new(ProxyPool::new(
-        vec![PROXY.to_string()],
-        RotationStrategy::Sequential,
-    ));
     let engine = Engine::infra()
         .max_pages(1)
-        .proxy_pool(pool)
         .build()
         .unwrap();
     let (stats, _items) = engine.run(spider).await.unwrap();

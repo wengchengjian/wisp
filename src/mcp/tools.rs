@@ -203,7 +203,7 @@ pub async fn stealth_fetch(args: Value) -> Result<Value> {
 
     let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await
         .map_err(|e| WispError::McpError(format!("browser launch: {e}")))?;
-    let page = browser.new_page().await
+    let mut page = browser.new_page().await
         .map_err(|e| WispError::McpError(format!("new page: {e}")))?;
     page.goto(url).await
         .map_err(|e| WispError::McpError(format!("goto: {e}")))?;

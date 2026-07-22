@@ -19,7 +19,7 @@ async fn launch_stealth_browser() -> Option<Browser> {
 /// Helper: evaluate JS in the MAIN world by writing results to DOM.
 /// Our page.evaluate() runs in an isolated world, but anti-bot scripts
 /// run in the main world. This helper bridges the gap.
-async fn eval_main_world(page: &wisp::Page, js: &str) -> serde_json::Value {
+async fn eval_main_world(page: &mut wisp::Page, js: &str) -> serde_json::Value {
     // Write result to document.title from main world via inline script navigation
     let html = format!(
         "data:text/html,<script>document.title = JSON.stringify((() => {{ {} }})())</script>",
@@ -38,10 +38,10 @@ async fn stealth_navigator_webdriver() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     
     // Check from MAIN world (where anti-bot scripts run)
-    let result = eval_main_world(&page, "return { typeof_wd: typeof navigator.webdriver, wd: navigator.webdriver };").await;
+    let result = eval_main_world(&mut page, "return { typeof_wd: typeof navigator.webdriver, wd: navigator.webdriver };").await;
     println!("Main world webdriver check: {result}");
     
     let typeof_wd = result.get("typeof_wd").and_then(|v| v.as_str()).unwrap_or("");
@@ -61,7 +61,7 @@ async fn stealth_runtime_enable_leak() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     page.goto("about:blank").await.unwrap();
 
     // Detection script: checks if Error.stack getter triggers CDP side effects
@@ -120,7 +120,7 @@ async fn stealth_automation_properties() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     page.goto("about:blank").await.unwrap();
 
     let detection_js = r#"
@@ -171,10 +171,10 @@ async fn stealth_blink_features() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
 
     // Check from MAIN world
-    let result = eval_main_world(&page, "return { typeof_wd: typeof navigator.webdriver };").await;
+    let result = eval_main_world(&mut page, "return { typeof_wd: typeof navigator.webdriver };").await;
     let typeof_wd = result.get("typeof_wd").and_then(|v| v.as_str()).unwrap_or("");
     
     // With --disable-blink-features=AutomationControlled + our JS patch,
@@ -194,7 +194,7 @@ async fn stealth_console_disabled() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
     page.goto("about:blank").await.unwrap();
 
     // When Console.enable is NOT sent, console.log still works in the page
@@ -219,7 +219,7 @@ async fn stealth_sannysoft_checks() {
         return;
     };
 
-    let page = browser.new_page().await.unwrap();
+    let mut page = browser.new_page().await.unwrap();
 
     // Run checks in MAIN world (where anti-bot scripts execute)
     let checks_js = r#"
@@ -234,7 +234,7 @@ async fn stealth_sannysoft_checks() {
         return results;
     "#;
 
-    let results = eval_main_world(&page, checks_js).await;
+    let results = eval_main_world(&mut page, checks_js).await;
     println!("Sannysoft-style checks (main world): {}", serde_json::to_string_pretty(&results).unwrap());
 
     // Critical checks

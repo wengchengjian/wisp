@@ -5,9 +5,11 @@ pub mod page;
 pub mod cdp;
 pub mod patches;
 pub mod element;
+pub mod pool;
 
 pub use page::Page;
 pub use cdp::CdpSession;
+pub use pool::BrowserPool;
 
 use std::sync::Arc;
 use std::path::PathBuf;

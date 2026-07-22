@@ -1,7 +1,7 @@
-//! 缁熶竴鍝嶅簲鍜岃姹傜被鍨嬨€?
+﻿//! 统一响应和请求类型。
 //!
-//! 鎵€鏈?Fetcher 妯″紡锛圚ttp / Dynamic / Stealth锛夎繑鍥炲悓涓€涓?`Response`锛?
-//! 鐢ㄦ埛鏃犻渶鍏冲績搴曞眰瀹炵幇鍗冲彲浣跨敤 `.css()` / `.xpath()` / `.json()` 绛?API銆?
+//! 所有 Fetcher 模式（Http / Dynamic / Stealth）返回同一个 `Response`，
+//! 用户无需关心底层实现即可使用 `.css()` / `.xpath()` / `.json()` 等 API。
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::error::{WispError, Result};
 use crate::parser::{Node, NodeList};
 
-/// HTTP 鏂规硶銆?
+/// HTTP 方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Method {
     Get,
@@ -19,24 +19,24 @@ pub enum Method {
     Delete,
 }
 
-/// 缁熶竴璇锋眰绫诲瀷銆?
+/// 统一请求类型。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub url: String,
     pub method: Method,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
-    /// 鐢ㄦ埛鑷畾涔夊厓鏁版嵁锛圫pider 鍦烘櫙浼犻€掓繁搴︺€佸洖璋冪瓑锛?
+    /// 用户自定义元数据（Spider 场景传递深度、回调等）
     #[serde(skip)]
     pub meta: Value,
-    /// Spider 鍥炶皟鍚嶇О
+    /// Spider 回调名称
     pub callback: Option<String>,
-    /// 浼樺厛绾э紙Spider 璋冨害鐢級
+    /// 优先级（Spider 调度用）
     pub priority: i32,
 }
 
 impl Request {
-    /// 鍒涘缓 GET 璇锋眰銆?
+    /// 创建 GET 请求。
     pub fn get(url: &str) -> Self {
         Self {
             url: url.to_string(),
@@ -49,7 +49,7 @@ impl Request {
         }
     }
 
-    /// 鍒涘缓 POST 璇锋眰銆?
+    /// 创建 POST 请求。
     pub fn post(url: &str, body: Option<String>) -> Self {
         Self {
             url: url.to_string(),
@@ -62,34 +62,34 @@ impl Request {
         }
     }
 
-    /// 璁剧疆鑷畾涔?header銆?
+    /// 设置自定义 header。
     pub fn with_header(mut self, key: &str, value: &str) -> Self {
         self.headers.insert(key.to_string(), value.to_string());
         self
     }
 
-    /// 璁剧疆鍏冩暟鎹€?
+    /// 设置元数据。
     pub fn with_meta(mut self, meta: Value) -> Self {
         self.meta = meta;
         self
     }
 
-    /// 璁剧疆浼樺厛绾с€?
+    /// 设置优先级。
     pub fn with_priority(mut self, p: i32) -> Self {
         self.priority = p;
         self
     }
 
-    /// 璁剧疆鍥炶皟鍚嶇О銆?
+    /// 设置回调名称。
     pub fn with_callback(mut self, cb: &str) -> Self {
         self.callback = Some(cb.to_string());
         self
     }
 }
 
-/// 缁熶竴鍝嶅簲绫诲瀷 - 鎵€鏈?Fetcher 妯″紡杩斿洖姝ょ被鍨嬨€?
+/// 统一响应类型 - 所有 Fetcher 模式返回此类型。
 ///
-/// # 绀轰緥
+/// # 示例
 ///
 /// ```rust,no_run
 /// use wisp::Fetcher;
@@ -97,7 +97,7 @@ impl Request {
 /// # async fn example() -> wisp::Result<()> {
 /// let page = Fetcher::http().get("https://quotes.toscrape.com/").await?;
 ///
-/// // 缁熶竴鐨勮В鏋?API
+/// // 统一的解析 API
 /// let quotes = page.css(".quote .text");
 /// let authors = page.xpath("//small[@class='author']");
 /// let title = page.title();
@@ -106,26 +106,26 @@ impl Request {
 /// ```
 #[derive(Debug, Clone)]
 pub struct Response {
-    /// HTTP 鐘舵€佺爜
+    /// HTTP 状态码
     pub status: u16,
-    /// 鏈€缁?URL锛堥噸瀹氬悜鍚庯級
+    /// 最终 URL（重定向后）
     pub url: String,
-    /// 鍝嶅簲澶?
+    /// 响应头
     pub headers: HashMap<String, String>,
-    /// 鍝嶅簲浣撳師濮嬪瓧鑺?
+    /// 响应体原始字节
     pub body: Vec<u8>,
-    /// 娴忚鍣ㄦā寮忎笅鐨勯〉闈㈡爣棰?
+    /// 浏览器模式下的页面标题
     pub title: Option<String>,
-    /// 娴忚鍣ㄦā寮忎笅鐨?cookies
+    /// 浏览器模式下的 cookies
     pub cookies: Vec<String>,
-    /// 鍙戣捣姝ゅ搷搴旂殑璇锋眰锛堢敤浜?follow()锛?
+    /// 发起此响应的请求（用于 follow()）
     pub request: Option<Request>,
-    /// Content-Type 澶达紙鐢ㄤ簬缂栫爜妫€娴嬶級
+    /// Content-Type 头（用于编码检测）
     pub(crate) content_type: String,
 }
 
 impl Response {
-    /// 浠?HTTP 鍝嶅簲鏋勫缓銆?
+    /// 从 HTTP 响应构建。
     pub fn from_http(
         status: u16,
         url: String,
@@ -146,7 +146,7 @@ impl Response {
         }
     }
 
-    /// 浠庢祻瑙堝櫒鍝嶅簲鏋勫缓銆?
+    /// 从浏览器响应构建。
     pub fn from_browser(
         status: u16,
         url: String,
@@ -167,80 +167,80 @@ impl Response {
         }
     }
 
-    // === 鏂囨湰/鏁版嵁 ===
+    // === 文本/数据 ===
 
-    /// 瑙ｇ爜鍝嶅簲浣撲负鏂囨湰锛堣嚜鍔ㄥ瓧绗﹂泦妫€娴嬶級銆?
+    /// 解码响应体为文本（自动字符集检测）。
     pub fn text(&self) -> Result<String> {
         Ok(crate::http::encoding::decode(&self.body, &self.content_type))
     }
 
-    /// 瑙ｆ瀽鍝嶅簲浣撲负 JSON銆?
+    /// 解析响应体为 JSON。
     pub fn json(&self) -> Result<Value> {
         let text = self.text()?;
         serde_json::from_str(&text)
             .map_err(|e| WispError::CdpError(format!("JSON parse: {e}")))
     }
 
-    /// 鐘舵€佺爜鏄惁涓?2xx銆?
+    /// 状态码是否为 2xx。
     pub fn is_ok(&self) -> bool {
         self.status >= 200 && self.status < 300
     }
 
-    /// 鑾峰彇椤甸潰鏍囬锛堟祻瑙堝櫒妯″紡锛夈€?
+    /// 获取页面标题（浏览器模式）。
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }
 
-    // === 瑙ｆ瀽锛堟牳蹇冪粺涓€鐐癸級===
+    // === 解析（核心统一点）===
 
-    /// 瑙ｆ瀽 HTML 涓烘枃妗ｈ妭鐐广€?
+    /// 解析 HTML 为文档节点。
     pub fn parse(&self) -> Node {
         let text = self.text().unwrap_or_default();
         Node::from_html(&text)
     }
 
-    /// CSS 閫夋嫨鍣ㄦ煡璇紙蹇嵎鏂瑰紡锛夈€?
+    /// CSS 选择器查询（快捷方式）。
     pub fn css(&self, selector: &str) -> NodeList {
         self.parse().select(selector)
     }
 
-    /// XPath 鏌ヨ锛堝揩鎹锋柟寮忥級銆?
+    /// XPath 查询（快捷方式）。
     pub fn xpath(&self, expr: &str) -> NodeList {
         self.parse().xpath(expr)
     }
 
-    /// 鎸夋枃鏈唴瀹规煡鎵惧厓绱犮€?
+    /// 按文本内容查找元素。
     pub fn find_by_text(&self, text: &str, tag: Option<&str>, exact: bool) -> NodeList {
         self.parse().find_by_text(text, tag, exact)
     }
 
-    /// CSS 閫夋嫨鍣ㄦ煡璇㈢涓€涓尮閰嶅厓绱犮€?
+    /// CSS 选择器查询第一个匹配元素。
     pub fn select_one(&self, selector: &str) -> Option<Node> {
         self.parse().select_one(selector)
     }
 
-    // === 瀵艰埅 ===
+    // === 导航 ===
 
-    /// 浠庡綋鍓嶅搷搴?URL 瑙ｆ瀽鐩稿閾炬帴锛屽垱寤?GET 璇锋眰銆?
+    /// 从当前响应 URL 解析相对链接，创建 GET 请求。
     pub fn follow(&self, href: &str) -> Option<Request> {
         let absolute = resolve_href(&self.url, href)?;
         Some(Request::get(&absolute))
     }
 
-    /// 鍒涘缓甯?callback 鐨勮窡闅忚姹傘€?
+    /// 创建带 callback 的跟随请求。
     pub fn follow_with(&self, href: &str, callback: &str) -> Option<Request> {
         let absolute = resolve_href(&self.url, href)?;
         Some(Request::get(&absolute).with_callback(callback))
     }
 
-    /// 鍒涘缓甯?meta 鐨勮窡闅忚姹傘€?
+    /// 创建带 meta 的跟随请求。
     pub fn follow_meta(&self, href: &str, meta: Value) -> Option<Request> {
         let absolute = resolve_href(&self.url, href)?;
         Some(Request::get(&absolute).with_meta(meta))
     }
 }
 
-/// 灏?href 瑙ｆ瀽涓虹粷瀵?URL銆?
+/// 将 href 解析为绝对 URL。
 fn resolve_href(base: &str, href: &str) -> Option<String> {
     if href.starts_with("http://") || href.starts_with("https://") {
         return Some(href.to_string());

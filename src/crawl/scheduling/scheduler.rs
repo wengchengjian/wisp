@@ -2,6 +2,8 @@
 //!
 //! Stage 1: changed to async + Mutex to support concurrent access
 //! from buffer_unordered workers in Engine.
+//!
+//! CR-10: 默认使用精确 URL 去重（HashSet<String>），可选 Fingerprint 模式省内存。
 
 use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Ordering;
@@ -9,7 +11,16 @@ use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use super::SpiderRequest;
+use crate::crawl::SpiderRequest;
+
+/// 去重策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DedupStrategy {
+    /// 存储原始 URL（精确，内存较大）。默认选项，对 99% 场景足够。
+    Exact,
+    /// u64 指纹（省内存，有碰撞风险）。适合千万级 URL 大规模爬取。
+    Fingerprint,
+}
 
 struct PrioritizedRequest {
     req: SpiderRequest,
@@ -33,7 +44,11 @@ impl Ord for PrioritizedRequest {
 /// Inner state guarded by Mutex.
 struct SchedulerInner {
     heap: BinaryHeap<PrioritizedRequest>,
-    seen: HashSet<u64>,
+    /// 精确去重：存储原始 URL
+    seen_exact: HashSet<String>,
+    /// 指纹去重：存储 u64 hash
+    seen_fp: HashSet<u64>,
+    strategy: DedupStrategy,
     seq: u64,
 }
 
@@ -45,20 +60,30 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn new() -> Self {
+        Self::with_strategy(DedupStrategy::Exact)
+    }
+
+    /// 使用指定去重策略创建 Scheduler。
+    pub fn with_strategy(strategy: DedupStrategy) -> Self {
         Self {
             inner: Arc::new(Mutex::new(SchedulerInner {
                 heap: BinaryHeap::new(),
-                seen: HashSet::new(),
+                seen_exact: HashSet::new(),
+                seen_fp: HashSet::new(),
+                strategy,
                 seq: 0,
             })),
         }
     }
 
-    /// Push a request (deduplicates by URL fingerprint).
+    /// Push a request (deduplicates by URL).
     pub async fn push(&self, req: SpiderRequest) {
-        let fp = fingerprint(&req.url);
         let mut g = self.inner.lock().await;
-        if g.seen.insert(fp) {
+        let is_new = match g.strategy {
+            DedupStrategy::Exact => g.seen_exact.insert(req.url.clone()),
+            DedupStrategy::Fingerprint => g.seen_fp.insert(fingerprint(&req.url)),
+        };
+        if is_new {
             let seq = g.seq;
             g.heap.push(PrioritizedRequest { req, seq });
             g.seq += 1;
@@ -84,13 +109,13 @@ impl Scheduler {
 
     /// Snapshot the seen URLs (for checkpoint).
     ///
-    /// Stage 1 placeholder: 返回 hash 字符串而非原始 URL（Scheduler 内部
-    /// 只存 u64 fingerprint）。stage 2 应改为维护 `HashSet<String>` 原始 URL。
-    /// 当前 CrawlState::seen_urls 使用 `HashSet::new()` 绕过此方法。
+    /// Exact 模式返回真实 URL；Fingerprint 模式返回 hash 字符串。
     pub async fn seen_urls(&self) -> HashSet<String> {
-        // placeholder: 返回 hash 字符串，不是真实 URL
         let g = self.inner.lock().await;
-        g.seen.iter().map(|h| h.to_string()).collect()
+        match g.strategy {
+            DedupStrategy::Exact => g.seen_exact.clone(),
+            DedupStrategy::Fingerprint => g.seen_fp.iter().map(|h| h.to_string()).collect(),
+        }
     }
 
     /// Number of pending requests.
@@ -103,26 +128,27 @@ impl Scheduler {
     }
 
     /// Replace inner state (for checkpoint restore).
-    ///
-    /// Stage 1 未启用：Task 9 用 `push()` 循环恢复 pending_urls。
-    /// Stage 2 改用此方法批量恢复（含 seen_urls）。
-    #[allow(dead_code)]
     pub async fn restore(&self, pending: Vec<SpiderRequest>, seen: HashSet<String>) {
         let mut g = self.inner.lock().await;
         g.heap.clear();
-        g.seen.clear();
+        g.seen_exact.clear();
+        g.seen_fp.clear();
         g.seq = 0;
-        // Rebuild seen as hashes of URLs
+        // Rebuild seen set
         for url in &seen {
-            g.seen.insert(fingerprint(url));
+            match g.strategy {
+                DedupStrategy::Exact => { g.seen_exact.insert(url.clone()); }
+                DedupStrategy::Fingerprint => { g.seen_fp.insert(fingerprint(url)); }
+            }
         }
-        // Re-queue pending (they will be deduplicated against seen)
+        // Re-queue pending (force insert even if in seen set)
         for req in pending {
-            let fp = fingerprint(&req.url);
-            // Force insert even if seen (they're already in seen set)
+            match g.strategy {
+                DedupStrategy::Exact => { g.seen_exact.insert(req.url.clone()); }
+                DedupStrategy::Fingerprint => { g.seen_fp.insert(fingerprint(&req.url)); }
+            }
             let seq = g.seq;
             g.heap.push(PrioritizedRequest { req, seq });
-            g.seen.insert(fp);
             g.seq += 1;
         }
     }

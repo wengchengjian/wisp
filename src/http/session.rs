@@ -113,8 +113,9 @@ impl HttpSession {
 
         let mut headers = Vec::new();
         // 匹配所有可能的域名（精确匹配 + 父域匹配）
+        // 安全修复：使用 "." 前缀防止 evil-example.com 匹配 example.com
         for (stored_domain, pairs) in cookies.iter() {
-            if domain.ends_with(stored_domain.as_str()) {
+            if domain == *stored_domain || domain.ends_with(&format!(".{}", stored_domain)) {
                 let cookie_str: String = pairs
                     .iter()
                     .map(|(k, v)| format!("{}={}", k, v))

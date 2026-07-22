@@ -36,15 +36,13 @@ pub struct Config {
     /// DNS-over-HTTPS 服务器 URL（如 "https://1.1.1.1/dns-query"）。
     /// 启用后通过 DoH 解析域名，防止代理场景下 DNS 泄漏。
     pub dns_over_https: Option<String>,
-    /// 每次请求随机轮换 User-Agent。
-    pub rotate_ua: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(30),
-            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36".to_string()),
+            user_agent: Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string()),
             headers: HashMap::new(),
             proxy: None,
             max_redirects: 10,
@@ -52,7 +50,6 @@ impl Default for Config {
             emulation: Some(Profile::Chrome136),
             header_order: None,
             dns_over_https: None,
-            rotate_ua: false,
         }
     }
 }
@@ -106,7 +103,8 @@ impl ClientBuilder {
         let mut builder = wreq::Client::builder()
             .timeout(self.config.timeout)
             .redirect(wreq::redirect::Policy::limited(self.config.max_redirects))
-            .tls_cert_verification(true);
+            .tls_cert_verification(true)
+            .cookie_store(true);
 
         if let Some(ref ua) = self.config.user_agent {
             builder = builder.user_agent(ua);

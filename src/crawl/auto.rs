@@ -1,21 +1,21 @@
-//! Auto 妯″紡鏍稿績缁勪欢锛氶€夋嫨鍣ㄨ拷韪€乁RL 娉涘寲銆佽鍒欏紩鎿庛€佹嫤鎴娴嬨€?
+﻿//! Auto 模式核心组件：选择器追踪、URL 泛化、规则引擎、拦截检测。
 //!
-//! Auto 妯″紡娴佺▼锛?
-//! 1. 鍖归厤鐢ㄦ埛瑙勫垯 鈫?鐩存帴鐢ㄦ寚瀹氭ā寮?
-//! 2. 鍖归厤鑷姩娉涘寲缂撳瓨 鈫?鐩存帴鐢ㄧ紦瀛樻ā寮?
-//! 3. 閮芥病鍛戒腑 鈫?HTTP 鎶撳彇 鈫?妫€娴嬫槸鍚﹂渶瑕佸崌绾?
+//! Auto 模式流程：
+//! 1. 匹配用户规则 → 直接用指定模式
+//! 2. 匹配自动泛化缓存 → 直接用缓存模式
+//! 3. 都没命中 → HTTP 抓取 → 检测是否需要升级
 
 use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use crate::fetcher::FetchMode;
 use crate::error::{WispError, Result};
 
-// === 閫夋嫨鍣ㄨ拷韪櫒 ===
+// === 选择器追踪器 ===
 
-/// 杩借釜 parse() 涓墍鏈夐€夋嫨鍣ㄨ皟鐢ㄥ強鍖归厤鏁般€?
+/// 追踪 parse() 中所有选择器调用及匹配数。
 ///
-/// Auto 妯″紡涓嬶紝SpiderResponse 鐨?css()/xpath_auto() 浼氳嚜鍔ㄨ褰曞埌姝よ拷韪櫒銆?
-/// parse() 缁撴潫鍚?Engine 妫€鏌ユ槸鍚︽湁閫夋嫨鍣ㄨ繑鍥?0 鑺傜偣銆?
+/// Auto 模式下，SpiderResponse 的 css()/xpath_auto() 会自动记录到此追踪器。
+/// parse() 结束后 Engine 检查是否有选择器返回 0 节点。
 #[derive(Debug, Default)]
 pub struct SelectorTracker {
     /// (selector, match_count)
@@ -27,26 +27,26 @@ impl SelectorTracker {
         Self { records: Vec::new() }
     }
 
-    /// 璁板綍涓€娆￠€夋嫨鍣ㄨ皟鐢ㄣ€?
+    /// 记录一次选择器调用。
     pub fn record(&mut self, selector: &str, match_count: usize) {
         self.records.push((selector.to_string(), match_count));
     }
 
-    /// 鏄惁鏈夐€夋嫨鍣ㄨ繑鍥?0 鑺傜偣锛堟帓闄ょ敤鎴峰彲閫夐」锛夈€?
+    /// 是否有选择器返回 0 节点（排除用户可选项）。
     ///
-    /// 杩斿洖 true 琛ㄧず闇€瑕佸崌绾у埌 Dynamic 妯″紡銆?
+    /// 返回 true 表示需要升级到 Dynamic 模式。
     pub fn needs_upgrade(&self, exclude: &HashSet<String>) -> bool {
         self.records.iter().any(|(sel, count)| {
             *count == 0 && !exclude.contains(sel.as_str())
         })
     }
 
-    /// 鑾峰彇鎵€鏈夎褰曪紙璋冭瘯鐢級銆?
+    /// 获取所有记录（调试用）。
     pub fn records(&self) -> &[(String, usize)] {
         &self.records
     }
 
-    /// 璁板綍鏁伴噺銆?
+    /// 记录数量。
     pub fn len(&self) -> usize {
         self.records.len()
     }
@@ -56,15 +56,15 @@ impl SelectorTracker {
     }
 }
 
-// === URL 娉涘寲绠楁硶 ===
+// === URL 泛化算法 ===
 
-/// 灏嗗叿浣?URL 娉涘寲涓烘鍒欐ā鏉裤€?
+/// 将具体 URL 泛化为正则模板。
 ///
-/// # 绀轰緥
-/// - `/products/123` 鈫?`/products/\d+`
-/// - `/user/deadbeef-cafe-1234/posts` 鈫?`/user/[a-f0-9-]+/posts`
-/// - `/page/2` 鈫?`/page/\d+`
-/// - `/about` 鈫?`/about`锛堜笉鍙橈級
+/// # 示例
+/// - `/products/123` → `/products/\d+`
+/// - `/user/deadbeef-cafe-1234/posts` → `/user/[a-f0-9-]+/posts`
+/// - `/page/2` → `/page/\d+`
+/// - `/about` → `/about`（不变）
 pub fn generalize_url(url: &str) -> String {
     let path = url::Url::parse(url)
         .map(|u| u.path().to_string())
@@ -75,15 +75,15 @@ pub fn generalize_url(url: &str) -> String {
             if seg.is_empty() {
                 return String::new();
             }
-            // 绾暟瀛?鈫?\d+
+            // 纯数字 → \d+
             if seg.chars().all(|c| c.is_ascii_digit()) {
                 return r"\d+".to_string();
             }
-            // UUID/鍝堝笇 鈫?[a-f0-9-]+
+            // UUID/哈希 → [a-f0-9-]+
             if is_uuid_or_hash(seg) {
                 return r"[a-f0-9-]+".to_string();
             }
-            // 淇濈暀瀛楅潰閲忥紙杞箟姝ｅ垯鐗规畩瀛楃锛?
+            // 保留字面量（转义正则特殊字符）
             regex::escape(seg)
         })
         .collect();
@@ -91,22 +91,22 @@ pub fn generalize_url(url: &str) -> String {
     segments.join("/")
 }
 
-/// 鍒ゆ柇瀛楃涓叉槸鍚﹀儚 UUID 鎴栧搱甯屽€笺€?
+/// 判断字符串是否像 UUID 或哈希值。
 fn is_uuid_or_hash(s: &str) -> bool {
     s.len() >= 8
         && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
         && s.contains(|c: char| c.is_ascii_digit())
 }
 
-// === 妯″紡瑙勫垯寮曟搸 ===
+// === 模式规则引擎 ===
 
-/// URL 妯″紡 鈫?鎶撳彇妯″紡鐨勮鍒欏紩鎿庛€?
+/// URL 模式 → 抓取模式的规则引擎。
 ///
-/// 浼樺厛绾э細鐢ㄦ埛瑙勫垯 > 鑷姩瀛︿範瑙勫垯 > None锛堣蛋 Auto 妫€娴嬶級
+/// 优先级：用户规则 > 自动学习规则 > None（走 Auto 检测）
 pub struct ModeRuleEngine {
-    /// 鐢ㄦ埛瀹氫箟鐨勮鍒欙紙浼樺厛绾ф渶楂橈紝鎸夋坊鍔犻『搴忓尮閰嶏級
+    /// 用户定义的规则（优先级最高，按添加顺序匹配）
     user_rules: Vec<(Regex, FetchMode)>,
-    /// 鑷姩娉涘寲鐨勭紦瀛樿鍒欙紙杩愯鏃跺涔狅級
+    /// 自动泛化的缓存规则（运行时学习）
     auto_rules: Vec<(Regex, FetchMode)>,
 }
 
@@ -118,7 +118,7 @@ impl ModeRuleEngine {
         }
     }
 
-    /// 鐢ㄦ埛娣诲姞瑙勫垯锛堜紭鍏堢骇鏈€楂橈級銆?
+    /// 用户添加规则（优先级最高）。
     pub fn add_user_rule(&mut self, pattern: &str, mode: FetchMode) -> Result<()> {
         let re = Regex::new(pattern)
             .map_err(|e| WispError::CdpError(format!("invalid auto_rule regex '{}': {}", pattern, e)))?;
@@ -126,41 +126,41 @@ impl ModeRuleEngine {
         Ok(())
     }
 
-    /// 鑷姩瀛︿範锛氬皢 URL 娉涘寲涓烘鍒欐ā鏉垮悗瀛樺叆銆?
+    /// 自动学习：将 URL 泛化为正则模板后存入。
     ///
-    /// 濡傛灉鐩稿悓妯℃澘宸插瓨鍦ㄥ垯鏇存柊妯″紡銆?
+    /// 如果相同模板已存在则更新模式。
     pub fn learn(&mut self, url: &str, mode: FetchMode) {
         let pattern = generalize_url(url);
-        // 妫€鏌ユ槸鍚﹀凡鏈夌浉鍚屾ā鏉?
+        // 检查是否已有相同模板
         if let Ok(re) = Regex::new(&pattern) {
-            // 鏇存柊宸叉湁瑙勫垯
+            // 更新已有规则
             for (existing_re, existing_mode) in &mut self.auto_rules {
                 if existing_re.as_str() == re.as_str() {
                     *existing_mode = mode;
                     return;
                 }
             }
-            // 鏂板瑙勫垯
+            // 新增规则
             self.auto_rules.push((re, mode));
         }
     }
 
-    /// 鏌ヨ URL 搴斾娇鐢ㄧ殑妯″紡銆?
+    /// 查询 URL 应使用的模式。
     ///
-    /// 浼樺厛绾э細鐢ㄦ埛瑙勫垯 > 鑷姩瑙勫垯 > None
+    /// 优先级：用户规则 > 自动规则 > None
     pub fn resolve(&self, url: &str) -> Option<FetchMode> {
-        // 鎻愬彇璺緞鐢ㄤ簬鍖归厤
+        // 提取路径用于匹配
         let path = url::Url::parse(url)
             .map(|u| u.path().to_string())
             .unwrap_or_else(|_| url.to_string());
 
-        // 鐢ㄦ埛瑙勫垯浼樺厛
+        // 用户规则优先
         for (re, mode) in &self.user_rules {
             if re.is_match(&path) || re.is_match(url) {
                 return Some(*mode);
             }
         }
-        // 鑷姩瀛︿範瑙勫垯
+        // 自动学习规则
         for (re, mode) in &self.auto_rules {
             if re.is_match(&path) || re.is_match(url) {
                 return Some(*mode);
@@ -169,12 +169,12 @@ impl ModeRuleEngine {
         None
     }
 
-    /// 鐢ㄦ埛瑙勫垯鏁伴噺銆?
+    /// 用户规则数量。
     pub fn user_rule_count(&self) -> usize {
         self.user_rules.len()
     }
 
-    /// 鑷姩瑙勫垯鏁伴噺銆?
+    /// 自动规则数量。
     pub fn auto_rule_count(&self) -> usize {
         self.auto_rules.len()
     }
@@ -186,20 +186,20 @@ impl Default for ModeRuleEngine {
     }
 }
 
-// === 鎷︽埅妫€娴?===
+// === 拦截检测 ===
 
-/// 妫€娴?HTTP 鍝嶅簲鏄惁琚弽鐖嫤鎴€?
+/// 检测 HTTP 响应是否被反爬拦截。
 ///
-/// 妫€娴嬩俊鍙凤細
-/// - 鐘舵€佺爜 403/429/503
-/// - 鍝嶅簲浣撳惈 Cloudflare 鎸戞垬鐗瑰緛
-/// - 鍝嶅簲澶村惈 cf-chl-* 鏍囪
+/// 检测信号：
+/// - 状态码 403/429/503
+/// - 响应体含 Cloudflare 挑战特征
+/// - 响应头含 cf-chl-* 标记
 pub fn is_blocked_response(status: u16, body: &[u8], headers: &HashMap<String, String>) -> bool {
-    // 鐘舵€佺爜
+    // 状态码
     if matches!(status, 403 | 429 | 503) {
         return true;
     }
-    // CF 鐗瑰緛锛堝嵆浣?200 涔熷彲鑳芥槸鎸戞垬椤碉級
+    // CF 特征（即使 200 也可能是挑战页）
     let text = String::from_utf8_lossy(body).to_lowercase();
     if text.contains("just a moment")
         || text.contains("cf-challenge")
@@ -209,7 +209,7 @@ pub fn is_blocked_response(status: u16, body: &[u8], headers: &HashMap<String, S
     {
         return true;
     }
-    // CF 鍝嶅簲澶?
+    // CF 响应头
     headers.keys().any(|k| k.starts_with("cf-chl"))
 }
 
@@ -217,7 +217,7 @@ pub fn is_blocked_response(status: u16, body: &[u8], headers: &HashMap<String, S
 mod tests {
     use super::*;
 
-    // === URL 娉涘寲娴嬭瘯 ===
+    // === URL 泛化测试 ===
 
     #[test]
     fn test_generalize_numeric_id() {
@@ -249,16 +249,16 @@ mod tests {
         assert_eq!(generalize_url("https://shop.com/"), "/");
     }
 
-    // === 瑙勫垯寮曟搸娴嬭瘯 ===
+    // === 规则引擎测试 ===
 
     #[test]
     fn test_user_rule_priority() {
         let mut engine = ModeRuleEngine::new();
         engine.add_user_rule(r"/api/.*", FetchMode::Http).unwrap();
-        // 鑷姩瑙勫垯璇?/api/data 闇€瑕?Dynamic
+        // 自动规则说 /api/data 需要 Dynamic
         engine.learn("https://shop.com/api/data", FetchMode::Dynamic);
 
-        // 鐢ㄦ埛瑙勫垯浼樺厛
+        // 用户规则优先
         assert_eq!(engine.resolve("https://shop.com/api/data"), Some(FetchMode::Http));
     }
 
@@ -267,7 +267,7 @@ mod tests {
         let mut engine = ModeRuleEngine::new();
         engine.learn("https://shop.com/products/1", FetchMode::Dynamic);
 
-        // 鍚屾ā鏉?URL 搴斿懡涓?
+        // 同模板 URL 应命中
         assert_eq!(engine.resolve("https://shop.com/products/2"), Some(FetchMode::Dynamic));
         assert_eq!(engine.resolve("https://shop.com/products/999"), Some(FetchMode::Dynamic));
     }
@@ -282,13 +282,13 @@ mod tests {
     fn test_learn_updates_existing() {
         let mut engine = ModeRuleEngine::new();
         engine.learn("https://shop.com/products/1", FetchMode::Dynamic);
-        engine.learn("https://shop.com/products/2", FetchMode::Stealth); // 鏇存柊
+        engine.learn("https://shop.com/products/2", FetchMode::Stealth); // 更新
 
-        assert_eq!(engine.auto_rule_count(), 1); // 涓嶆柊澧烇紝鏇存柊
+        assert_eq!(engine.auto_rule_count(), 1); // 不新增，更新
         assert_eq!(engine.resolve("https://shop.com/products/3"), Some(FetchMode::Stealth));
     }
 
-    // === 閫夋嫨鍣ㄨ拷韪祴璇?===
+    // === 选择器追踪测试 ===
 
     #[test]
     fn test_tracker_zero_match_triggers() {
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_tracker_exclude_respected() {
         let mut tracker = SelectorTracker::new();
-        tracker.record(".cookie-banner", 0); // 琚帓闄?
+        tracker.record(".cookie-banner", 0); // 被排除
         tracker.record(".product-card", 5);
 
         let mut exclude = HashSet::new();
@@ -321,7 +321,7 @@ mod tests {
         assert!(!tracker.needs_upgrade(&HashSet::new()));
     }
 
-    // === 鎷︽埅妫€娴嬫祴璇?===
+    // === 拦截检测测试 ===
 
     #[test]
     fn test_blocked_403() {

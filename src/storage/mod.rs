@@ -5,20 +5,21 @@
 //! session_cookies and response_cache tables.
 
 pub mod migrations;
+pub mod backend;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 use rusqlite::{params, Connection};
 use serde_json;
 use crate::error::{Result, WispError};
 
-/// Unified SQLite store. Inner connection is NOT thread-safe by itself.
+/// Unified SQLite store. Thread-safe via internal Mutex.
 ///
-/// 单 task 内访问无需 Mutex（如 Engine::run 主循环的 checkpoint 调用）。
-/// 多 task 并发访问需 `Arc<Mutex<Store>>`（如 Spider::parse() 内的
-/// adaptive save_element 调用，stage 2 集成时需处理）。
+/// 内部使用 `Mutex<Connection>` 保护，可安全通过 `Arc<Store>` 在多 task 间共享。
+/// 所有方法内部自动获取锁，对外 API 不变。
 pub struct Store {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl Store {
@@ -26,7 +27,7 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .map_err(|e| WispError::Storage(e.to_string()))?;
-        let store = Self { conn };
+        let store = Self { conn: Mutex::new(conn) };
         store.init_schema()?;
         Ok(store)
     }
@@ -35,33 +36,35 @@ impl Store {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()
             .map_err(|e| WispError::Storage(e.to_string()))?;
-        let store = Self { conn };
+        let store = Self { conn: Mutex::new(conn) };
         store.init_schema()?;
         Ok(store)
     }
 
     fn init_schema(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
         // 启用 WAL 模式（文件 DB 提升并发读写；in-memory DB 自动降级为 memory）
-        self.conn.execute_batch("PRAGMA journal_mode=WAL;")
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(|e| WispError::Storage(e.to_string()))?;
         // 降低 fsync 频率，提升写性能（WAL 下安全）
-        self.conn.execute_batch("PRAGMA synchronous=NORMAL;")
+        conn.execute_batch("PRAGMA synchronous=NORMAL;")
             .map_err(|e| WispError::Storage(e.to_string()))?;
-        self.conn.execute_batch(migrations::SCHEMA_V1)
+        conn.execute_batch(migrations::SCHEMA_V1)
             .map_err(|e| WispError::Storage(e.to_string()))?;
         Ok(())
     }
 
     /// 获取连接引用（测试用）。
     #[doc(hidden)]
-    pub fn conn_ref(&self) -> &Connection {
-        &self.conn
+    pub fn conn_ref(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap()
     }
 
     /// Save a crawl checkpoint as bincode blob.
     /// `state_bytes` is pre-serialized by caller (crawl::CrawlState).
     pub fn save_checkpoint(&self, spider_name: &str, state_bytes: &[u8], saved_at: i64) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR REPLACE INTO crawl_checkpoints (spider_name, state, saved_at) VALUES (?1, ?2, ?3)",
             params![spider_name, state_bytes, saved_at],
         ).map_err(|e| WispError::Storage(e.to_string()))?;
@@ -70,7 +73,8 @@ impl Store {
 
     /// Load a crawl checkpoint. Returns the bincode blob bytes.
     pub fn load_checkpoint(&self, spider_name: &str) -> Result<Option<Vec<u8>>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT state FROM crawl_checkpoints WHERE spider_name = ?1"
         ).map_err(|e| WispError::Storage(e.to_string()))?;
 
@@ -87,7 +91,8 @@ impl Store {
 
     /// Delete a crawl checkpoint (called after successful completion).
     pub fn delete_checkpoint(&self, spider_name: &str) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "DELETE FROM crawl_checkpoints WHERE spider_name = ?1",
             params![spider_name],
         ).map_err(|e| WispError::Storage(e.to_string()))?;
@@ -112,7 +117,8 @@ pub struct ElementSnapshotRow {
 impl Store {
     /// Save an element snapshot keyed by (url, key).
     pub fn save_element(&self, url: &str, key: &str, row: &ElementSnapshotRow) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR REPLACE INTO element_snapshots
              (url, key, tag, attrs, text_preview, ancestor_path, sibling_tags,
               position_in_parent, parent_tag, parent_attrs, captured_at)
@@ -134,7 +140,8 @@ impl Store {
 
     /// Load an element snapshot by (url, key).
     pub fn load_element(&self, url: &str, key: &str) -> Result<Option<ElementSnapshotRow>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT tag, attrs, text_preview, ancestor_path, sibling_tags,
                     position_in_parent, parent_tag, parent_attrs, captured_at
              FROM element_snapshots WHERE url = ?1 AND key = ?2"
@@ -183,7 +190,8 @@ pub struct CachedResponse {
 impl Store {
     /// 保存响应缓存（replay 模式）
     pub fn save_cached_response(&self, url: &str, method: &str, resp: &CachedResponse) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR REPLACE INTO response_cache (url, method, status, headers, body, cached_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
@@ -198,7 +206,8 @@ impl Store {
 
     /// 加载响应缓存（replay 模式）
     pub fn load_cached_response(&self, url: &str, method: &str) -> Result<Option<CachedResponse>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
             "SELECT status, headers, body, cached_at FROM response_cache WHERE url = ?1 AND method = ?2"
         ).map_err(|e| WispError::Storage(e.to_string()))?;
         let mut rows = stmt.query(params![url, method]).map_err(|e| WispError::Storage(e.to_string()))?;
@@ -220,7 +229,8 @@ impl Store {
 
     /// 清空 response_cache（测试用）
     pub fn clear_response_cache(&self) -> Result<()> {
-        self.conn.execute("DELETE FROM response_cache", []).map_err(|e| WispError::Storage(e.to_string()))?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM response_cache", []).map_err(|e| WispError::Storage(e.to_string()))?;
         Ok(())
     }
 }
