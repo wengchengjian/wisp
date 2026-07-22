@@ -104,8 +104,18 @@ impl Browser {
     }
 
     /// Close the browser.
-    pub async fn close(self) -> Result<()> {
-        let _ = self.session.execute("Browser.close", json!({})).await;
+    pub async fn close(mut self) -> Result<()> {
+        // 先尝试优雅关闭（CDP Browser.close）
+        if let Err(e) = self.session.execute("Browser.close", json!({})).await {
+            tracing::warn!("CDP Browser.close 失败: {}，回退到 kill", e);
+        }
+        // 无论 CDP 是否成功，确保进程被 kill（close 消费 self，Drop 不再运行）
+        let _ = self.process.start_kill();
+        // 等待进程退出（最多 3 秒）
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            self.process.wait()
+        ).await;
         Ok(())
     }
 }
@@ -113,6 +123,16 @@ impl Browser {
 impl Drop for Browser {
     fn drop(&mut self) {
         let _ = self.process.start_kill();
+        // 清理临时 user_data_dir（仅清理我们创建的，以 wisp- 开头）
+        if let Some(dir) = self.user_data_dir.to_str() {
+            if dir.contains("wisp-") {
+                let dir = self.user_data_dir.clone();
+                // 在独立线程清理，避免阻塞 Drop
+                std::thread::spawn(move || {
+                    let _ = std::fs::remove_dir_all(&dir);
+                });
+            }
+        }
     }
 }
 
