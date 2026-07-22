@@ -107,6 +107,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
                 body: entry.body,
                 request: req.clone(),
                 tracker: None,
+                from_cache: true,
             };
             ctx.stats_cache_hits.fetch_add(1, Ordering::SeqCst);
             record_status(ctx, resp.status).await;
@@ -142,6 +143,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
             body: cached.body,
             request: req.clone(),
             tracker: None,
+            from_cache: true,
         };
         ctx.stats_cache_hits.fetch_add(1, Ordering::SeqCst);
         record_status(ctx, resp.status).await;
@@ -216,7 +218,9 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
 
 /// 处理已获取的响应：parse → Auto 升级 → items → events。
 pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, req: &SpiderRequest) {
-    ctx.stats_pages.fetch_add(1, Ordering::SeqCst);
+    if !resp.from_cache {
+        ctx.stats_pages.fetch_add(1, Ordering::SeqCst);
+    }
     let page_url = resp.url.clone();
 
     let tracker_ref = resp.tracker.clone();
@@ -447,6 +451,7 @@ pub(crate) async fn fetch_page_inner(
             body: resp.body.clone(),
             request: req.clone(),
             tracker: None,
+            from_cache: false,
         });
     }
 
@@ -483,6 +488,7 @@ pub(crate) async fn fetch_page_inner(
         body: resp.body.clone(),
         request: req.clone(),
         tracker: None,
+        from_cache: false,
     })
 }
 

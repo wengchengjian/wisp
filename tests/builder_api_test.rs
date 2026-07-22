@@ -71,6 +71,7 @@ async fn test_spider_builder_parse_with_follow() {
         body: b"<html><body><h1>Home</h1></body></html>".to_vec(),
         request: SpiderRequest::get("https://example.com/"),
         tracker: None,
+        from_cache: false,
     };
 
     let (items, follows) = spider.parse(resp).await;
@@ -90,6 +91,7 @@ fn test_response_follow_absolute_url() {
         body: vec![],
         request: SpiderRequest::get("https://example.com/page1"),
         tracker: None,
+        from_cache: false,
     };
     let req = resp.follow("https://other.com/page2").unwrap();
     assert_eq!(req.url, "https://other.com/page2");
@@ -104,6 +106,7 @@ fn test_response_follow_relative_path() {
         body: vec![],
         request: SpiderRequest::get("https://example.com/dir/page1"),
         tracker: None,
+        from_cache: false,
     };
     let req = resp.follow("/page2").unwrap();
     assert_eq!(req.url, "https://example.com/page2");
@@ -118,6 +121,7 @@ fn test_response_follow_with_callback() {
         body: vec![],
         request: SpiderRequest::get("https://example.com/"),
         tracker: None,
+        from_cache: false,
     };
     let req = resp.follow_with("/detail", "parse_detail").unwrap();
     assert_eq!(req.url, "https://example.com/detail");

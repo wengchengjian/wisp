@@ -96,6 +96,9 @@ pub struct SpiderResponse {
     /// Auto 模式选择器追踪器
     #[doc(hidden)]
     pub tracker: Option<Arc<std::sync::Mutex<auto::SelectorTracker>>>,
+    /// 是否来自缓存（缓存命中不算 pages_crawled）。
+    #[doc(hidden)]
+    pub from_cache: bool,
 }
 
 impl SpiderResponse {
@@ -640,6 +643,7 @@ mod tests {
             body: vec![],
             request: SpiderRequest::get("http://example.com"),
             tracker: None,
+            from_cache: false,
         };
         assert!(spider.is_blocked(&blocked_resp));
         let ok_resp = SpiderResponse { status: 200, ..blocked_resp };

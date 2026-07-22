@@ -234,6 +234,8 @@ async fn test_response_follow_pagination() {
         headers: Default::default(),
         body: fetch_resp.body.clone(),
         request: SpiderRequest::get("https://quotes.toscrape.com/"),
+        tracker: None,
+        from_cache: false,
     };
 
     // 鑾峰彇涓嬩竴椤甸摼鎺?

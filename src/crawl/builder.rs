@@ -316,6 +316,7 @@ mod tests {
             body: b"<html><body><h1>Hello</h1></body></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/"),
             tracker: None,
+            from_cache: false,
         };
 
         let (items, follows) = spider.parse(resp).await;
@@ -342,6 +343,7 @@ mod tests {
             body: b"<html><body><p>World</p></body></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/"),
             tracker: None,
+            from_cache: false,
         };
 
         let (items, _) = spider.parse(resp).await;
@@ -363,6 +365,7 @@ mod tests {
             body: b"you are blocked".to_vec(),
             request: SpiderRequest::get("http://x.com"),
             tracker: None,
+            from_cache: false,
         };
         assert!(spider.is_blocked(&resp));
 
