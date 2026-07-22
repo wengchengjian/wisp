@@ -230,6 +230,38 @@ impl SpiderBuilder {
         self
     }
 
+    /// 预设：Sitemap 爬虫。
+    ///
+    /// 自动解析 sitemap.xml，提取 `<loc>` URL，follow 到指定 label 的 handler。
+    ///
+    /// # 示例
+    /// ```ignore
+    /// let spider = SpiderBuilder::sitemap("my_spider", vec!["https://x.com/sitemap.xml".into()], "content")
+    ///     .on("content", |resp| async move {
+    ///         (vec![serde_json::json!({"title": resp.css("h1").text()})], vec![])
+    ///     })
+    ///     .build();
+    /// ```
+    pub fn sitemap(name: &str, sitemap_urls: Vec<String>, content_label: &str) -> Self {
+        let label = content_label.to_string();
+        SpiderBuilder::new(name)
+            .start_urls(sitemap_urls)
+            .on("default", move |resp| {
+                let label = label.clone();
+                async move {
+                    let text = resp.text().unwrap_or_default();
+                    let re = regex::Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap();
+                    let follows: Vec<SpiderRequest> = re
+                        .captures_iter(&text)
+                        .filter_map(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
+                        .filter(|u| !u.is_empty())
+                        .map(|url| SpiderRequest::get(&url).with_callback(&label))
+                        .collect();
+                    (vec![], follows)
+                }
+            })
+    }
+
     /// 设置终止条件策略。
     pub fn until<C: super::stop::StopCondition + 'static>(mut self, cond: C) -> Self {
         self.until_cond = Arc::new(cond);
