@@ -63,7 +63,7 @@ pub(crate) struct EngineShared {
     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<SpiderRequest>>>,
     pub domain_sems: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）
-    pub proxy_clients: Arc<dashmap::DashMap<String, Arc<Client>>>,
+    pub proxy_clients: Arc<DashMap<String, Arc<Client>>>,
     pub cache_store: Option<Arc<crate::storage::Store>>,
     pub request_cache: Option<super::request_cache::RequestCache>,
     pub control: Arc<control::EngineControl>,
@@ -546,6 +546,7 @@ pub(crate) fn build_crawl_context(ctx: &EngineContext) -> middleware::CrawlConte
 }
 
 /// 同步记录状态码计数（DashMap entry 原子累加，无 await）。
+#[doc(hidden)]
 pub fn record_status(stats: &Arc<SpiderStats>, status: u16) {
     stats
         .status_codes
@@ -627,6 +628,7 @@ pub(crate) async fn save_checkpoint(
 
 // === fetch_page（模式分发）===
 
+#[doc(hidden)]
 pub async fn fetch_page(
     client: &Client,
     req: &SpiderRequest,
@@ -634,7 +636,7 @@ pub async fn fetch_page(
     mode: FetchMode,
     config: &http::Config,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
-    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
+    proxy_clients: &DashMap<String, Arc<Client>>,
 ) -> Result<SpiderResponse> {
     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
     if let Some(override_mode) = req.fetch_mode_override {
@@ -658,13 +660,14 @@ pub async fn fetch_page(
 }
 
 /// 内部实际抓取（根据模式分发）。
+#[doc(hidden)]
 pub async fn fetch_page_inner(
     client: &Client,
     req: &SpiderRequest,
     proxy_url: Option<&str>,
     mode: FetchMode,
     config: &http::Config,
-    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
+    proxy_clients: &DashMap<String, Arc<Client>>,
 ) -> Result<SpiderResponse> {
     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
         let mut builder = match mode {
@@ -689,19 +692,20 @@ pub async fn fetch_page_inner(
     }
 
     // Http 模式
-    // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手
+    // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手。
+    // 用 Entry match 保证原子性：Vacant 分支在持 shard 锁期间 build + insert，
+    // 消除 get→entry 之间另一 task 抢先插入导致的偶发多余 Client 构建。
     let proxy_client: Option<Arc<Client>> = if let Some(proxy) = proxy_url {
-        if let Some(c) = proxy_clients.get(proxy) {
-            Some(c.clone())
-        } else {
-            // 慢路径：构建新 client（可能失败，错误向上传播）
-            let new_client = Client::builder()
-                .timeout(client.config_ref().timeout)
-                .proxy(proxy)
-                .build()?;
-            let arc = Arc::new(new_client);
-            // 并发安全：若另一 task 已插入，用已存在的；否则用新建的
-            Some(proxy_clients.entry(proxy.to_string()).or_insert(arc).clone())
+        use dashmap::mapref::entry::Entry;
+        match proxy_clients.entry(proxy.to_string()) {
+            Entry::Occupied(o) => Some(o.get().clone()),
+            Entry::Vacant(v) => {
+                let new_client = Client::builder()
+                    .timeout(client.config_ref().timeout)
+                    .proxy(proxy)
+                    .build()?;
+                Some(v.insert(Arc::new(new_client)).clone())
+            }
         }
     } else {
         None
