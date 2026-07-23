@@ -5,13 +5,13 @@
 //!
 //! CR-10: 默认使用精确 URL 去重（HashSet<String>），可选 Fingerprint 模式省内存。
 
-use std::collections::{BinaryHeap, HashSet};
+use crate::crawl::SpiderRequest;
 use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BinaryHeap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::crawl::SpiderRequest;
 
 /// 去重策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,15 +28,21 @@ struct PrioritizedRequest {
 }
 
 impl PartialEq for PrioritizedRequest {
-    fn eq(&self, other: &Self) -> bool { self.req.priority == other.req.priority && self.seq == other.seq }
+    fn eq(&self, other: &Self) -> bool {
+        self.req.priority == other.req.priority && self.seq == other.seq
+    }
 }
 impl Eq for PrioritizedRequest {}
 impl PartialOrd for PrioritizedRequest {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 impl Ord for PrioritizedRequest {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.req.priority.cmp(&other.req.priority)
+        self.req
+            .priority
+            .cmp(&other.req.priority)
             .then_with(|| other.seq.cmp(&self.seq))
     }
 }
@@ -137,15 +143,27 @@ impl Scheduler {
         // Rebuild seen set
         for url in &seen {
             match g.strategy {
-                DedupStrategy::Exact => { g.seen_exact.insert(url.clone()); }
-                DedupStrategy::Fingerprint => { g.seen_fp.insert(fingerprint(url)); }
+                DedupStrategy::Exact => {
+                    g.seen_exact.insert(url.clone());
+                }
+                DedupStrategy::Fingerprint => {
+                    // seen_urls() 在 Fingerprint 模式下返回 u64 哈希的十进制字符串，
+                    // 直接 parse 回 u64 即可，不能再 fingerprint（会产生不同 u64）。
+                    if let Ok(h) = url.parse::<u64>() {
+                        g.seen_fp.insert(h);
+                    }
+                }
             }
         }
         // Re-queue pending (force insert even if in seen set)
         for req in pending {
             match g.strategy {
-                DedupStrategy::Exact => { g.seen_exact.insert(req.url.clone()); }
-                DedupStrategy::Fingerprint => { g.seen_fp.insert(fingerprint(&req.url)); }
+                DedupStrategy::Exact => {
+                    g.seen_exact.insert(req.url.clone());
+                }
+                DedupStrategy::Fingerprint => {
+                    g.seen_fp.insert(fingerprint(&req.url));
+                }
             }
             let seq = g.seq;
             g.heap.push(PrioritizedRequest { req, seq });
@@ -157,7 +175,10 @@ impl Scheduler {
 // Add Clone bound for PrioritizedRequest (needed by pending_urls)
 impl Clone for PrioritizedRequest {
     fn clone(&self) -> Self {
-        Self { req: self.req.clone(), seq: self.seq }
+        Self {
+            req: self.req.clone(),
+            seq: self.seq,
+        }
     }
 }
 
@@ -165,4 +186,53 @@ fn fingerprint(url: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     url.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    /// 最终 review #1：Fingerprint 模式下 checkpoint seen 往返必须保持一致。
+    ///
+    /// RED：当前 restore() 在 Fingerprint 模式下对 seen_urls() 返回的
+    /// 哈希字符串再 fingerprint()，得到完全不同的 u64，导致 seen_fp 失效。
+    ///
+    /// 关键：必须让被测 URL "在 seen 但不在 pending"——这是真实 checkpoint
+    /// 场景（URL 已爬取并 pop 出 heap，seen 状态需持久化去重）。若 pending
+    /// 仍含该 URL，restore 的 pending 分支会再用 fingerprint(req.url) 补回
+    /// 正确 u64，掩盖 seen 分支的 bug。
+    #[tokio::test]
+    async fn fingerprint_seen_roundtrip_preserves_hashes() {
+        use super::*;
+        let sched = Scheduler::with_strategy(DedupStrategy::Fingerprint);
+        // push 两个 URL：进入 heap 与 seen_fp
+        sched
+            .push(SpiderRequest::get("https://example.com/a"))
+            .await;
+        sched
+            .push(SpiderRequest::get("https://example.com/b"))
+            .await;
+        // pop 模拟已爬取：heap 清空，但 seen_fp 保留正确指纹
+        sched.pop().await;
+        sched.pop().await;
+
+        // 快照 seen（checkpoint 持久化的就是 seen 状态）
+        let seen = sched.seen_urls().await;
+        assert_eq!(seen.len(), 2, "快照应含 2 个哈希字符串");
+
+        // 此时 heap 已空，pending 为空——模拟纯 seen 往返
+        let pending = sched.pending_urls().await;
+        assert!(pending.is_empty(), "pop 后 pending 应为空");
+        sched.restore(pending, seen).await;
+
+        // 再 push 同样的 URL：应被 seen 判定为已爬，不入 heap
+        let before = sched.len().await;
+        sched
+            .push(SpiderRequest::get("https://example.com/a"))
+            .await;
+        let after = sched.len().await;
+        assert_eq!(
+            before, after,
+            "Fingerprint 模式下 restore 后 seen 应仍能去重，实际 before={}, after={}",
+            before, after
+        );
+    }
 }
