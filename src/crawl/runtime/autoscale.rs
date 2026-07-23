@@ -1,7 +1,7 @@
-//! 自适应并发池 — 根据系统负载动态调整并发数。
+//! 自适应并发池 — 根据池饱和度动态调整并发数。
 //!
-//! 借鉴 Crawlee AutoscaledPool 设计：定期采样 CPU/错误率，
-//! 在资源充裕时扩容、在压力大时缩容。
+//! 借鉴 Crawlee AutoscaledPool 设计：定期采样饱和度（in_flight / current）
+//! 与错误率，在池饱和（需求旺盛）时扩容、在池空闲或错误率高时缩容。
 //!
 //! # 集成
 //!
@@ -21,9 +21,9 @@ pub struct AutoscaleConfig {
     pub scale_up_interval: Duration,
     /// 缩容冷却时间（默认 2s）
     pub scale_down_interval: Duration,
-    /// CPU 使用率低于此值时可扩容（默认 0.7）
+    /// 饱和度低于此值时缩容（默认 0.7，池空闲回收资源）
     pub cpu_threshold_up: f64,
-    /// CPU 使用率高于此值时需缩容（默认 0.9）
+    /// 饱和度高于此值时扩容（默认 0.9，需求旺盛加容量）
     pub cpu_threshold_down: f64,
     /// 错误率高于此值时缩容（默认 0.2）
     pub error_rate_threshold: f64,
@@ -108,10 +108,10 @@ impl AutoscaledPool {
                 0.0
             };
 
-            // 使用简单的进程级 CPU 估算（基于 in_flight 与 current 的比率）
+            // 饱和度 = in_flight / current（I/O 爬虫：高饱和=需求旺盛应扩容，低饱和=空闲应缩容）
             let in_flight = stats.in_flight.load(Ordering::SeqCst);
             let current = self.current.load(Ordering::SeqCst);
-            let utilization = if current > 0 {
+            let saturation = if current > 0 {
                 in_flight as f64 / current as f64
             } else {
                 0.0
@@ -119,27 +119,27 @@ impl AutoscaledPool {
 
             let now = Instant::now();
 
-            // 缩容条件：错误率过高 或 利用率过高
-            if error_rate > self.config.error_rate_threshold || utilization > self.config.cpu_threshold_down {
+            // 缩容条件：错误率过高 或 饱和度低（空闲，回收资源）
+            if error_rate > self.config.error_rate_threshold || saturation < self.config.cpu_threshold_up {
                 let last_down = *self.last_scale_down.lock().unwrap();
                 if now.duration_since(last_down) >= self.config.scale_down_interval {
                     let new_val = current.saturating_sub(self.config.step_down).max(self.min_concurrency);
                     if new_val < current {
                         self.current.store(new_val, Ordering::SeqCst);
                         *self.last_scale_down.lock().unwrap() = now;
-                        tracing::debug!("Autoscale down: {} -> {}", current, new_val);
+                        tracing::debug!("Autoscale down (idle/err): {} -> {}", current, new_val);
                     }
                 }
             }
-            // 扩容条件：利用率低且错误率可控
-            else if utilization < self.config.cpu_threshold_up && error_rate < self.config.error_rate_threshold * 0.5 {
+            // 扩容条件：饱和度高（需求旺盛，加容量）且错误率可控
+            else if saturation > self.config.cpu_threshold_down && error_rate < self.config.error_rate_threshold * 0.5 {
                 let last_up = *self.last_scale_up.lock().unwrap();
                 if now.duration_since(last_up) >= self.config.scale_up_interval {
                     let new_val = (current + self.config.step_up).min(self.max_concurrency);
                     if new_val > current {
                         self.current.store(new_val, Ordering::SeqCst);
                         *self.last_scale_up.lock().unwrap() = now;
-                        tracing::debug!("Autoscale up: {} -> {}", current, new_val);
+                        tracing::debug!("Autoscale up (saturated): {} -> {}", current, new_val);
                     }
                 }
             }
