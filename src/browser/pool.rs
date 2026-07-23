@@ -62,6 +62,8 @@ pub struct BrowserPool {
     max_size: usize,
     idle_timeout: Duration,
     launch_options: LaunchOptions,
+    /// 等待空闲实例的 task 在此等待，release 时 notify_one 唤醒。
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl BrowserPool {
@@ -76,6 +78,7 @@ impl BrowserPool {
             max_size,
             idle_timeout,
             launch_options,
+            notify: Arc::new(tokio::sync::Notify::new()),
         })
     }
 
@@ -142,9 +145,21 @@ impl BrowserPool {
             }
         }
 
-        // 3. 达到上限，等待空闲（简单自旋等待）
+        // 3. 达到上限：等待 release 唤醒，30s 超时兜底防止永久阻塞
         loop {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // 先克隆 notify 引用再 select，避免在 select! 内持有 self 借用
+            let notify = Arc::clone(&self.notify);
+            tokio::select! {
+                // 等待 release 的 notify_one 唤醒
+                _ = notify.notified() => {}
+                // 安全兜底：30s 内无实例释放则返回错误，避免永久阻塞
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    return Err(crate::error::WispError::CdpError(
+                        "browser pool: acquire timeout (no idle instance within 30s)".into(),
+                    ));
+                }
+            }
+            // 被唤醒后重新尝试复用空闲实例
             let mut instances = self.instances.lock().await;
             if let Some(idx) = pick_idle_slot(&instances, |p: &PooledBrowser| p.in_use) {
                 if let Some(p) = instances[idx].as_mut() {
@@ -156,6 +171,7 @@ impl BrowserPool {
                     index: idx,
                 });
             }
+            // 被唤醒但实例又被其他 task 抢走：继续循环等待
         }
     }
 
@@ -166,6 +182,10 @@ impl BrowserPool {
             pooled.in_use = false;
             pooled.last_used = Instant::now();
         }
+        drop(instances);
+        // 唤醒一个等待空闲实例的 acquire（若有）。notify_one 在无人等待时
+        // 会留下一个 permit，下一次 notified() 立即返回，不会丢失信号。
+        self.notify.notify_one();
     }
 
     /// 关闭所有实例并清空池。
@@ -299,5 +319,51 @@ mod tests {
         assert_eq!(slots[0], None);
         assert_eq!(slots[1], Some(false));
         assert_eq!(slots[2], Some(true));
+    }
+
+    /// 验证 Task 2 新增行为：release 调用 notify_one，留下 permit。
+    ///
+    /// 在空池上 release(0) 不会修改任何槽位（越界），但仍应触发 notify_one，
+    /// 使后续 notified() 立即返回。这是「release 唤醒等待者」机制的核心保证，
+    /// 无需启动 Chrome 即可验证。
+    #[tokio::test]
+    async fn release_notifies_waiters() {
+        let pool = BrowserPool::new(
+            4,
+            Duration::from_secs(300),
+            LaunchOptions::default(),
+        );
+        // 空池：release(0) 不修改槽位，但应调用 notify_one
+        pool.release(0).await;
+        // notify_one 应留下 permit，notified() 立即完成
+        let notify = Arc::clone(&pool.notify);
+        tokio::select! {
+            _ = notify.notified() => { /* 预期：立即完成 */ }
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                panic!("release 未触发 notify_one，notified() 超时");
+            }
+        }
+    }
+
+    /// 验证 Task 2 的 notify 字段在 new() 中被初始化（非 None 占位）。
+    ///
+    /// 通过 release 后 notified() 立即完成间接验证：若 notify 未初始化，
+    /// notify_one 不会留下 permit，notified() 会挂起。
+    #[tokio::test]
+    async fn notify_field_initialized_in_new() {
+        let pool = BrowserPool::new(
+            2,
+            Duration::from_secs(60),
+            LaunchOptions::default(),
+        );
+        // 直接对 notify 调用 notify_one，验证字段可用且有效
+        pool.notify.notify_one();
+        let notify = Arc::clone(&pool.notify);
+        tokio::select! {
+            _ = notify.notified() => { /* 预期：立即完成 */ }
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                panic!("notify 字段未正确初始化");
+            }
+        }
     }
 }
