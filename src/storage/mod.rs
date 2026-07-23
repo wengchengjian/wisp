@@ -233,6 +233,21 @@ impl Store {
         conn.execute("DELETE FROM response_cache", []).map_err(|e| WispError::Storage(e.to_string()))?;
         Ok(())
     }
+
+    /// 删除指定 (url, method) 的响应缓存行（真删除，非覆盖）。
+    ///
+    /// 与 `save_cached_response` 的"覆盖空 body"不同，此方法执行 DELETE，
+    /// 保证后续 `load_cached_response` 返回 `None`（符合 StorageBackend::get 契约）。
+    /// 不存在的行不视为错误（DELETE 不匹配行返回 0 影响行数，仍 Ok）。
+    pub fn delete_cached_response(&self, url: &str, method: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM response_cache WHERE url = ?1 AND method = ?2",
+            params![url, method],
+        )
+        .map_err(|e| WispError::Storage(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
