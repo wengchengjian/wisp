@@ -306,12 +306,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     }
 
     // 提前计算 method_str（缓存查询与写入都需要）
-    let method_str = match req.method {
-        Method::Get => "GET",
-        Method::Post => "POST",
-        Method::Put => "PUT",
-        Method::Delete => "DELETE",
-    };
+    let method_str = req.method.as_str();
 
     // 3. 缓存检查
     match check_request_caches(ctx, &req, method_str).await {

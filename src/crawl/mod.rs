@@ -52,6 +52,18 @@ use self::stats::SpiderStats;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Method { Get, Post, Put, Delete }
 
+impl Method {
+    /// 返回标准 HTTP 动词字符串（大写）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Delete => "DELETE",
+        }
+    }
+}
+
 /// 请求钩子的决策结果。
 #[derive(Debug, Clone, PartialEq)]
 pub enum RequestAction {
@@ -503,5 +515,13 @@ mod tests {
         let t = resp.tracker.as_ref().unwrap().lock().unwrap();
         assert_eq!(t.len(), 1, "应记录 1 个选择器匹配");
         assert_eq!(t.records().len(), 1);
+    }
+
+    #[test]
+    fn test_method_as_str_returns_standard_verbs() {
+        assert_eq!(Method::Get.as_str(), "GET");
+        assert_eq!(Method::Post.as_str(), "POST");
+        assert_eq!(Method::Put.as_str(), "PUT");
+        assert_eq!(Method::Delete.as_str(), "DELETE");
     }
 }
