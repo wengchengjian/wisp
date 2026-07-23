@@ -254,12 +254,30 @@ impl Engine {
             ctx.shared.middleware_chain.run_pipelines_open(&crawl_ctx).await;
         }
 
+        // 启用 autoscale 时，spawn 后台 autoscaler task
+        let autoscaler_handle = if let Some(ref pool) = self.autoscale {
+            let pool = Arc::clone(pool);
+            let stats = Arc::clone(&stats);
+            Some(tokio::spawn(async move {
+                pool.run_autoscaler(stats).await;
+            }))
+        } else {
+            None
+        };
+
         // 构建并发流：单 Spider，无路由
         let stream = {
             let ctx = ctx.clone();
-            let max_concurrent = ctx.config.max_concurrent;
+            let autoscale = self.autoscale.clone();
+            // buffer_unordered 的 ceiling：autoscale 启用时用 max_concurrency()，否则用 max_concurrent
+            let buffer_ceiling = if let Some(ref pool) = autoscale {
+                pool.max_concurrency()
+            } else {
+                ctx.config.max_concurrent
+            };
             stream::unfold((), move |_| {
                 let ctx = ctx.clone();
+                let autoscale = autoscale.clone();
                 async move {
                     loop {
                         if ctx.shared.control.is_shutdown() || ctx.state.abort_flag.load(Ordering::SeqCst) {
@@ -297,6 +315,21 @@ impl Engine {
                             continue;
                         }
 
+                        // 动态并发限制：autoscale 启用时检查 current_concurrency
+                        let limit = if let Some(ref pool) = autoscale {
+                            pool.current_concurrency()
+                        } else {
+                            ctx.config.max_concurrent
+                        };
+                        if ctx.state.global_in_flight.load(Ordering::SeqCst) >= limit {
+                            // 已达当前并发上限，等待 in-flight 下降
+                            tokio::time::timeout(
+                                Duration::from_millis(10),
+                                ctx.shared.work_notify.notified(),
+                            ).await.ok();
+                            continue;
+                        }
+
                         let req = match ctx.shared.sched.pop().await {
                             Some(req) => req,
                             None => {
@@ -319,7 +352,7 @@ impl Engine {
                     }
                 }
             })
-            .buffer_unordered(max_concurrent)
+            .buffer_unordered(buffer_ceiling)
         };
 
         // 驱动流 + 定期 checkpoint
@@ -333,6 +366,11 @@ impl Engine {
                 }
                 pages_since_checkpoint = 0;
             }
+        }
+
+        // abort autoscaler 后台 task
+        if let Some(handle) = autoscaler_handle {
+            handle.abort();
         }
 
         // pipeline 关闭：爬取结束后释放资源
