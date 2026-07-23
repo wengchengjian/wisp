@@ -85,14 +85,32 @@ pub(crate) struct EngineState {
 
 // === 核心函数：处理单个请求 ===
 
-/// 处理单个请求的完整流程：域名过滤 → 深度检查 → 缓存 → robots → 信号量 → 延迟 → 重试 → Auto 检查 → handle。
-pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
-    let spider = &ctx.state.spider;
+/// 请求过滤结果。
+enum FilterAction {
+    /// 继续处理
+    Proceed,
+    /// 跳过此请求
+    Skip,
+    /// 中止整个爬取
+    Abort,
+    /// 延迟后继续
+    Delay(Duration),
+}
+
+/// 缓存检查结果。
+enum CacheResult {
+    /// 缓存命中，直接处理此响应
+    Hit(SpiderResponse),
+    /// 未命中，继续网络请求
+    Miss,
+}
+
+/// Stage 1: 请求过滤检查（域名/深度/控制状态/异步钩子）。
+///
+/// 返回 FilterAction::Proceed 表示继续；其他表示终止此请求的处理。
+async fn check_request_filters(ctx: &EngineContext, req: &SpiderRequest) -> FilterAction {
     let stats = &ctx.state.stats;
     let allowed = &ctx.config.allowed;
-    let max_depth = ctx.config.max_depth;
-    let max_concurrent = ctx.config.max_concurrent;
-    let obey_robots = ctx.config.obey_robots;
 
     // 1. 域名过滤
     if !allowed.is_empty() {
@@ -100,35 +118,175 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
             if let Some(host) = parsed.host_str() {
                 if !allowed.contains(host) {
                     stats.offsite.fetch_add(1, Ordering::SeqCst);
-                    return;
+                    return FilterAction::Skip;
                 }
             }
         }
     }
 
     // 1.5. 深度检查
-    if req.depth > max_depth {
-        return;
+    if req.depth > ctx.config.max_depth {
+        return FilterAction::Skip;
     }
 
-    // 1.6. per-Engine 控制状态检查（替代原全局 control::is_cancelled 等）
-    if ctx.shared.control.is_cancelled(&req.url).await { return; }
-    if !ctx.shared.control.wait_if_paused(&req.url).await { return; }
-    if ctx.shared.control.is_shutdown() { return; }
+    // 1.6. per-Engine 控制状态检查
+    if ctx.shared.control.is_cancelled(&req.url).await { return FilterAction::Skip; }
+    if !ctx.shared.control.wait_if_paused(&req.url).await { return FilterAction::Skip; }
+    if ctx.shared.control.is_shutdown() { return FilterAction::Skip; }
 
     // 1.7. 异步钩子检查
-    match spider.on_before_request(&req).await {
-        super::RequestAction::Proceed => {},
-        super::RequestAction::Skip => { return; },
-        super::RequestAction::Delay(d) => { tokio::time::sleep(d).await; },
-        super::RequestAction::Abort => {
-            ctx.state.abort_flag.store(true, Ordering::SeqCst);
-            return;
+    match ctx.state.spider.on_before_request(req).await {
+        super::RequestAction::Proceed => FilterAction::Proceed,
+        super::RequestAction::Skip => FilterAction::Skip,
+        super::RequestAction::Delay(d) => FilterAction::Delay(d),
+        super::RequestAction::Abort => FilterAction::Abort,
+    }
+}
+
+/// Stage 3: 缓存检查（RequestCache 内存缓存 + dev_mode SQLite 缓存）。
+///
+/// 返回 CacheResult::Hit(resp) 表示命中缓存，直接处理响应；
+/// 返回 CacheResult::Miss 表示未命中，继续网络请求。
+async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_str: &str) -> CacheResult {
+    let stats = &ctx.state.stats;
+
+    // 内存缓存检查 (RequestCache)
+    if let Some(ref rc) = ctx.shared.request_cache {
+        if let Some(entry) = rc.get(method_str, &req.url).await {
+            let resp = SpiderResponse {
+                url: req.url.clone(),
+                status: entry.status,
+                headers: entry.headers,
+                body: entry.body,
+                request: req.clone(),
+                tracker: None,
+                from_cache: true,
+            };
+            stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+            record_status(stats, resp.status).await;
+            return CacheResult::Hit(resp);
         }
     }
 
-    // 1.8. 中间件链：请求前拦截
+    // 开发模式 SQLite 缓存检查
+    if ctx.config.dev_mode {
+        if let Some(ref store) = ctx.shared.cache_store {
+            if let Some(cached) = store.load_cached_response(&req.url, method_str).ok().flatten() {
+                let resp = SpiderResponse {
+                    url: req.url.clone(),
+                    status: cached.status,
+                    headers: cached.headers,
+                    body: cached.body,
+                    request: req.clone(),
+                    tracker: None,
+                    from_cache: true,
+                };
+                stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+                record_status(stats, resp.status).await;
+                return CacheResult::Hit(resp);
+            }
+        }
+    }
+
+    CacheResult::Miss
+}
+
+/// Stage 4: robots 检查 → 域名信号量 → 延迟 → fetch_dispatch → 缓存写入。
+///
+/// 返回 (Option<SpiderResponse>, Option<String>) — 成功返回 resp，失败返回 error。
+async fn acquire_and_fetch(
+    ctx: &EngineContext,
+    req: &SpiderRequest,
+    method_str: &str,
+) -> (Option<SpiderResponse>, Option<String>) {
+    let obey_robots = ctx.config.obey_robots;
+    let max_concurrent = ctx.config.max_concurrent;
+
+    // robots 检查
+    if obey_robots {
+        let allowed_flag = {
+            let mut rc = ctx.shared.robots_cache.lock().await;
+            rc.is_allowed(&ctx.config.client, &req.url).await
+        };
+        if !allowed_flag {
+            return (None, None);
+        }
+    }
+
+    // 域名信号量
+    let domain = url::Url::parse(&req.url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let sem = {
+        ctx.shared.domain_sems
+            .entry(domain)
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
+            .clone()
+    };
+    let Ok(_permit) = sem.acquire_owned().await else {
+        tracing::warn!("domain semaphore closed, skipping: {}", req.url);
+        return (None, None);
+    };
+
+    // 延迟
+    apply_delay(ctx, &req.url, &ctx.state.spider, obey_robots).await;
+
+    // 带重试的抓取
+    let (resp, err) = fetch_dispatch(ctx, req).await;
+
+    // 开发模式缓存保存
+    if ctx.config.dev_mode {
+        if let Some(ref store) = ctx.shared.cache_store {
+            if let Some(ref resp) = resp {
+                let cached = crate::storage::CachedResponse {
+                    status: resp.status,
+                    headers: resp.headers.clone(),
+                    body: resp.body.clone(),
+                    cached_at: chrono::Utc::now().timestamp(),
+                };
+                let _ = store.save_cached_response(&req.url, method_str, &cached);
+            }
+        }
+    }
+
+    // 写入 RequestCache
+    if let Some(ref rc) = ctx.shared.request_cache {
+        if let Some(ref resp) = resp {
+            rc.put(method_str, &req.url, super::request_cache::CachedEntry {
+                status: resp.status,
+                headers: resp.headers.clone(),
+                body: resp.body.clone(),
+            }).await;
+        }
+    }
+
+    (resp, err)
+}
+
+/// 处理单个请求的完整流程（编排层）。
+///
+/// Stages:
+/// 1. check_request_filters — 域名/深度/控制/钩子
+/// 2. 中间件请求拦截（可能短路）
+/// 3. check_request_caches — RequestCache + dev_mode 缓存
+/// 4. acquire_and_fetch — robots + 信号量 + 延迟 + fetch_dispatch + 缓存写入
+/// 5. process_response — handle + items + events（已存在）
+pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+    // 1. 过滤检查
+    match check_request_filters(ctx, &req).await {
+        FilterAction::Proceed => {}
+        FilterAction::Skip => return,
+        FilterAction::Abort => {
+            ctx.state.abort_flag.store(true, Ordering::SeqCst);
+            return;
+        }
+        FilterAction::Delay(d) => { tokio::time::sleep(d).await; }
+    }
+
+    // 2. 中间件请求拦截
     let mut req = req;
+    let stats = &ctx.state.stats;
     if !ctx.shared.middleware_chain.is_empty() {
         let crawl_ctx = build_crawl_context(ctx);
         match ctx.shared.middleware_chain.run_request_middlewares(&mut req, &crawl_ctx).await {
@@ -147,7 +305,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         }
     }
 
-    // 1.85. 提前计算 method_str（RequestCache 与 dev_mode SQLite 缓存查询都需要）
+    // 提前计算 method_str（缓存查询与写入都需要）
     let method_str = match req.method {
         Method::Get => "GET",
         Method::Post => "POST",
@@ -155,113 +313,18 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         Method::Delete => "DELETE",
     };
 
-    // 2. 内存缓存检查 (RequestCache) — 键含 method，避免 POST/GET 同 URL 串味
-    if let Some(ref rc) = ctx.shared.request_cache {
-        if let Some(entry) = rc.get(method_str, &req.url).await {
-            let resp = SpiderResponse {
-                url: req.url.clone(),
-                status: entry.status,
-                headers: entry.headers,
-                body: entry.body,
-                request: req.clone(),
-                tracker: None,
-                from_cache: true,
-            };
-            stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-            record_status(stats, resp.status).await;
-            // 直接跳到处理结果阶段
+    // 3. 缓存检查
+    match check_request_caches(ctx, &req, method_str).await {
+        CacheResult::Hit(resp) => {
             return process_response(ctx, resp, &req).await;
         }
+        CacheResult::Miss => {}
     }
 
-    // 3. 开发模式 SQLite 缓存检查
-    let cached_resp: Option<crate::storage::CachedResponse> = if ctx.config.dev_mode {
-        ctx.shared.cache_store.as_ref().and_then(|s| {
-            s.load_cached_response(&req.url, method_str).ok().flatten()
-        })
-    } else {
-        None
-    };
+    // 4. robots + 信号量 + 延迟 + 抓取 + 缓存写入
+    let (final_resp, last_error) = acquire_and_fetch(ctx, &req, method_str).await;
 
-    let final_resp: Option<SpiderResponse>;
-    let mut last_error: Option<String> = None;
-
-    if let Some(cached) = cached_resp {
-        // 命中缓存
-        let resp = SpiderResponse {
-            url: req.url.clone(),
-            status: cached.status,
-            headers: cached.headers,
-            body: cached.body,
-            request: req.clone(),
-            tracker: None,
-            from_cache: true,
-        };
-        stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-        record_status(stats, resp.status).await;
-        final_resp = Some(resp);
-    } else {
-        // 3. Robots 检查
-        if obey_robots {
-            let allowed_flag = {
-                let mut rc = ctx.shared.robots_cache.lock().await;
-                rc.is_allowed(&ctx.config.client, &req.url).await
-            };
-            if !allowed_flag { return; }
-        }
-
-        // 4. 域名信号量
-        let domain = url::Url::parse(&req.url)
-            .ok()
-            .and_then(|u| u.host_str().map(|s| s.to_string()))
-            .unwrap_or_default();
-        let sem = {
-            ctx.shared.domain_sems
-                .entry(domain)
-                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
-                .clone()
-        };
-        let Ok(_permit) = sem.acquire_owned().await else {
-            tracing::warn!("domain semaphore closed, skipping: {}", req.url);
-            return;
-        };
-
-        // 5. 延迟
-        apply_delay(ctx, &req.url, spider, obey_robots).await;
-
-        // 6. 带重试的抓取
-        let (resp, err) = fetch_dispatch(ctx, &req).await;
-        final_resp = resp;
-        last_error = err;
-
-        // 7. 开发模式缓存保存
-        if ctx.config.dev_mode {
-            if let Some(ref store) = ctx.shared.cache_store {
-                if let Some(ref resp) = final_resp {
-                    let cached = crate::storage::CachedResponse {
-                        status: resp.status,
-                        headers: resp.headers.clone(),
-                        body: resp.body.clone(),
-                        cached_at: chrono::Utc::now().timestamp(),
-                    };
-                    let _ = store.save_cached_response(&req.url, method_str, &cached);
-                }
-            }
-        }
-
-        // 7.5. 写入 RequestCache
-        if let Some(ref rc) = ctx.shared.request_cache {
-            if let Some(ref resp) = final_resp {
-                rc.put(method_str, &req.url, super::request_cache::CachedEntry {
-                    status: resp.status,
-                    headers: resp.headers.clone(),
-                    body: resp.body.clone(),
-                }).await;
-            }
-        }
-    }
-
-    // 8. 处理结果
+    // 5. 处理结果
     if let Some(resp) = final_resp {
         process_response(ctx, resp, &req).await;
     } else if let Some(err) = last_error {
