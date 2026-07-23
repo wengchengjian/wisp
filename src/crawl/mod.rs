@@ -1,4 +1,4 @@
-﻿//! Spider-based crawling engine.
+//! Spider-based crawling engine.
 
 pub mod middleware;
 pub mod observability;
@@ -72,7 +72,14 @@ pub struct SpiderRequest {
     pub method: Method,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
-    #[serde(default)]
+    // Task 3：必须用 `#[serde(skip)]` 而非 `#[serde(default)]`。
+    // `serde_json::Value` 的 Deserialize 依赖 `deserialize_any`，bincode 1.x 不支持；
+    // 用 `#[serde(default)]` 会让 `bincode::deserialize::<CrawlState>`（含 SpiderRequest）
+    // 在 checkpoint 恢复路径抛 `DeserializeAnyNotSupported`，导致 seen/pending 全部丢失。
+    // `#[serde(skip)]` 在序列化与反序列化两端都跳过 meta（用 Value::Null 默认值），
+    // 与 Task 9 的既定行为一致（meta 当前不从 checkpoint 读回）。
+    // 83cb940 误改为 `#[serde(default)]` 引入回归，此处恢复。
+    #[serde(skip)]
     pub meta: Value,
     pub callback: Option<String>,
     pub priority: i32,

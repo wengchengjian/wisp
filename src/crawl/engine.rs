@@ -525,12 +525,20 @@ pub(crate) async fn save_checkpoint(
     stats: &Arc<SpiderStats>,
 ) {
     let pending = sched.pending_urls().await;
+    let seen = sched.seen_urls().await; // 持久化 seen 去重集合
     let snapshot = snapshot_stats_for(stats, HashMap::new(), stats.start);
-    let state = CrawlState::from_stats(
-        spider_name.to_string(),
-        &snapshot,
-        pending,
-    );
+    // 手动构造 CrawlState 填入 seen_urls；
+    // `CrawlState::from_stats` 硬编码 seen_urls 为空，不能直接用。
+    let state = CrawlState {
+        spider_name: spider_name.to_string(),
+        pending_urls: pending,
+        seen_urls: seen,
+        items_scraped: snapshot.items_scraped,
+        pages_crawled: snapshot.pages_crawled,
+        errors: snapshot.errors,
+        duration_ms: snapshot.duration.as_millis(),
+        saved_at: chrono::Utc::now(),
+    };
     match bincode::serialize(&state) {
         Ok(blob) => {
             if let Err(e) = store.save_checkpoint(spider_name, &blob, state.saved_at.timestamp()) {
@@ -767,6 +775,38 @@ mod tests {
             stats.pages.load(Ordering::SeqCst),
             1,
             "非缓存响应 pages 应递增到 1"
+        );
+    }
+
+    /// Task 3：验证 save_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
+    ///
+    /// RED：当前 save_checkpoint 用 `CrawlState::from_stats`，其 seen_urls 硬编码为空，
+    /// 故反序列化后的 state.seen_urls 必为空，断言失败。
+    #[tokio::test]
+    async fn save_checkpoint_persists_seen_urls() {
+        let store = crate::storage::Store::open_in_memory().expect("open in-memory store");
+        let sched = scheduler::Scheduler::new();
+        // push 两个 URL：进入 heap 与 seen 集合
+        sched.push(SpiderRequest::get("https://example.com/a")).await;
+        sched.push(SpiderRequest::get("https://example.com/b")).await;
+
+        let stats = Arc::new(SpiderStats::new());
+        save_checkpoint(&store, "seen_persist_spider", &sched, &stats).await;
+
+        let blob = store
+            .load_checkpoint("seen_persist_spider")
+            .expect("load checkpoint ok")
+            .expect("checkpoint should exist");
+        let state: CrawlState = bincode::deserialize(&blob).expect("deserialize state");
+        assert!(
+            state.seen_urls.contains("https://example.com/a"),
+            "seen_urls 必须包含已爬 URL a，当前 seen = {:?}",
+            state.seen_urls
+        );
+        assert!(
+            state.seen_urls.contains("https://example.com/b"),
+            "seen_urls 必须包含已爬 URL b，当前 seen = {:?}",
+            state.seen_urls
         );
     }
 }
