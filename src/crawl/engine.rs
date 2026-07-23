@@ -100,7 +100,7 @@ enum FilterAction {
 /// 缓存检查结果。
 enum CacheResult {
     /// 缓存命中，直接处理此响应
-    Hit(SpiderResponse),
+    Hit(Box<SpiderResponse>),
     /// 未命中，继续网络请求
     Miss,
 }
@@ -164,7 +164,7 @@ async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_s
             };
             stats.cache_hits.fetch_add(1, Ordering::SeqCst);
             record_status(stats, resp.status).await;
-            return CacheResult::Hit(resp);
+            return CacheResult::Hit(Box::new(resp));
         }
     }
 
@@ -183,7 +183,7 @@ async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_s
                 };
                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
                 record_status(stats, resp.status).await;
-                return CacheResult::Hit(resp);
+                return CacheResult::Hit(Box::new(resp));
             }
         }
     }
@@ -316,7 +316,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     // 3. 缓存检查
     match check_request_caches(ctx, &req, method_str).await {
         CacheResult::Hit(resp) => {
-            return process_response(ctx, resp, &req).await;
+            return process_response(ctx, *resp, &req).await;
         }
         CacheResult::Miss => {}
     }
