@@ -54,7 +54,6 @@ fn main() {
     // Selector generation
     if let Some(el) = doc.select_one(".price") {
         println!("Generated selector: {}", el.generate_selector());
-        println!("Generated XPath: {}", el.generate_xpath());
     }
 
     // === 2. Text processing ===

@@ -1,17 +1,17 @@
 //! CDP client over WebSocket. Connects via --remote-debugging-port=0 (random port).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use tokio::net::TcpStream;
 use tokio::sync::{oneshot, Mutex};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-use tokio::net::TcpStream;
 use tungstenite::Message;
 
-use crate::error::{WispError, Result};
+use crate::error::{Result, WispError};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -32,25 +32,34 @@ pub struct CdpSession {
     /// 已消费事件偏移量（用于定期 drain 防止内存无限增长）。
     consumed_offset: Arc<Mutex<usize>>,
     event_notify: Arc<tokio::sync::Notify>,
+    /// 事件广播：订阅者在注册后只接收新事件，避免历史缓冲污染。
+    /// 用于需要"在触发动作前订阅"的场景（如捕获导航状态码）。
+    event_broadcaster: tokio::sync::broadcast::Sender<CdpEvent>,
 }
 
 impl CdpSession {
     /// Connect to Chrome's DevTools WebSocket endpoint.
     pub async fn connect(ws_url: &str) -> Result<Arc<Self>> {
-        let (ws, _) = connect_async(ws_url).await
+        let (ws, _) = connect_async(ws_url)
+            .await
             .map_err(|e| WispError::CdpError(format!("ws connect: {e}")))?;
 
         let (writer, mut reader) = ws.split();
         let writer = Arc::new(Mutex::new(writer));
-        let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let events: Arc<Mutex<Vec<CdpEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let event_notify = Arc::new(tokio::sync::Notify::new());
+        // broadcast 容量 1024：足够容纳单次导航产生的事件 burst；
+        // 慢消费者 lag 时返回 RecvError::Lagged，调用方记录 warn 并继续。
+        let (event_broadcaster, _) = tokio::sync::broadcast::channel(1024);
 
         let pending_clone = Arc::clone(&pending);
         let events_clone = Arc::clone(&events);
         let notify_clone = Arc::clone(&event_notify);
         let consumed_offset = Arc::new(Mutex::new(0usize));
         let consumed_clone = Arc::clone(&consumed_offset);
+        let broadcaster_clone = event_broadcaster.clone();
 
         tokio::spawn(async move {
             while let Some(msg) = reader.next().await {
@@ -63,10 +72,23 @@ impl CdpSession {
                                     let _ = tx.send(value);
                                 }
                             } else {
-                                let method = value.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                                let method = value
+                                    .get("method")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
                                 let params = value.get("params").cloned().unwrap_or(Value::Null);
-                                let session_id = value.get("sessionId").and_then(|s| s.as_str()).map(|s| s.to_string());
-                                let event = CdpEvent { method, params, session_id };
+                                let session_id = value
+                                    .get("sessionId")
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.to_string());
+                                let event = CdpEvent {
+                                    method,
+                                    params,
+                                    session_id,
+                                };
+                                // 广播给订阅者（无订阅者时 send 失败，忽略）
+                                let _ = broadcaster_clone.send(event.clone());
                                 let mut evts = events_clone.lock().await;
                                 evts.push(event);
                                 // 定期 drain 已消费事件，防止内存无限增长
@@ -87,7 +109,24 @@ impl CdpSession {
             }
         });
 
-        Ok(Arc::new(Self { writer, next_id: AtomicU64::new(1), pending, events, consumed_offset, event_notify }))
+        Ok(Arc::new(Self {
+            writer,
+            next_id: AtomicU64::new(1),
+            pending,
+            events,
+            consumed_offset,
+            event_notify,
+            event_broadcaster,
+        }))
+    }
+
+    /// 订阅事件流。订阅者只接收订阅之后到达的事件，避免历史缓冲污染。
+    ///
+    /// 用于需要"在触发动作前订阅"的场景（如 `goto` 前订阅以捕获
+    /// `Network.responseReceived`）。慢消费者可能收到 `RecvError::Lagged`，
+    /// 调用方应记录 warn 并继续 recv。
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<CdpEvent> {
+        self.event_broadcaster.subscribe()
     }
 
     /// Send a CDP command and wait for response.
@@ -96,7 +135,12 @@ impl CdpSession {
     }
 
     /// Send a CDP command with optional sessionId.
-    pub async fn execute_with_session(self: &Arc<Self>, method: &str, params: Value, session_id: Option<&str>) -> Result<Value> {
+    pub async fn execute_with_session(
+        self: &Arc<Self>,
+        method: &str,
+        params: Value,
+        session_id: Option<&str>,
+    ) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
@@ -107,15 +151,23 @@ impl CdpSession {
         }
 
         let text = serde_json::to_string(&msg).unwrap();
-        self.writer.lock().await.send(Message::Text(text.into())).await
+        self.writer
+            .lock()
+            .await
+            .send(Message::Text(text.into()))
+            .await
             .map_err(|e| WispError::CdpError(format!("ws send: {e}")))?;
 
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx).await
+        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+            .await
             .map_err(|_| WispError::Timeout(format!("CDP: {method}")))?
             .map_err(|_| WispError::CdpError("channel closed".into()))?;
 
         if let Some(error) = response.get("error") {
-            let msg = error.get("message").and_then(|m| m.as_str()).unwrap_or("CDP error");
+            let msg = error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("CDP error");
             return Err(WispError::CdpError(msg.to_string()));
         }
 
@@ -126,7 +178,9 @@ impl CdpSession {
     ///
     /// 匹配成功后更新 consumed_offset，配合 push 端的 drain 防止内存泄漏。
     pub async fn wait_for_event<F>(&self, predicate: F, timeout_ms: u64) -> Result<CdpEvent>
-    where F: Fn(&CdpEvent) -> bool {
+    where
+        F: Fn(&CdpEvent) -> bool,
+    {
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
         loop {
             {

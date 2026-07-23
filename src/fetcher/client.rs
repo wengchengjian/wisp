@@ -27,6 +27,8 @@ pub struct FetchClientConfig {
     pub proxy: Option<String>,
     /// 浏览器 headless 模式
     pub headless: bool,
+    /// 浏览器可执行文件路径（None = 自动搜索 Chrome/Chromium/Edge）
+    pub executable_path: Option<std::path::PathBuf>,
     /// TLS 指纹模拟（Http 模式）
     pub emulation: Option<Profile>,
     /// 自定义 User-Agent
@@ -47,10 +49,8 @@ pub struct FetchClientConfig {
     pub domain_blocker: Option<DomainBlocker>,
     /// DNS-over-HTTPS
     pub dns_over_https: Option<String>,
-    /// BrowserPool 最大实例数（0 = 禁用池化）
-    pub browser_pool_size: usize,
-    /// BrowserPool 空闲超时
-    pub browser_idle_timeout: Duration,
+    /// BrowserPool 最大并发 page 数（0 = 禁用浏览器模式）
+    pub max_concurrent_pages: usize,
 }
 
 impl Default for FetchClientConfig {
@@ -59,6 +59,7 @@ impl Default for FetchClientConfig {
             timeout: Duration::from_secs(30),
             proxy: None,
             headless: true,
+            executable_path: None,
             emulation: Some(Profile::Chrome136),
             user_agent: None,
             headers: HashMap::new(),
@@ -69,8 +70,7 @@ impl Default for FetchClientConfig {
             extra_wait_ms: 0,
             domain_blocker: None,
             dns_over_https: None,
-            browser_pool_size: 2,
-            browser_idle_timeout: Duration::from_secs(300),
+            max_concurrent_pages: 4,
         }
     }
 }
@@ -146,34 +146,20 @@ impl FetchClient {
         ))
     }
 
-    /// 浏览器请求（通过 BrowserPool，实例复用）。
+    /// 浏览器请求（通过 BrowserPool，单 Browser 多 Page 并发）。
     /// `solve_cf=true` 时执行 CF 挑战解决 + 人类行为模拟。
     pub async fn fetch_browser(&self, req: &Request, solve_cf: bool) -> Result<Response> {
         let pool = self.browser_pool.as_ref().ok_or_else(|| {
-            WispError::CdpError("browser pool not configured (pool_size=0)".into())
+            WispError::CdpError("browser pool not configured (max_concurrent_pages=0)".into())
         })?;
-        // RAII: handle Drop 时自动归还到池，无论成功失败
-        let handle = pool.acquire().await?;
-        let result = self.do_browser_work(&handle, req, solve_cf).await;
-        // handle 在此处 Drop，自动归还
-        result
-    }
-
-    /// 浏览器工作逻辑（Dynamic/Stealth 共用）。
-    async fn do_browser_work(
-        &self,
-        handle: &crate::browser::pool::BrowserHandle,
-        req: &Request,
-        solve_cf: bool,
-    ) -> Result<Response> {
-        let mut page = handle.new_page().await?;
-
-        // 用 inner 提取实际工作，确保无论成功/失败都显式关闭 tab（避免泄漏）
-        let result = self.do_browser_work_inner(&mut page, req, solve_cf).await;
-
-        // 无论 result 是 Ok 或 Err，都关闭 tab
-        let _ = page.close().await;
-
+        // acquire 返回带 page 的 handle（permit 限制并发数）
+        let mut handle = pool.acquire().await?;
+        // 实际工作；无论成功/失败都显式关闭 tab
+        let result = self
+            .do_browser_work_inner(handle.page_mut(), req, solve_cf)
+            .await;
+        let _ = handle.page_mut().close().await;
+        // handle Drop：page.target_id 已 None（Page::Drop no-op）+ permit 自动 release
         result
     }
 
@@ -183,13 +169,22 @@ impl FetchClient {
         req: &Request,
         solve_cf: bool,
     ) -> Result<Response> {
-        // 启用 Network 域以捕获真实 HTTP 状态码
-        let _ = page.cmd("Network.enable", serde_json::json!({})).await;
+        // 启用 Network 域以捕获真实 HTTP 状态码。
+        // 失败立即报错：若 Network.enable 失败，后续无法收到
+        // Network.responseReceived 事件，状态码获取链路会彻底失效。
+        page.cmd("Network.enable", serde_json::json!({}))
+            .await
+            .map_err(|e| WispError::CdpError(format!("Network.enable failed: {e}")))?;
+
+        // 在 goto 之前订阅事件流，避免「事件已发出但订阅者尚未注册」的竞态。
+        let mut event_rx = page.session.subscribe_events();
+        let sid = page.session_id.clone();
 
         page.goto(&req.url).await?;
 
-        // 通过 CDP Network.responseReceived 获取真实状态码
-        let nav_status = self.capture_navigation_status(page).await;
+        // 从事件流中捕获导航请求的真实 HTTP 状态码。
+        // 失败立即报错：不再 fallback 到脆弱的 <title> 文本匹配。
+        let nav_status = self.recv_navigation_status(&mut event_rx, &sid).await?;
 
         if solve_cf {
             // 检测并解决 Cloudflare 挑战
@@ -219,34 +214,61 @@ impl FetchClient {
         self.extract_browser_response(page, req, nav_status).await
     }
 
-    /// 从 CDP Network.responseReceived 事件中捕获导航请求的真实 HTTP 状态码。
-    async fn capture_navigation_status(&self, page: &crate::browser::page::Page) -> Option<u16> {
-        let sid = page.session_id.clone();
-        let event = page
-            .session
-            .wait_for_event(
-                move |e| {
-                    if e.method == "Network.responseReceived" {
-                        let is_doc =
-                            e.params.get("type").and_then(|t| t.as_str()) == Some("Document");
-                        let match_session =
-                            e.session_id.as_deref() == Some(sid.as_str()) || e.session_id.is_none();
-                        is_doc && match_session
-                    } else {
-                        false
+    /// 从事件流中接收 `Network.responseReceived` (type=Document) 事件并提取状态码。
+    ///
+    /// 必须在 `goto` 之前订阅 `event_rx`，否则可能丢失事件。
+    /// 5s 超时：导航通常在 1-3s 内完成，5s 足够覆盖慢速页面。
+    async fn recv_navigation_status(
+        &self,
+        rx: &mut tokio::sync::broadcast::Receiver<crate::browser::cdp::CdpEvent>,
+        sid: &str,
+    ) -> Result<u16> {
+        use tokio::sync::broadcast::error::RecvError;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(event)) => {
+                    if event.method != "Network.responseReceived" {
+                        continue;
                     }
-                },
-                5000,
-            )
-            .await;
-
-        event.ok().and_then(|e| {
-            e.params
-                .get("response")
-                .and_then(|r| r.get("status"))
-                .and_then(|s| s.as_u64())
-                .map(|s| s as u16)
-        })
+                    let is_doc =
+                        event.params.get("type").and_then(|t| t.as_str()) == Some("Document");
+                    if !is_doc {
+                        continue;
+                    }
+                    let match_session =
+                        event.session_id.as_deref() == Some(sid) || event.session_id.is_none();
+                    if !match_session {
+                        continue;
+                    }
+                    return event
+                        .params
+                        .get("response")
+                        .and_then(|r| r.get("status"))
+                        .and_then(|s| s.as_u64())
+                        .map(|s| s as u16)
+                        .ok_or_else(|| {
+                            WispError::CdpError(
+                                "Network.responseReceived missing response.status".into(),
+                            )
+                        });
+                }
+                Ok(Err(RecvError::Lagged(n))) => {
+                    tracing::warn!("event subscriber lagged by {n} events, continuing recv");
+                    continue;
+                }
+                Ok(Err(RecvError::Closed)) => {
+                    return Err(WispError::CdpError(
+                        "event broadcaster closed before navigation status captured".into(),
+                    ));
+                }
+                Err(_) => {
+                    return Err(WispError::Timeout(
+                        "capture_navigation_status: no Network.responseReceived within 5s".into(),
+                    ));
+                }
+            }
+        }
     }
 
     /// 从浏览器页面提取统一 Response。
@@ -254,7 +276,7 @@ impl FetchClient {
         &self,
         page: &crate::browser::page::Page,
         req: &Request,
-        nav_status: Option<u16>,
+        nav_status: u16,
     ) -> Result<Response> {
         let html = page
             .evaluate_as_string("document.documentElement.outerHTML")
@@ -269,22 +291,8 @@ impl FetchClient {
             .filter(|c| !c.is_empty())
             .collect();
 
-        // 状态码：优先用 CDP 真实值，fallback 到 <title> 精确匹配
-        let status = if let Some(code) = nav_status {
-            code
-        } else {
-            let title_lower = title.to_lowercase();
-            if title_lower.contains("403") && title_lower.contains("forbidden") {
-                403
-            } else if title_lower.contains("404") && title_lower.contains("not found") {
-                404
-            } else {
-                200
-            }
-        };
-
         Ok(Response::from_browser(
-            status,
+            nav_status,
             final_url,
             html,
             title,
@@ -316,7 +324,7 @@ impl FetchClient {
     }
 
     fn build_browser_pool(config: &FetchClientConfig) -> Option<Arc<BrowserPool>> {
-        if config.browser_pool_size == 0 {
+        if config.max_concurrent_pages == 0 {
             return None;
         }
         let proxy_config = config.proxy.as_ref().map(|p| crate::config::ProxyConfig {
@@ -326,12 +334,12 @@ impl FetchClient {
         });
         let launch_options = LaunchOptions {
             headless: config.headless,
+            executable_path: config.executable_path.clone(),
             proxy: proxy_config,
             ..Default::default()
         };
         Some(BrowserPool::new(
-            config.browser_pool_size,
-            config.browser_idle_timeout,
+            config.max_concurrent_pages,
             launch_options,
         ))
     }
@@ -344,16 +352,16 @@ mod tests {
     #[test]
     fn test_fetch_client_config_default() {
         let config = FetchClientConfig::default();
-        assert_eq!(config.browser_pool_size, 2);
+        assert_eq!(config.max_concurrent_pages, 4);
         assert!(config.headless);
         assert!(config.human_mode);
     }
 
     #[test]
     fn test_fetch_client_http_only() {
-        // browser_pool_size=0 → 无浏览器池
+        // max_concurrent_pages=0 → 无浏览器池
         let config = FetchClientConfig {
-            browser_pool_size: 0,
+            max_concurrent_pages: 0,
             ..Default::default()
         };
         let client = FetchClient::new(config).expect("build client");

@@ -2,7 +2,7 @@
 //!
 //! 运行方式：`cargo test --test real_scrape_test -- --ignored`
 //!
-//! 使用真实网站验证 wisp 的抓取、解析、XPath、编码检测等功能。
+//! 使用真实网站验证 wisp 的抓取、解析、编码检测等功能。
 //! 代理：127.0.0.1:7897（网络不通时自动使用）。
 
 use std::time::Duration;
@@ -123,37 +123,7 @@ async fn test_books_toscrape_extraction() {
     println!("PASS: 成功提取 {} 本书的信息", books.len());
 }
 
-// === 测试 3: XPath 复杂表达式真实页面测试 ===
-
-#[tokio::test]
-#[ignore = "requires network access"]
-async fn test_xpath_real_page() {
-    let client = smart_client().await;
-
-    let resp = client.get("https://quotes.toscrape.com/", &[]).await;
-    if resp.is_err() {
-        eprintln!("SKIP: quotes.toscrape.com 不可达");
-        return;
-    }
-    let resp = resp.unwrap();
-    let doc = resp.parse().unwrap();
-
-    // 简单 XPath
-    let quotes = doc.xpath("//div[@class='quote']");
-    assert!(quotes.len() >= 5, "XPath 应找到至少 5 个 quote div");
-
-    // 属性选择
-    let authors = doc.xpath("//small[@class='author']");
-    assert!(authors.len() >= 5, "XPath 应找到至少 5 个作者");
-
-    // 验证 CSS 和 XPath 结果一致
-    let css_quotes = doc.select(".quote");
-    assert_eq!(css_quotes.len(), quotes.len(), "CSS 和 XPath 结果数量应一致");
-
-    println!("PASS: XPath 真实页面测试通过 ({} quotes)", quotes.len());
-}
-
-// === 测试 4: find_by_text 真实页面测试 ===
+// === 测试 3: find_by_text 真实页面测试 ===
 
 #[tokio::test]
 #[ignore = "requires network access"]

@@ -228,13 +228,6 @@ impl SpiderResponse {
             .map(|doc| doc.select(sel))
             .unwrap_or_else(|_| NodeList::new(vec![]))
     }
-
-    /// XPath 查询。
-    pub fn xpath_auto(&self, expr: &str) -> NodeList {
-        self.parse()
-            .map(|doc| doc.xpath(expr))
-            .unwrap_or_else(|_| NodeList::new(vec![]))
-    }
 }
 
 fn resolve_href(base: &str, href: &str) -> Option<String> {

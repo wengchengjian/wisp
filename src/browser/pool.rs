@@ -1,276 +1,163 @@
-//! Browser Pool — 浏览器实例复用，避免每次请求冷启动 Chrome。
+//! Browser Pool — 单 Browser + 多 Page 并发模型。
 //!
 //! # 设计
 //!
-//! - 维护一组预热的 Browser 实例（`PooledBrowser`）
-//! - `acquire()` 获取空闲实例或新建（不超过 max_size）
-//! - `release()` 归还实例（标记空闲）
-//! - 空闲超时自动回收
-//! - RAII `BrowserHandle`：Drop 时自动归还
+//! - 1 个 Chrome 进程，N 个并发 tab（用 Semaphore 限制并发数）
+//! - `acquire()` 返回 `BrowserHandle`，内含 `Page` + permit
+//! - `BrowserHandle::Drop` 自动关闭 tab + release permit
+//! - Browser 懒启动（首次 acquire 时 launch）
 //!
 //! # 性能收益
 //!
-//! crawl 数百 URL 时从「数百次冷启动（每次 2-5s）」变为
-//! 「1 次启动 + 数百次 tab 切换（每次 ~100ms）」，性能提升 10-50x。
+//! 相比多 Browser 进程模型：
+//! - 内存降 75%（1 进程 vs 4 进程，max_concurrent=4 时）
+//! - 启动开销降 75%（1 次 launch vs 4 次）
+//! - 并发能力不变（N 个 tab 并发，与 N 个进程等效）
+//! - 无 launch 持锁问题（browser 只 launch 1 次，后续 acquire 只是 new_page）
+//!
+//! # 与业界一致
+//!
+//! Puppeteer/Playwright/Crawlee 均采用单 Browser + 多 Page/BrowserContext 模式。
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::config::LaunchOptions;
-use crate::error::Result;
-use super::Browser;
+use crate::error::{Result, WispError};
 
-/// 池中的浏览器实例。
-struct PooledBrowser {
-    browser: Browser,
-    last_used: Instant,
-    in_use: bool,
-}
+use super::{Browser, Page};
 
-/// 在槽位列表中查找可复用的空闲槽索引。
+/// 浏览器池：单 Browser + 多 Page 并发。
 ///
-/// `is_in_use(p)` 返回 `true` 表示该实例正在使用中。返回第一个内容为 `Some`
-/// 且未在使用的槽位索引。
-///
-/// 这是 `acquire` 复用路径的纯逻辑核心，提取为独立函数便于单元测试
-/// （`Browser::launch` 需要真实 Chrome，无法在 CI 中直接测试 `acquire`）。
-///
-/// 用 `enumerate` 在查找时即捕获索引，避免旧实现 `find` + `position` 两步走
-/// 导致返回错误索引（多实例 in_use 时 `position(|p| p.in_use)` 命中更早的
-/// in_use 实例而非刚标记的那个）。
-fn pick_idle_slot<T, F>(slots: &[Option<T>], is_in_use: F) -> Option<usize>
-where
-    F: Fn(&T) -> bool,
-{
-    slots
-        .iter()
-        .enumerate()
-        .find_map(|(idx, slot)| slot.as_ref().filter(|p| !is_in_use(p)).map(|_| idx))
-}
-
-/// 浏览器实例池。
-///
-/// 复用已启动的 Browser 实例，每个请求创建新 tab 而非新进程。
-///
-/// 内部用 `Vec<Option<PooledBrowser>>` 槽位模型：每个槽位要么装有实例
-/// （`Some`），要么因超时回收而空置（`None`）。回收用 `take()` 清空内容但
-/// 保留空槽，索引在池的整个生命周期内永不改变，从而保证在飞
-/// `BrowserHandle.index` 始终有效。
+/// 持有 1 个懒启动的 Browser 实例，通过 Semaphore 限制并发 page 数。
+/// `acquire()` 返回 `BrowserHandle`（内含 `Page` + permit），Drop 自动清理。
 pub struct BrowserPool {
-    instances: Mutex<Vec<Option<PooledBrowser>>>,
-    max_size: usize,
-    idle_timeout: Duration,
+    /// 懒启动的单个 Browser 实例。
+    /// 用 `Mutex<Option<Arc<Browser>>>` 而非 `OnceCell`，以便 `shutdown` 能 `take()` 取出关闭。
+    browser: Mutex<Option<Arc<Browser>>>,
+    /// 限制并发 page 数。
+    page_permits: Arc<Semaphore>,
+    /// 最大并发 page 数（`Semaphore` 不暴露 max_permits，自行存储）。
+    max_concurrent_pages: usize,
     launch_options: LaunchOptions,
-    /// 等待空闲实例的 task 在此等待，release 时 notify_one 唤醒。
-    notify: Arc<tokio::sync::Notify>,
 }
 
 impl BrowserPool {
     /// 创建浏览器池。
     ///
-    /// - `max_size`: 最大浏览器实例数（0 表示禁用池化）
-    /// - `idle_timeout`: 空闲超时（超过后自动关闭回收）
+    /// - `max_concurrent_pages`: 最大并发 page 数（推荐 4-8）
     /// - `launch_options`: 浏览器启动配置
-    pub fn new(max_size: usize, idle_timeout: Duration, launch_options: LaunchOptions) -> Arc<Self> {
+    pub fn new(max_concurrent_pages: usize, launch_options: LaunchOptions) -> Arc<Self> {
         Arc::new(Self {
-            instances: Mutex::new(Vec::new()),
-            max_size,
-            idle_timeout,
+            browser: Mutex::new(None),
+            page_permits: Arc::new(Semaphore::new(max_concurrent_pages)),
+            max_concurrent_pages,
             launch_options,
-            notify: Arc::new(tokio::sync::Notify::new()),
         })
     }
 
-    /// 获取一个浏览器实例（复用空闲或新建）。
+    /// 获取一个 page handle（含 page + permit）。
     ///
-    /// 返回 `BrowserHandle`，Drop 时自动归还到池中。返回的 `index` 在池的
-    /// 整个生命周期内始终指向同一个槽位（不会因回收而移位）。
+    /// - 首次调用懒启动 Browser（2-5s）
+    /// - 后续调用只是 `new_page`（~50ms）
+    /// - 并发数达上限时阻塞，直到有 page 释放
     pub async fn acquire(self: &Arc<Self>) -> Result<BrowserHandle> {
-        // 1. 回收超时空闲实例 + 复用空闲实例（索引不变）
-        {
-            let mut instances = self.instances.lock().await;
-            let now = Instant::now();
-            // 超时回收：take 掉内容（drop browser 进程），保留空槽位，索引不变
-            for slot in instances.iter_mut() {
-                if let Some(p) = slot {
-                    if !p.in_use && now.duration_since(p.last_used) > self.idle_timeout {
-                        *slot = None;
-                    }
-                }
-            }
-            // 复用第一个空闲实例（用 pick_idle_slot 在查找时即捕获正确索引）
-            if let Some(idx) = pick_idle_slot(&instances, |p: &PooledBrowser| p.in_use) {
-                if let Some(p) = instances[idx].as_mut() {
-                    p.in_use = true;
-                    p.last_used = Instant::now();
-                }
-                return Ok(BrowserHandle {
-                    pool: Arc::clone(self),
-                    index: idx,
-                });
-            }
-        }
-
-        // 2. 在已有空槽位中新建实例（不增长 Vec，索引稳定）
-        {
-            let mut instances = self.instances.lock().await;
-            for (idx, slot) in instances.iter_mut().enumerate() {
-                if slot.is_none() {
-                    let browser = Browser::launch(self.launch_options.clone()).await?;
-                    *slot = Some(PooledBrowser {
-                        browser,
-                        last_used: Instant::now(),
-                        in_use: true,
-                    });
-                    return Ok(BrowserHandle {
-                        pool: Arc::clone(self),
-                        index: idx,
-                    });
-                }
-            }
-            // Vec 没有空槽且未达 max_size：push 新槽
-            if instances.len() < self.max_size {
-                let browser = Browser::launch(self.launch_options.clone()).await?;
-                instances.push(Some(PooledBrowser {
-                    browser,
-                    last_used: Instant::now(),
-                    in_use: true,
-                }));
-                let index = instances.len() - 1;
-                return Ok(BrowserHandle {
-                    pool: Arc::clone(self),
-                    index,
-                });
-            }
-        }
-
-        // 3. 达到上限：等待 release 唤醒，30s 超时兜底防止永久阻塞
-        loop {
-            // 先克隆 notify 引用再 select，避免在 select! 内持有 self 借用
-            let notify = Arc::clone(&self.notify);
-            tokio::select! {
-                // 等待 release 的 notify_one 唤醒
-                _ = notify.notified() => {}
-                // 安全兜底：30s 内无实例释放则返回错误，避免永久阻塞
-                _ = tokio::time::sleep(Duration::from_secs(30)) => {
-                    return Err(crate::error::WispError::CdpError(
-                        "browser pool: acquire timeout (no idle instance within 30s)".into(),
-                    ));
-                }
-            }
-            // 被唤醒后重新尝试复用空闲实例
-            let mut instances = self.instances.lock().await;
-            if let Some(idx) = pick_idle_slot(&instances, |p: &PooledBrowser| p.in_use) {
-                if let Some(p) = instances[idx].as_mut() {
-                    p.in_use = true;
-                    p.last_used = Instant::now();
-                }
-                return Ok(BrowserHandle {
-                    pool: Arc::clone(self),
-                    index: idx,
-                });
-            }
-            // 被唤醒但实例又被其他 task 抢走：继续循环等待
-        }
-    }
-
-    /// 归还实例（标记为空闲）。
-    async fn release(&self, index: usize) {
-        let mut instances = self.instances.lock().await;
-        if let Some(Some(pooled)) = instances.get_mut(index) {
-            pooled.in_use = false;
-            pooled.last_used = Instant::now();
-        }
-        drop(instances);
-        // 唤醒一个等待空闲实例的 acquire（若有）。notify_one 在无人等待时
-        // 会留下一个 permit，下一次 notified() 立即返回，不会丢失信号。
-        self.notify.notify_one();
-    }
-
-    /// 关闭所有实例并清空池。
-    pub async fn shutdown(&self) {
-        let mut instances = self.instances.lock().await;
-        for slot in instances.drain(..) {
-            if let Some(pooled) = slot {
-                // Browser::close 消费 self，这里用 drop 触发 kill
-                drop(pooled.browser);
-            }
-        }
-    }
-
-    /// 当前池中实例总数（非空槽数）。
-    pub async fn size(&self) -> usize {
-        self.instances
-            .lock()
+        let permit = Arc::clone(&self.page_permits)
+            .acquire_owned()
             .await
-            .iter()
-            .filter(|s| s.is_some())
-            .count()
-    }
+            .map_err(|_| WispError::CdpError("page_permits semaphore closed".into()))?;
 
-    /// 当前空闲实例数。
-    pub async fn idle_count(&self) -> usize {
-        self.instances
-            .lock()
-            .await
-            .iter()
-            .filter_map(|s| s.as_ref())
-            .filter(|p| !p.in_use)
-            .count()
-    }
+        let browser = self.get_or_launch_browser().await?;
+        let page = browser.new_page().await?;
 
-    /// 获取指定索引的 Browser 引用。
-    pub async fn get_browser(&self, index: usize) -> Option<BrowserRef> {
-        let instances = self.instances.lock().await;
-        instances.get(index)?.as_ref().map(|p| BrowserRef {
-            session: p.browser.session.clone(),
-            headless: p.browser.headless,
+        Ok(BrowserHandle {
+            page: Some(page),
+            permit,
         })
     }
-}
 
-/// Browser 的轻量引用（不拥有进程）。
-pub struct BrowserRef {
-    pub session: Arc<super::CdpSession>,
-    pub headless: bool,
-}
+    /// 懒启动 Browser（首次或崩溃后重启）。
+    ///
+    /// 快路径用 `try_lock` 避免阻塞；慢路径用 `lock` + double-check 防并发 launch。
+    async fn get_or_launch_browser(&self) -> Result<Arc<Browser>> {
+        // 快路径：已启动（try_lock 非阻塞）
+        if let Ok(guard) = self.browser.try_lock() {
+            if let Some(ref b) = *guard {
+                return Ok(Arc::clone(b));
+            }
+        }
+        // 慢路径：launch（mutex 串行化，防止并发 launch）
+        let mut guard = self.browser.lock().await;
+        // double-check：可能在等锁期间其他 task 已 launch 完成
+        if let Some(ref b) = *guard {
+            return Ok(Arc::clone(b));
+        }
+        let browser = Arc::new(Browser::launch(self.launch_options.clone()).await?);
+        *guard = Some(Arc::clone(&browser));
+        Ok(browser)
+    }
 
-impl BrowserRef {
-    /// 在此浏览器中创建新 tab。
-    pub async fn new_page(&self) -> Result<super::Page> {
-        super::Page::create(Arc::clone(&self.session), self.headless).await
+    /// 关闭 Browser 并清空池。
+    ///
+    /// 若仍有在飞的 `BrowserHandle`（Arc 引用计数 >1），无法 `close`，
+    /// 进程会随程序退出自然终止（`tokio::process::Child` drop 时 kill）。
+    pub async fn shutdown(&self) {
+        let mut guard = self.browser.lock().await;
+        if let Some(browser) = guard.take() {
+            if let Ok(b) = Arc::try_unwrap(browser) {
+                let _ = b.close().await;
+            }
+            // try_unwrap 失败（有在飞 handle）：忽略，进程随退出终止
+        }
+    }
+
+    /// Browser 是否已启动。
+    pub async fn is_launched(&self) -> bool {
+        self.browser.lock().await.is_some()
+    }
+
+    /// 可用 permit 数（剩余并发容量）。
+    pub fn available_permits(&self) -> usize {
+        self.page_permits.available_permits()
+    }
+
+    /// 最大并发 page 数。
+    pub fn max_concurrent_pages(&self) -> usize {
+        self.max_concurrent_pages
     }
 }
 
-/// RAII handle：持有池中的浏览器实例，Drop 时自动归还。
+/// RAII handle：持有 page + permit，Drop 时自动关闭 tab + release permit。
+///
+/// `page` 用 `Option<Page>` 以便 `Drop` 时 `take()`。正常路径下
+/// `fetch_browser` 已显式 `page.close().await`，`target_id` 置 `None`，
+/// `Page::Drop` 不会重复关闭；`BrowserHandle::Drop` 只是触发 `Page::Drop`
+/// + permit 自动 release。
 pub struct BrowserHandle {
-    pool: Arc<BrowserPool>,
-    index: usize,
+    page: Option<Page>,
+    /// 通过 Drop 释放 permit（回退到 Semaphore），无需显式读取。
+    #[allow(dead_code)]
+    permit: OwnedSemaphorePermit,
 }
 
 impl BrowserHandle {
-    /// 获取此实例的 Browser 引用（用于创建新 tab）。
-    pub async fn browser_ref(&self) -> Option<BrowserRef> {
-        self.pool.get_browser(self.index).await
+    /// 访问内部 Page。
+    pub fn page(&self) -> &Page {
+        self.page.as_ref().expect("page must be Some until Drop")
     }
 
-    /// 在此浏览器中创建新 tab。
-    pub async fn new_page(&self) -> Result<super::Page> {
-        let browser_ref = self.pool.get_browser(self.index).await
-            .ok_or_else(|| crate::error::WispError::CdpError("browser pool: invalid index".into()))?;
-        browser_ref.new_page().await
+    /// 可变访问内部 Page。
+    pub fn page_mut(&mut self) -> &mut Page {
+        self.page.as_mut().expect("page must be Some until Drop")
     }
 }
 
 impl Drop for BrowserHandle {
     fn drop(&mut self) {
-        let pool = Arc::clone(&self.pool);
-        let index = self.index;
-        // 在后台 task 中归还（避免在 Drop 中 await）
-        tokio::spawn(async move {
-            pool.release(index).await;
-        });
+        // 取出 page 触发 Page::Drop（兜底关闭 tab，若已 close 则 no-op）
+        // permit 自动 release（OwnedSemaphorePermit::Drop）
+        self.page.take();
     }
 }
 
@@ -280,90 +167,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_creation() {
-        let pool = BrowserPool::new(
-            4,
-            Duration::from_secs(300),
-            LaunchOptions::default(),
-        );
-        assert_eq!(pool.size().await, 0);
-        assert_eq!(pool.idle_count().await, 0);
+        let pool = BrowserPool::new(4, LaunchOptions::default());
+        assert!(!pool.is_launched().await);
+        assert_eq!(pool.available_permits(), 4);
+        assert_eq!(pool.max_concurrent_pages(), 4);
     }
 
-    /// 验证 bug #1 的核心索引逻辑：当槽 0 已 in_use、槽 1 空闲时，
-    /// 复用应返回槽 1 的索引，而非旧 position(in_use) 错误返回的槽 0。
-    #[test]
-    fn pick_idle_slot_returns_correct_index_when_earlier_slot_in_use() {
-        // 槽 0 在使用中，槽 1 空闲。in_use 用 bool 表示（true=使用中）。
-        let slots: Vec<Option<bool>> = vec![Some(true), Some(false)];
-        let idx = pick_idle_slot(&slots, |b: &bool| *b);
-        assert_eq!(idx, Some(1), "应跳过 in_use 的槽 0，返回空闲槽 1");
-    }
-
-    /// 验证跳过空槽（None）：超时回收后槽位变 None，不应被当作可复用实例。
-    #[test]
-    fn pick_idle_slot_skips_empty_slots() {
-        // 槽 0 已被 take() 清空（None），槽 1 空闲。
-        let slots: Vec<Option<bool>> = vec![None, Some(false)];
-        let idx = pick_idle_slot(&slots, |b: &bool| *b);
-        assert_eq!(idx, Some(1), "应跳过 None 空槽，返回槽 1");
-    }
-
-    /// 验证 bug #2 的修复不变量：超时回收用 take()（置 None）而非 retain()（移位），
-    /// 因此其他槽的索引保持不变。
-    #[test]
-    fn slot_take_preserves_indices() {
-        let mut slots: Vec<Option<bool>> = vec![Some(true), Some(false), Some(true)];
-        // 模拟超时回收槽 0：take 内容，保留空槽位
-        slots[0] = None;
-        // 槽 1、2 的索引与内容均不变
-        assert_eq!(slots[0], None);
-        assert_eq!(slots[1], Some(false));
-        assert_eq!(slots[2], Some(true));
-    }
-
-    /// 验证 Task 2 新增行为：release 调用 notify_one，留下 permit。
-    ///
-    /// 在空池上 release(0) 不会修改任何槽位（越界），但仍应触发 notify_one，
-    /// 使后续 notified() 立即返回。这是「release 唤醒等待者」机制的核心保证，
-    /// 无需启动 Chrome 即可验证。
     #[tokio::test]
-    async fn release_notifies_waiters() {
-        let pool = BrowserPool::new(
-            4,
-            Duration::from_secs(300),
-            LaunchOptions::default(),
-        );
-        // 空池：release(0) 不修改槽位，但应调用 notify_one
-        pool.release(0).await;
-        // notify_one 应留下 permit，notified() 立即完成
-        let notify = Arc::clone(&pool.notify);
-        tokio::select! {
-            _ = notify.notified() => { /* 预期：立即完成 */ }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                panic!("release 未触发 notify_one，notified() 超时");
-            }
-        }
-    }
+    async fn test_permits_release_on_handle_drop() {
+        // 不需要真实 Chrome：验证 permit 计数逻辑
+        let pool = BrowserPool::new(2, LaunchOptions::default());
+        assert_eq!(pool.available_permits(), 2);
 
-    /// 验证 Task 2 的 notify 字段在 new() 中被初始化（非 None 占位）。
-    ///
-    /// 通过 release 后 notified() 立即完成间接验证：若 notify 未初始化，
-    /// notify_one 不会留下 permit，notified() 会挂起。
-    #[tokio::test]
-    async fn notify_field_initialized_in_new() {
-        let pool = BrowserPool::new(
-            2,
-            Duration::from_secs(60),
-            LaunchOptions::default(),
-        );
-        // 直接对 notify 调用 notify_one，验证字段可用且有效
-        pool.notify.notify_one();
-        let notify = Arc::clone(&pool.notify);
-        tokio::select! {
-            _ = notify.notified() => { /* 预期：立即完成 */ }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                panic!("notify 字段未正确初始化");
-            }
-        }
+        // 模拟：直接 acquire permit（不 launch browser）
+        let permit1 = pool.page_permits.clone().acquire_owned().await.unwrap();
+        let permit2 = pool.page_permits.clone().acquire_owned().await.unwrap();
+        assert_eq!(pool.available_permits(), 0);
+
+        // 释放一个 permit
+        drop(permit1);
+        assert_eq!(pool.available_permits(), 1);
+
+        // 可以再 acquire
+        let permit3 = pool.page_permits.clone().acquire_owned().await.unwrap();
+        assert_eq!(pool.available_permits(), 0);
+
+        // 清理
+        drop(permit2);
+        drop(permit3);
+        assert_eq!(pool.available_permits(), 2);
     }
 }

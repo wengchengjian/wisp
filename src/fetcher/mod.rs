@@ -225,9 +225,9 @@ impl FetcherBuilder {
         self
     }
 
-    /// 设置 BrowserPool 大小（0 = 禁用池化，每次新建浏览器）。
-    pub fn browser_pool_size(mut self, size: usize) -> Self {
-        self.config.browser_pool_size = size;
+    /// 设置 BrowserPool 最大并发 page 数（0 = 禁用浏览器模式）。
+    pub fn max_concurrent_pages(mut self, size: usize) -> Self {
+        self.config.max_concurrent_pages = size;
         self
     }
 

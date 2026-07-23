@@ -23,6 +23,11 @@ impl Page {
         self.session.execute_with_session(method, params, Some(&self.session_id)).await
     }
 
+    /// 此 page 的 CDP session ID（每个 tab 独立）。
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     /// 导航后刷新 frame_id（解决跨域导航后 isolated world context 失效问题）。
     async fn refresh_frame_id(&mut self) {
         if let Ok(frame_tree) = self.session.execute_with_session(

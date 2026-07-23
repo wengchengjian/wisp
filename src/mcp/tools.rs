@@ -65,24 +65,6 @@ pub async fn extract_css(args: Value) -> Result<Value> {
     }
 }
 
-/// XPath 提取元素。
-pub async fn extract_xpath(args: Value) -> Result<Value> {
-    let html = args.get("html")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'html' argument".into()))?;
-    let xpath = args.get("xpath")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'xpath' argument".into()))?;
-
-    let doc = Node::from_html(html);
-    let nodes = doc.xpath(xpath);
-
-    let texts: Vec<Value> = nodes.iter()
-        .map(|n| json!(n.text()))
-        .collect();
-    Ok(json!({"texts": texts}))
-}
-
 /// 爬取站点：用内置 SimpleSpider 按 CSS 选择器提取，返回 JSONL。
 ///
 /// Task 5：复用 MCP server 启动时创建的共享 Engine（HTTP 连接池 / 请求缓存 / 代理池），
@@ -258,18 +240,6 @@ mod tests {
         let attrs = result["attrs"].as_array().unwrap();
         assert_eq!(attrs.len(), 2);
         assert_eq!(attrs[0].as_str().unwrap(), "/a");
-    }
-
-    #[tokio::test]
-    async fn test_extract_xpath_returns_text() {
-        let args = json!({
-            "html": "<html><body><ul><li>1</li><li>2</li></ul></body></html>",
-            "xpath": "//li"
-        });
-        let result = extract_xpath(args).await.unwrap();
-        let texts = result["texts"].as_array().unwrap();
-        assert_eq!(texts.len(), 2);
-        assert_eq!(texts[0].as_str().unwrap(), "1");
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 //! 统一 Fetcher 接口测试。
 //!
 //! 验证三模式（Http / Dynamic / Stealth）返回相同 Response 类型，
-//! 且统一的解析 API（css/xpath/find_by_text/follow）正常工作。
+//! 且统一的解析 API（css/find_by_text/follow）正常工作。
 
 use std::time::Duration;
 use wisp::{Fetcher, FetchMode, Response, Request};
@@ -32,17 +32,6 @@ fn test_unified_response_css() {
     let texts = resp.css(".text");
     assert_eq!(texts.len(), 2);
     assert!(texts.text()[0].contains("Life is what happens"));
-}
-
-#[test]
-fn test_unified_response_xpath() {
-    let resp = html_response(r#"
-        <ul><li class="item">A</li><li class="item">B</li><li class="item">C</li></ul>
-    "#);
-
-    let items = resp.xpath("//li[@class='item']");
-    assert_eq!(items.len(), 3);
-    assert_eq!(items.text(), vec!["A", "B", "C"]);
 }
 
 #[test]
@@ -182,7 +171,7 @@ async fn test_unified_http_fetch_real() {
             let quotes = page.css(".quote");
             assert!(quotes.len() >= 5, "应至少 5 条名言");
 
-            let authors = page.xpath("//small[@class='author']");
+            let authors = page.css("small.author");
             assert!(authors.len() >= 5);
 
             // find_by_text

@@ -2,21 +2,21 @@
 //!
 //! Wraps wreq with builder pattern, proxy support, and HTML parsing.
 
+pub mod block;
 pub mod encoding;
 pub mod proxy;
-pub mod block;
 pub mod ua;
 
 pub use block::DomainBlocker;
 pub use ua::UaRotator;
 
+use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
-use serde_json::Value;
 use wreq::header::HeaderName;
 use wreq_util::Profile;
 
-use crate::error::{WispError, Result};
+use crate::error::{Result, WispError};
 use crate::parser::Node;
 
 /// HTTP client configuration.
@@ -29,7 +29,7 @@ pub struct Config {
     pub max_redirects: usize,
     /// 浏览器 TLS 指纹模拟（默认 Chrome136，覆盖最广）
     pub emulation: Option<Profile>,
-    /// 自定义 header 顺序（wreq 6.0.0-rc.29 已移除 headers_order 方法，字段保留供未来扩展）
+    /// 自定义 header 顺序（wreq 6.0.0-rc.29 未暴露 headers_order 方法，字段暂不应用）
     pub header_order: Option<Vec<HeaderName>>,
     /// DNS-over-HTTPS 服务器 URL（如 "https://1.1.1.1/dns-query"）。
     /// 启用后通过 DoH 解析域名，防止代理场景下 DNS 泄漏。
@@ -58,12 +58,33 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    pub fn new() -> Self { Self { config: Config::default() } }
-    pub fn timeout(mut self, d: Duration) -> Self { self.config.timeout = d; self }
-    pub fn user_agent(mut self, ua: &str) -> Self { self.config.user_agent = Some(ua.to_string()); self }
-    pub fn proxy(mut self, url: &str) -> Self { self.config.proxy = Some(url.to_string()); self }
-    pub fn header(mut self, key: &str, value: &str) -> Self { self.config.headers.insert(key.to_string(), value.to_string()); self }
-    pub fn max_redirects(mut self, n: usize) -> Self { self.config.max_redirects = n; self }
+    pub fn new() -> Self {
+        Self {
+            config: Config::default(),
+        }
+    }
+    pub fn timeout(mut self, d: Duration) -> Self {
+        self.config.timeout = d;
+        self
+    }
+    pub fn user_agent(mut self, ua: &str) -> Self {
+        self.config.user_agent = Some(ua.to_string());
+        self
+    }
+    pub fn proxy(mut self, url: &str) -> Self {
+        self.config.proxy = Some(url.to_string());
+        self
+    }
+    pub fn header(mut self, key: &str, value: &str) -> Self {
+        self.config
+            .headers
+            .insert(key.to_string(), value.to_string());
+        self
+    }
+    pub fn max_redirects(mut self, n: usize) -> Self {
+        self.config.max_redirects = n;
+        self
+    }
 
     /// 指定浏览器 TLS 指纹模拟（Chrome/Firefox/Safari/Edge/OkHttp，75 变体）
     pub fn emulation(mut self, emu: Profile) -> Self {
@@ -77,7 +98,7 @@ impl ClientBuilder {
         self
     }
 
-    /// 自定义 header 顺序（wreq 6.0.0-rc.29 已移除 headers_order 方法，配置保留供未来扩展）
+    /// 自定义 header 顺序（wreq 6.0.0-rc.29 未暴露 headers_order 方法，配置暂不生效）
     pub fn header_order(mut self, order: Vec<HeaderName>) -> Self {
         self.config.header_order = Some(order);
         self
@@ -116,12 +137,17 @@ impl ClientBuilder {
         if let Some(emu) = self.config.emulation {
             builder = builder.emulation(emu);
         }
-        // 注：wreq 6.0.0-rc.29 已移除 headers_order 方法，header_order 字段暂不应用
+        // 注：wreq 6.0.0-rc.29 ClientBuilder 未暴露 headers_order 方法，
+        // header_order 字段暂不应用，保留供未来版本支持后启用
 
-        let http_client = builder.build()
+        let http_client = builder
+            .build()
             .map_err(|e| WispError::CdpError(format!("client build error: {e}")))?;
 
-        Ok(Client { http: http_client, config: self.config })
+        Ok(Client {
+            http: http_client,
+            config: self.config,
+        })
     }
 }
 
@@ -133,56 +159,98 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn builder() -> ClientBuilder { ClientBuilder::new() }
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::new()
+    }
 
     /// Create a client with default config.
-    pub fn new() -> Result<Self> { ClientBuilder::new().build() }
+    pub fn new() -> Result<Self> {
+        ClientBuilder::new().build()
+    }
 
     /// 获取配置引用（供 Engine 代理轮换时读取 timeout 等参数）。
-    pub fn config_ref(&self) -> &Config { &self.config }
+    pub fn config_ref(&self) -> &Config {
+        &self.config
+    }
 
     /// GET request.
     pub async fn get(&self, url: &str, extra_headers: &[(String, String)]) -> Result<Response> {
-        let resp = self.http.get(url)
+        let resp = self
+            .http
+            .get(url)
             .headers(self.build_headers_with(extra_headers))
-            .send().await
+            .send()
+            .await
             .map_err(|e| WispError::CdpError(format!("GET {url}: {e}")))?;
         self.build_response(resp).await
     }
 
     /// POST request with optional body/json.
-    pub async fn post(&self, url: &str, body: Option<&str>, json: Option<&Value>, extra_headers: &[(String, String)]) -> Result<Response> {
-        let mut req = self.http.post(url).headers(self.build_headers_with(extra_headers));
-        if let Some(b) = body { req = req.body(b.to_string()); }
+    pub async fn post(
+        &self,
+        url: &str,
+        body: Option<&str>,
+        json: Option<&Value>,
+        extra_headers: &[(String, String)],
+    ) -> Result<Response> {
+        let mut req = self
+            .http
+            .post(url)
+            .headers(self.build_headers_with(extra_headers));
+        if let Some(b) = body {
+            req = req.body(b.to_string());
+        }
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
                 .map_err(|e| WispError::CdpError(format!("JSON serialize: {e}")))?;
-            req = req.header(wreq::header::CONTENT_TYPE, "application/json").body(json_str);
+            req = req
+                .header(wreq::header::CONTENT_TYPE, "application/json")
+                .body(json_str);
         }
-        let resp = req.send().await
+        let resp = req
+            .send()
+            .await
             .map_err(|e| WispError::CdpError(format!("POST {url}: {e}")))?;
         self.build_response(resp).await
     }
 
     /// PUT request.
-    pub async fn put(&self, url: &str, body: Option<&str>, json: Option<&Value>, extra_headers: &[(String, String)]) -> Result<Response> {
-        let mut req = self.http.put(url).headers(self.build_headers_with(extra_headers));
-        if let Some(b) = body { req = req.body(b.to_string()); }
+    pub async fn put(
+        &self,
+        url: &str,
+        body: Option<&str>,
+        json: Option<&Value>,
+        extra_headers: &[(String, String)],
+    ) -> Result<Response> {
+        let mut req = self
+            .http
+            .put(url)
+            .headers(self.build_headers_with(extra_headers));
+        if let Some(b) = body {
+            req = req.body(b.to_string());
+        }
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
                 .map_err(|e| WispError::CdpError(format!("JSON serialize: {e}")))?;
-            req = req.header(wreq::header::CONTENT_TYPE, "application/json").body(json_str);
+            req = req
+                .header(wreq::header::CONTENT_TYPE, "application/json")
+                .body(json_str);
         }
-        let resp = req.send().await
+        let resp = req
+            .send()
+            .await
             .map_err(|e| WispError::CdpError(format!("PUT {url}: {e}")))?;
         self.build_response(resp).await
     }
 
     /// DELETE request.
     pub async fn delete(&self, url: &str, extra_headers: &[(String, String)]) -> Result<Response> {
-        let resp = self.http.delete(url)
+        let resp = self
+            .http
+            .delete(url)
             .headers(self.build_headers_with(extra_headers))
-            .send().await
+            .send()
+            .await
             .map_err(|e| WispError::CdpError(format!("DELETE {url}: {e}")))?;
         self.build_response(resp).await
     }
@@ -217,19 +285,30 @@ impl Client {
     async fn build_response(&self, resp: wreq::Response) -> Result<Response> {
         let status = resp.status().as_u16();
         let url = resp.uri().to_string();
-        let content_type = resp.headers()
+        let content_type = resp
+            .headers()
             .get(wreq::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let headers: HashMap<String, String> = resp.headers().iter()
+        let headers: HashMap<String, String> = resp
+            .headers()
+            .iter()
             .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), s.to_string())))
             .collect();
-        let body = resp.bytes().await
+        let body = resp
+            .bytes()
+            .await
             .map_err(|e| WispError::CdpError(format!("read body: {e}")))?
             .to_vec();
 
-        Ok(Response { status, url, headers, body, content_type })
+        Ok(Response {
+            status,
+            url,
+            headers,
+            body,
+            content_type,
+        })
     }
 }
 
@@ -252,8 +331,7 @@ impl Response {
     /// Parse body as JSON.
     pub fn json(&self) -> Result<Value> {
         let text = self.text()?;
-        serde_json::from_str(&text)
-            .map_err(|e| WispError::CdpError(format!("JSON parse: {e}")))
+        serde_json::from_str(&text).map_err(|e| WispError::CdpError(format!("JSON parse: {e}")))
     }
 
     /// Parse body as HTML into a Node.
@@ -262,7 +340,9 @@ impl Response {
         Ok(Node::from_html(&text))
     }
 
-    pub fn is_ok(&self) -> bool { self.status >= 200 && self.status < 300 }
+    pub fn is_ok(&self) -> bool {
+        self.status >= 200 && self.status < 300
+    }
 }
 
 #[cfg(test)]
@@ -277,16 +357,22 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 16384];
                     let mut total = 0usize;
                     // 循环读取直到收到完整的 HTTP 请求头（\r\n\r\n 结尾）
                     while total < buf.len() {
                         let n = socket.read(&mut buf[total..]).await.unwrap_or(0);
-                        if n == 0 { break; }
+                        if n == 0 {
+                            break;
+                        }
                         total += n;
-                        if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                        if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
                     }
                     let request = String::from_utf8_lossy(&buf[..total]);
                     // 回显收到的 headers（跳过请求行）

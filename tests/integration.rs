@@ -186,27 +186,6 @@ mod adaptive_test {
     }
 
     #[test]
-    fn test_xpath_and_css_consistency() {
-        // 验证 XPath 和 CSS 对同一查询返回一致结果
-        let html = r#"
-        <html><body>
-          <ul>
-            <li class="item">A</li>
-            <li class="item">B</li>
-            <li class="item">C</li>
-          </ul>
-        </body></html>
-        "#;
-
-        let doc = Node::from_html(html);
-        let css_result = doc.select("li.item");
-        let xpath_result = doc.xpath("//li[@class='item']");
-
-        assert_eq!(css_result.len(), xpath_result.len());
-        assert_eq!(css_result.len(), 3);
-    }
-
-    #[test]
     fn test_node_shares_document_after_select() {
         // 验证 select 返回的 Node 共享同一 Document（导航可工作）
         let html = r#"<html><body><div><p>Hello</p></div></body></html>"#;

@@ -1,4 +1,4 @@
-//! CSS/XPath selector auto-generation.
+//! CSS selector auto-generation.
 
 use super::Node;
 
@@ -29,23 +29,4 @@ pub fn generate_css(node: &Node) -> String {
         }
     }
     selector
-}
-
-/// Generate a unique XPath for a node.
-pub fn generate_xpath(node: &Node) -> String {
-    let attrs = node.attrs();
-
-    if let Some(id) = attrs.get("id") {
-        return format!("//*[@id=\"{}\"]", id);
-    }
-
-    let tag = attrs.get("tag").map(|s| s.as_str()).unwrap_or("div");
-    if let Some(class) = attrs.get("class") {
-        let first_class = class.split_whitespace().next().unwrap_or("");
-        if !first_class.is_empty() {
-            return format!("//{}[contains(@class, \"{}\")]", tag, first_class);
-        }
-    }
-
-    format!("//{}", tag)
 }

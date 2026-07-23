@@ -1,7 +1,7 @@
 //! 统一响应和请求类型。
 //!
 //! 所有 Fetcher 模式（Http / Dynamic / Stealth）返回同一个 `Response`，
-//! 用户无需关心底层实现即可使用 `.css()` / `.xpath()` / `.json()` 等 API。
+//! 用户无需关心底层实现即可使用 `.css()` / `.json()` 等 API。
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
@@ -113,7 +113,7 @@ impl Request {
 ///
 /// // 统一的解析 API
 /// let quotes = page.css(".quote .text");
-/// let authors = page.xpath("//small[@class='author']");
+/// let authors = page.css("small.author");
 /// let title = page.title();
 /// # Ok(())
 /// # }
@@ -218,11 +218,6 @@ impl Response {
         self.parse().select(selector)
     }
 
-    /// XPath 查询（快捷方式）。
-    pub fn xpath(&self, expr: &str) -> NodeList {
-        self.parse().xpath(expr)
-    }
-
     /// 按文本内容查找元素。
     pub fn find_by_text(&self, text: &str, tag: Option<&str>, exact: bool) -> NodeList {
         self.parse().find_by_text(text, tag, exact)
@@ -290,13 +285,6 @@ mod tests {
         let items = resp.css(".item");
         assert_eq!(items.len(), 2);
         assert_eq!(items.text(), vec!["A", "B"]);
-    }
-
-    #[test]
-    fn test_response_xpath() {
-        let resp = make_response(r#"<ul><li>X</li><li>Y</li></ul>"#);
-        let items = resp.xpath("//li");
-        assert_eq!(items.len(), 2);
     }
 
     #[test]

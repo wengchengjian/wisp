@@ -26,8 +26,8 @@ ego-tree = "0.10"
 encoding_rs = "0.8"
 url = "2"
 async-trait = "0.1"
-wreq = { version = "6.0.0-rc", features = ["cookies"] }
-wreq-util = "3.0.0-rc"
+wreq = { version = "=6.0.0-rc.29", features = ["cookies"] }
+wreq-util = "=3.0.0-rc.14"
 toml = "0.8"
 regex = "1"
 aho-corasick = "1"
@@ -39,9 +39,6 @@ bincode = "1"
 tokio-stream = "0.1"
 # 时间戳（CrawlState 用）
 chrono = { version = "0.4", features = ["serde"] }
-# XPath 1.0 完整查询（阶段 2：sxd-xpath 懒解析）
-sxd-document = "0.3"
-sxd-xpath = "0.4"
 # 内存级请求缓存
 moka = { version = "0.12", features = ["future"] }
 # HTML -> Markdown 转换

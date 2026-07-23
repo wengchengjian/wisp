@@ -53,18 +53,6 @@ pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| vec![
         }),
     },
     Tool {
-        name: "extract_xpath",
-        description: "用 XPath 从 HTML 提取元素，返回文本列表。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "html": { "type": "string", "description": "HTML 文本" },
-                "xpath": { "type": "string", "description": "XPath 表达式" }
-            },
-            "required": ["html", "xpath"]
-        }),
-    },
-    Tool {
         name: "crawl_site",
         description: "爬取站点，返回 JSONL。用内置 SimpleSpider 按 CSS 选择器提取。",
         input_schema: json!({
@@ -211,7 +199,6 @@ async fn handle_tools_call(request: Value, store: &Arc<Store>, engine: &Engine) 
     let result = match name {
         "fetch_page" => tools::fetch_page(args).await,
         "extract_css" => tools::extract_css(args).await,
-        "extract_xpath" => tools::extract_xpath(args).await,
         "crawl_site" => tools::crawl_site(args, engine).await,
         "adaptive_scrape" => tools::adaptive_scrape(args, store).await,
         "stealth_fetch" => tools::stealth_fetch(args).await,
@@ -235,13 +222,12 @@ mod tests {
     fn test_tools_list_has_six_tools() {
         let list = handle_tools_list();
         let tools = list.get("tools").unwrap().as_array().unwrap();
-        assert_eq!(tools.len(), 6, "应有 6 个工具");
+        assert_eq!(tools.len(), 5, "应有 5 个工具");
         let names: Vec<&str> = tools.iter()
             .map(|t| t.get("name").unwrap().as_str().unwrap())
             .collect();
         assert!(names.contains(&"fetch_page"));
         assert!(names.contains(&"extract_css"));
-        assert!(names.contains(&"extract_xpath"));
         assert!(names.contains(&"crawl_site"));
         assert!(names.contains(&"adaptive_scrape"));
         assert!(names.contains(&"stealth_fetch"));

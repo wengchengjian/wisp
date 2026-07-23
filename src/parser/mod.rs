@@ -1,8 +1,7 @@
-//! HTML parsing with CSS/XPath selectors.
+//! HTML parsing with CSS selectors.
 
 pub mod difflib;
 pub mod document;
-pub mod xpath;
 pub mod adaptive;
 pub mod generate;
 
@@ -193,25 +192,6 @@ impl Node {
             .unwrap_or_default()
     }
 
-    /// Select all elements matching an XPath expression.
-    ///
-    /// 支持完整 XPath 1.0。简单表达式走 xpath_to_css 快速路径，
-    /// 复杂表达式走 sxd-xpath 完整查询。
-    pub fn xpath(&self, expr: &str) -> NodeList {
-        // 快速路径：简单 XPath 转 CSS（覆盖 80% 常见用法）
-        if let Some(css) = xpath_to_css(expr) {
-            return self.select(&css);
-        }
-        // 慢路径：完整 sxd-xpath 查询
-        match xpath::xpath_full(self, expr) {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::warn!("xpath 查询失败 '{}': {}", expr, e);
-                NodeList { nodes: Vec::new() }
-            }
-        }
-    }
-
     /// Get the parent element.
     ///
     /// 使用 `ElementRef::wrap` 过滤非元素节点（scraper 0.23 中 `Element` 没有 `is_element()`，
@@ -334,11 +314,6 @@ impl Node {
         generate::generate_css(self)
     }
 
-    /// Generate a unique XPath for this element.
-    pub fn generate_xpath(&self) -> String {
-        generate::generate_xpath(self)
-    }
-
     /// Get clean text (whitespace collapsed).
     pub fn text_clean(&self) -> String {
         crate::text::Text(&self.text()).clean()
@@ -401,113 +376,6 @@ impl IntoIterator for NodeList {
     type Item = Node;
     type IntoIter = std::vec::IntoIter<Node>;
     fn into_iter(self) -> Self::IntoIter { self.nodes.into_iter() }
-}
-
-/// Convert common XPath expressions to CSS selectors.
-fn xpath_to_css(xpath: &str) -> Option<String> {
-    let xpath = xpath.trim();
-
-    // //tag[@attr='value']
-    if let Some(rest) = xpath.strip_prefix("//") {
-        // //*[@id='value'] -> #value
-        if let Some(id) = extract_attr_value(rest, "id") {
-            return Some(format!("#{}", id));
-        }
-        // //tag[@attr='value'] -> tag[attr='value']
-        if let Some((tag, attr, value)) = parse_tag_attr_value(rest) {
-            return Some(format!("{}[{}='{}']", tag, attr, value));
-        }
-        // //tag[@attr] -> tag[attr]
-        if let Some((tag, attr)) = parse_tag_attr(rest) {
-            return Some(format!("{}[{}]", tag, attr));
-        }
-        // //tag[contains(@class, 'value')] -> tag.value (approximate)
-        if let Some((tag, class)) = parse_contains_class(rest) {
-            return Some(format!("{}.{}", tag, class));
-        }
-        // //tag -> tag
-        let tag: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '-').collect();
-        if !tag.is_empty() && tag.len() == rest.len() {
-            return Some(tag);
-        }
-        // //* -> *
-        if rest == "*" {
-            return Some("*".to_string());
-        }
-    }
-    None
-}
-
-fn extract_attr_value(s: &str, attr: &str) -> Option<String> {
-    // Pattern: *[@attr='value'] or tag[@attr='value']
-    let pattern = format!("[@{}='", attr);
-    if let Some(start) = s.find(&pattern) {
-        let rest = &s[start + pattern.len()..];
-        let value: String = rest.chars().take_while(|c| *c != '\'' && *c != '"').collect();
-        if value.is_empty() { return None; }
-        // 校验 value 后紧跟 ] 且 ] 后无内容（避免丢弃 /p 等路径后缀）
-        let after_value = &rest[value.len()..];
-        let after_quote = after_value.strip_prefix('\'').or_else(|| after_value.strip_prefix('"'))?;
-        let after_bracket = after_quote.strip_prefix(']')?;
-        if !after_bracket.trim().is_empty() { return None; }
-        return Some(value);
-    }
-    None
-}
-
-fn parse_tag_attr_value(s: &str) -> Option<(String, String, String)> {
-    // Pattern: tag[@attr='value']
-    let bracket = s.find('[')?;
-    let tag = &s[..bracket];
-    if tag.is_empty() || tag == "*" { return None; }
-    let rest = &s[bracket+1..];
-    let at = rest.strip_prefix('@')?;
-    let eq = at.find('=')?;
-    let attr = &at[..eq];
-    let val_part = &at[eq+1..];
-    let value: String = val_part.chars().skip(1).take_while(|c| *c != '\'' && *c != '"' && *c != ']').collect();
-    // 校验 value 后紧跟 ] 且 ] 后无内容（避免丢弃 /p 等路径后缀）
-    let after_value = &val_part[1 + value.len()..];
-    let after_quote = after_value.strip_prefix('\'').or_else(|| after_value.strip_prefix('"'))?;
-    let after_bracket = after_quote.strip_prefix(']')?;
-    if !after_bracket.trim().is_empty() { return None; }
-    Some((tag.to_string(), attr.to_string(), value))
-}
-
-fn parse_tag_attr(s: &str) -> Option<(String, String)> {
-    // Pattern: tag[@attr]
-    let bracket = s.find('[')?;
-    let tag = &s[..bracket];
-    if tag.is_empty() || tag == "*" { return None; }
-    let rest = &s[bracket+1..];
-    let at = rest.strip_prefix('@')?;
-    let attr: String = at.chars().take_while(|c| *c != ']').collect();
-    if attr.is_empty() { return None; }
-    // 校验 ] 后无内容（避免丢弃路径后缀）
-    let after_attr = &at[attr.len()..];
-    let after_bracket = after_attr.strip_prefix(']')?;
-    if !after_bracket.trim().is_empty() { return None; }
-    Some((tag.to_string(), attr))
-}
-
-fn parse_contains_class(s: &str) -> Option<(String, String)> {
-    // Pattern: tag[contains(@class, 'value')]
-    let bracket = s.find('[')?;
-    let tag = &s[..bracket];
-    if tag.is_empty() { return None; }
-    let rest = &s[bracket..];
-    if rest.contains("contains(@class") {
-        let quote_start = rest.find('\'').or_else(|| rest.find('"'))?;
-        let val_start = &rest[quote_start+1..];
-        let value: String = val_start.chars().take_while(|c| *c != '\'' && *c != '"').collect();
-        // 校验 value 后紧跟引号 + ] 且 ] 后无内容（避免丢弃路径后缀）
-        let after_value = &val_start[value.len()..];
-        let after_quote = after_value.strip_prefix('\'').or_else(|| after_value.strip_prefix('"'))?;
-        let after_bracket = after_quote.strip_prefix(']')?;
-        if !after_bracket.trim().is_empty() { return None; }
-        return Some((tag.to_string(), value));
-    }
-    None
 }
 
 #[cfg(test)]
@@ -606,12 +474,6 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_xpath() {
-        let node = Node::from_fragment(r#"<div id="unique">Content</div>"#);
-        assert_eq!(node.generate_xpath(), "//*[@id=\"unique\"]");
-    }
-
-    #[test]
     fn test_from_fragment_table_element() {
         // 表格元素片段不应被强制包裹 <table>（Important 2 回归测试）
         // 旧 Task 3 重构后用 parse_document 会让 tag() 返回 "table"；
@@ -620,25 +482,6 @@ mod tests {
         assert_eq!(node.tag(), "td");
         assert!(node.text().contains("cell"));
         assert!(node.outer_html().contains("<td>cell</td>"));
-    }
-
-    #[test]
-    fn test_xpath_to_css_rejects_path_suffix() {
-        // 复合 XPath（带路径后缀）不应走快速路径，避免丢弃后缀
-        assert_eq!(xpath_to_css("//div[@class='inner']/p"), None);
-        assert_eq!(xpath_to_css("//div[@class]/p"), None);
-        assert_eq!(xpath_to_css("//div[contains(@class, 'inner')]/p"), None);
-        assert_eq!(xpath_to_css("//*[@id='main']/p"), None);
-        assert_eq!(xpath_to_css("//*[@id='main']//div"), None);
-    }
-
-    #[test]
-    fn test_xpath_to_css_still_handles_simple() {
-        // 简单 XPath（无后缀）仍应走快速路径
-        assert_eq!(xpath_to_css("//div[@class='inner']"), Some("div[class='inner']".to_string()));
-        assert_eq!(xpath_to_css("//div[@class]"), Some("div[class]".to_string()));
-        assert_eq!(xpath_to_css("//*[@id='main']"), Some("#main".to_string()));
-        assert_eq!(xpath_to_css("//li"), Some("li".to_string()));
     }
 
     #[test]
