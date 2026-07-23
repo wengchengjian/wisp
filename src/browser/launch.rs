@@ -95,6 +95,16 @@ pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
     // Proxy
     if let Some(ref proxy) = options.proxy {
         args.push(format!("proxy-server={}", proxy.server));
+        // Chrome --proxy-server 不支持内联认证；username/password 无法通过命令行传递。
+        // 需通过 CDP Fetch.requestPaused 拦截 407 或扩展程序处理（当前未实现）。
+        if proxy.username.is_some() || proxy.password.is_some() {
+            tracing::warn!(
+                "Browser proxy auth (username/password) is not supported via --proxy-server. \
+                 The proxy will be used without authentication; expect 407 responses. \
+                 To use authenticated proxies with browser mode, configure the proxy to \
+                 whitelist the client IP or use an unauthenticated proxy."
+            );
+        }
     }
 
     // User-provided extra args (strip -- prefix if present)
@@ -150,6 +160,22 @@ mod tests {
         };
         let args = build_stealth_args(&opts);
         assert!(args.contains(&"proxy-server=http://127.0.0.1:8080".to_string()));
+    }
+
+    #[test]
+    fn test_stealth_args_proxy_with_auth_still_sets_server() {
+        let opts = LaunchOptions {
+            proxy: Some(crate::config::ProxyConfig {
+                server: "http://127.0.0.1:8080".into(),
+                username: Some("user".into()),
+                password: Some("pass".into()),
+            }),
+            ..Default::default()
+        };
+        let args = build_stealth_args(&opts);
+        // proxy-server 仍设置
+        assert!(args.iter().any(|a| a == "proxy-server=http://127.0.0.1:8080"),
+            "proxy-server 应设置");
     }
 
     #[test]
