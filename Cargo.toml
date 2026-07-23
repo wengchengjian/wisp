@@ -47,6 +47,8 @@ moka = { version = "0.12", features = ["future"] }
 htmd = "0.2"
 # Cron 表达式解析
 croner = "2"
+# 高并发无锁 map（替代 domain_sems 的全局 Mutex<HashMap>）
+dashmap = "6"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

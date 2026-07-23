@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use dashmap::DashMap;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -40,7 +41,7 @@ pub(crate) struct EngineContext {
     pub robots_cache: Arc<Mutex<robots::RobotsCache>>,
     pub follow_tx: tokio::sync::mpsc::UnboundedSender<SpiderRequest>,
     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<SpiderRequest>>>,
-    pub domain_sems: Arc<Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>>,
+    pub domain_sems: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）
     pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
     pub cache_store: Option<Arc<crate::storage::Store>>,
@@ -207,8 +208,8 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
             .and_then(|u| u.host_str().map(|s| s.to_string()))
             .unwrap_or_default();
         let sem = {
-            let mut sems = ctx.domain_sems.lock().await;
-            sems.entry(domain)
+            ctx.domain_sems
+                .entry(domain)
                 .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
                 .clone()
         };
@@ -710,7 +711,7 @@ mod tests {
             robots_cache: Arc::new(Mutex::new(robots::RobotsCache::new())),
             follow_tx,
             follow_rx: Arc::new(Mutex::new(follow_rx)),
-            domain_sems: Arc::new(Mutex::new(HashMap::new())),
+            domain_sems: Arc::new(DashMap::new()),
             proxy_clients: Arc::new(Mutex::new(HashMap::new())),
             cache_store: None,
             request_cache: None,

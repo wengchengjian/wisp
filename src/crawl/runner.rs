@@ -204,7 +204,7 @@ impl Engine {
             robots_cache,
             follow_tx,
             follow_rx: Arc::new(Mutex::new(follow_rx)),
-            domain_sems: Arc::new(Mutex::new(HashMap::new())),
+            domain_sems: Arc::new(dashmap::DashMap::new()),
             proxy_clients: Arc::new(Mutex::new(HashMap::new())),
             cache_store: self.cache_store.clone(),
             request_cache: self.request_cache.clone(),
