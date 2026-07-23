@@ -40,7 +40,6 @@ async fn test_sitemap_parses_loc_urls() {
         headers: Default::default(),
         body: sitemap_xml.as_bytes().to_vec(),
         request: SpiderRequest::get("https://example.com/sitemap.xml"),
-        tracker: None,
         from_cache: false,
     };
 

@@ -24,7 +24,7 @@ async fn smart_client() -> Client {
         .build()
         .unwrap();
 
-    if direct.get("https://quotes.toscrape.com/").await.is_ok() {
+    if direct.get("https://quotes.toscrape.com/", &[]).await.is_ok() {
         return direct;
     }
 
@@ -45,7 +45,7 @@ async fn test_quotes_full_crawl_10_pages() {
     let client = smart_client().await;
 
     // 验证首页可达
-    let resp = client.get("https://quotes.toscrape.com/").await;
+    let resp = client.get("https://quotes.toscrape.com/", &[]).await;
     if resp.is_err() {
         eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
@@ -92,7 +92,7 @@ async fn test_quotes_full_crawl_10_pages() {
 async fn test_books_toscrape_extraction() {
     let client = smart_client().await;
 
-    let resp = client.get("https://books.toscrape.com/").await;
+    let resp = client.get("https://books.toscrape.com/", &[]).await;
     if resp.is_err() {
         eprintln!("SKIP: books.toscrape.com 不可达");
         return;
@@ -130,7 +130,7 @@ async fn test_books_toscrape_extraction() {
 async fn test_xpath_real_page() {
     let client = smart_client().await;
 
-    let resp = client.get("https://quotes.toscrape.com/").await;
+    let resp = client.get("https://quotes.toscrape.com/", &[]).await;
     if resp.is_err() {
         eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
@@ -160,7 +160,7 @@ async fn test_xpath_real_page() {
 async fn test_find_by_text_real_page() {
     let client = smart_client().await;
 
-    let resp = client.get("https://quotes.toscrape.com/").await;
+    let resp = client.get("https://quotes.toscrape.com/", &[]).await;
     if resp.is_err() {
         eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
@@ -186,7 +186,7 @@ async fn test_find_by_text_real_page() {
 async fn test_find_similar_real_page() {
     let client = smart_client().await;
 
-    let resp = client.get("https://quotes.toscrape.com/").await;
+    let resp = client.get("https://quotes.toscrape.com/", &[]).await;
     if resp.is_err() {
         eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
@@ -215,7 +215,7 @@ async fn test_find_similar_real_page() {
 async fn test_response_follow_pagination() {
     let client = smart_client().await;
 
-    let resp = client.get("https://quotes.toscrape.com/").await;
+    let resp = client.get("https://quotes.toscrape.com/", &[]).await;
     if resp.is_err() {
         eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
@@ -230,7 +230,6 @@ async fn test_response_follow_pagination() {
         headers: Default::default(),
         body: fetch_resp.body.clone(),
         request: SpiderRequest::get("https://quotes.toscrape.com/"),
-        tracker: None,
         from_cache: false,
     };
 
@@ -257,7 +256,7 @@ async fn test_encoding_detection() {
     let client = smart_client().await;
 
     // quotes.toscrape.com 是 UTF-8
-    let resp = client.get("https://quotes.toscrape.com/").await;
+    let resp = client.get("https://quotes.toscrape.com/", &[]).await;
     if resp.is_err() {
         eprintln!("SKIP: quotes.toscrape.com 不可达");
         return;
@@ -278,7 +277,7 @@ async fn test_encoding_detection() {
 #[ignore = "requires network access"]
 async fn test_spider_builder_engine_integration() {
     let client = smart_client().await;
-    let resp = client.get("https://books.toscrape.com/").await;
+    let resp = client.get("https://books.toscrape.com/", &[]).await;
     if resp.is_err() {
         eprintln!("SKIP: books.toscrape.com 不可达");
         return;

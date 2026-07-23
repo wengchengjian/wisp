@@ -220,8 +220,8 @@ impl BrowserPool {
             .count()
     }
 
-    /// 获取指定索引的 Browser 引用（内部使用）。
-    async fn get_browser(&self, index: usize) -> Option<BrowserRef> {
+    /// 获取指定索引的 Browser 引用。
+    pub async fn get_browser(&self, index: usize) -> Option<BrowserRef> {
         let instances = self.instances.lock().await;
         instances.get(index)?.as_ref().map(|p| BrowserRef {
             session: p.browser.session.clone(),

@@ -1,92 +1,41 @@
-# Task 7 Report: Scheduler 改造为 async + Mutex
+# Task 7 Report: 修复 robots.txt 端口丢失与失败缓存
 
-## Status: DONE_WITH_CONCERNS
+## Status
+✅ COMPLETE — `cargo build` 通过；`cargo test --lib` 201 passed；`cargo test --test cr_fix_robots_port_test` 2 passed；现有 robots 单元测试 12 passed。
 
-## What was implemented
+## Commit
+`bcc90ba` — `fix(robots): 保留端口 + 失败不缓存`
+- 分支：`fix/code-review-2026-07-23`
+- 文件：`src/crawl/runtime/robots.rs`（+47/-2）、`tests/cr_fix_robots_port_test.rs`（新建，+89）
 
-完全重写 `src/crawl/scheduler.rs`，从同步 struct 改造为 async + `Arc<Mutex<>>` 设计：
+## 改动摘要
+1. **`src/crawl/runtime/robots.rs` — `RobotsRules::is_empty_rules`**（新增 pub 方法）
+   `disallowed.is_empty() && crawl_delay.is_none() && request_rate.is_none()`，用于区分"fetch 失败返回的默认空规则"与"成功获取的有效规则"。
+2. **`src/crawl/runtime/robots.rs` — `rules_for` domain key 含端口**
+   `parsed.port()` 为 `Some(p)` 时拼 `scheme://host:p`，否则 `scheme://host`。修复 `http://example.com:8080` 错误地从 `http://example.com/robots.txt` 获取。
+3. **fetch 失败不缓存**
+   `if !rules.is_empty_rules() { self.cache.insert(...) }` — 失败返回的空规则不入缓存，下次 `rules_for` 重试。瞬态网络失败不再导致永久"允许全部"。
+4. **新增单元测试**：`test_is_empty_rules`、`test_domain_key_preserves_port`（锁定 `url::Url::port()` 行为假设）。
 
-- **PrioritizedRequest** (私有) — 保留原 priority + seq 结构，trait impls (PartialEq/Eq/PartialOrd/Ord) 不变
-- **SchedulerInner** (私有) — 持有 `heap` / `seen` / `seq`，由 Mutex 守护
-- **Scheduler** (公开, `#[derive(Clone)]`) — 包装 `Arc<Mutex<SchedulerInner>>`，可跨 task 共享
-- **8 个 async 方法**：`new`, `push`, `pop`, `pending_urls`, `seen_urls`, `len`, `is_empty`, `restore`
-- **Clone impl for PrioritizedRequest** — 为 `pending_urls` 的 `.cloned().collect()` 提供
-- **fingerprint** helper — `DefaultHasher` 计算 URL 哈希
-- 使用 `tokio::sync::Mutex`（async-aware），非 `std::sync::Mutex`
+## 测试摘要
+| 测试 | 结果 |
+|---|---|
+| `cargo build` | ✅ |
+| `cargo test --lib crawl::runtime::robots` | ✅ 12/12 |
+| `cargo test --lib`（全量） | ✅ 201/201 |
+| `cargo test --test cr_fix_robots_port_test` | ✅ 2/2 |
+  - `robots_fetched_from_correct_port`：mock TcpListener 验证带端口 URL 命中正确端口（counter==1），且 /page 在 `Disallow: /private` 下被允许
+  - `fetch_failure_not_cached_so_retry_happens`：先 fetch 死端口（失败不缓存），再 fetch live 端口，counter==1 证明失败未缓存
 
-## cargo check 输出摘要
+TDD 流程：先写测试 → 跑确认 2 个 FAIL（端口丢失致 counter==0；失败缓存致第二次仍 counter==0）→ 实现 → 跑确认 PASS。
 
-```
-error[E0308]: mismatched types
-  --> src\crawl\mod.rs:132:19
-   |
-132 |         while let Some(req) = sched.pop() {
-   |                   ^^^^^^^^^   ----------- this expression has type
-   |                                `impl futures::Future<Output = std::option::Option<SpiderRequest>>`
-   |
-   = note: expected opaque type `impl futures::Future<...>`
-                      found enum `std::option::Option<_>`
-help: consider `await`ing on the Future
-   |
-132 |         while let Some(req) = sched.pop().await {
-```
+## API 兼容性
+✅ 向后兼容。`RobotsCache` 现有方法签名不变（`is_allowed` / `crawl_delay` / `rules_for` / `new` / `fetch_robots`）。仅新增 `RobotsRules::is_empty_rules` pub 方法，未删除/修改任何现有 API。
 
-- **scheduler.rs 错误数：0** ✅
-- **mod.rs 错误数：1**（line 132，`sched.pop()` 需要 `.await`）✅ 预期内
-- 警告 2 个（与 Task 7 无关：`browser/mod.rs` unused import, `scraper/mod.rs` unused variable）
+## 顾虑 / 取舍
+1. **空 robots.txt 不缓存（已知取舍）**：站点 robots.txt 真的为空（无任何 Disallow/Crawl-delay/Request-rate）时，`is_empty_rules` 返回 true，每次 `rules_for` 都重试 fetch。这是 brief 明确接受的取舍（空 robots.txt 少见，重试成本低）。若需精确区分"空规则"与"失败"，需 `fetch_robots` 返回 `Result`，改动更大，超出本 task 范围。
+2. **brief 中 mock 断言 bug 已修正**：brief Step 1 的 mock 返回 `Disallow: /` 却断言 `/page` allowed——`/page` 实际匹配 `Disallow: /`（`path.starts_with("/")` 为 true）会被阻止。改为 `Disallow: /private`（Content-Length 同步改为 32），保留 brief "验证 /page 被允许"的意图。
+3. **`fetch_failure_not_cached_so_retry_happens` 用 `port+1` 当死端口**：理论上 `port+1` 可能被其他进程占用导致 fetch 成功，但 mock server 已占用 `port`，且测试断言 counter==1（而非 0），若 `port+1` 偶然有 HTTP 服务返回非空规则，counter 仍为 0 → 测试 FAIL（而非误 PASS），不会产生假阳性。
 
-### 关于"3 个预期错误"的说明
-
-Task brief 提到 `mod.rs` 有 3 处调用点需要修复（line 125, 132, 182）。实际编译时只有 line 132 (`sched.pop()`) 报错，原因是：
-- `sched.push(...)` 返回 `Future`，作为语句直接丢弃 Future 不触发编译错误（只是运行时 no-op，Task 8 加 `.await` 即可）
-- `sched.pop()` 用于 `while let Some(req) = ...` 模式绑定，类型不匹配触发 E0308
-
-这与 brief 描述的"3 处需要 .await"在语义上一致——只是 Rust 编译器只在类型受约束的位置报错。Task 8 重写 `Engine::run` 时会一并加 `.await`。
-
-## 与 brief 的偏差（已修复）
-
-Brief 中的 verbatim 代码存在 **borrow checker 错误**（E0502），在 `push` 和 `restore` 两处都出现：
-
-```rust
-// Brief 原文（编译失败）：
-g.heap.push(PrioritizedRequest { req, seq: g.seq });
-//                                    ^^^^^^
-// immutable borrow of g.seq while g.heap is mutably borrowed
-```
-
-**修复**（保持语义不变，2 处同样修改）：
-```rust
-let seq = g.seq;
-g.heap.push(PrioritizedRequest { req, seq });
-g.seq += 1;
-```
-
-这是 trivial 的 borrow 拆分，把 `g.seq` 先读到局部变量再 push，不改变运行时行为。修改后 scheduler.rs 编译通过。
-
-## Files changed
-
-- `src/crawl/scheduler.rs` — 1 file changed, 91 insertions(+), 13 deletions(-)
-
-## Commits
-
-- `602f76e` — refactor: Scheduler 改造为 async + Mutex 支持并发访问
-
-## Self-review
-
-- [x] 完全替换 scheduler.rs 为 async 版本
-- [x] 8 个 async 方法全部存在（new/push/pop/pending_urls/seen_urls/len/is_empty/restore）
-- [x] Clone impl for PrioritizedRequest 存在
-- [x] fingerprint 函数存在
-- [x] `tokio::sync::Mutex` 而非 `std::sync::Mutex`
-- [x] 未修改 mod.rs（Task 8 处理）
-- [x] 只提交了 scheduler.rs
-- [x] scheduler.rs 本身无编译错误
-- [x] mod.rs 错误为预期内（deferred to Task 8）
-
-## Concerns
-
-1. **Brief 代码有 borrow checker bug**：verbatim 代码无法编译，已做最小修复（2 处局部变量提取）。Task 8/9 review 时建议同步更新 brief 或注明此偏差。
-
-2. **`seen_urls` placeholder**：返回 `u64` hash 的字符串形式，非真实 URL。这是 brief 明确接受的 stage 1 限制，不在本 task 修复范围。
-
-3. **`push` 调用点静默失败**：`mod.rs:125` 和 `mod.rs:182` 的 `sched.push(...)` 由于未 `.await`，Future 被丢弃，运行时不会真正 push。Task 8 重写 `Engine::run` 时必须一并修复。
+## 报告路径
+`/home/weng/wisp/.superpowers/sdd/task-7-report.md`

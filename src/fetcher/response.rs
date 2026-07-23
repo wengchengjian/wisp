@@ -1,4 +1,4 @@
-﻿//! 统一响应和请求类型。
+//! 统一响应和请求类型。
 //!
 //! 所有 Fetcher 模式（Http / Dynamic / Stealth）返回同一个 `Response`，
 //! 用户无需关心底层实现即可使用 `.css()` / `.xpath()` / `.json()` 等 API。
@@ -33,6 +33,20 @@ pub struct Request {
     pub callback: Option<String>,
     /// 优先级（Spider 调度用）
     pub priority: i32,
+}
+
+impl Default for Request {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            method: Method::Get,
+            headers: HashMap::new(),
+            body: None,
+            meta: Value::Null,
+            callback: None,
+            priority: 0,
+        }
+    }
 }
 
 impl Request {

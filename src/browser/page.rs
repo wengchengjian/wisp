@@ -12,6 +12,9 @@ pub struct Page {
     pub(crate) session: Arc<CdpSession>,
     pub(crate) session_id: String,
     pub(crate) frame_id: String,
+    /// CDP target ID — 用于显式关闭 tab。
+    /// `close()` 调用后置 `None`，防止 `Drop` 重复关闭。
+    target_id: Option<String>,
 }
 
 impl Page {
@@ -57,7 +60,7 @@ impl Page {
         let _ = session.execute_with_session("Log.enable", json!({}), Some(&session_id)).await;
         session.execute_with_session("Page.setLifecycleEventsEnabled", json!({"enabled": true}), Some(&session_id)).await?;
 
-        let page = Self { session, session_id, frame_id };
+        let page = Self { session, session_id, frame_id, target_id: Some(target_id) };
 
         // Inject stealth scripts (conditional on headless/headed)
         let stealth_script = if headless {
@@ -322,6 +325,39 @@ impl Page {
                 return Err(WispError::Timeout("wait_for_load_state".into()));
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    // --- Public API: Lifecycle ---
+
+    /// 显式关闭此 tab（发送 `Target.closeTarget`）。
+    ///
+    /// 推荐在 async 上下文中调用以确保 tab 立即关闭。调用后 `target_id` 置
+    /// `None`，`Drop` 时不会重复关闭。若忘记调用，`Drop` 会在后台 task 中
+    /// 兜底关闭（但 runtime 关闭时 spawn 可能丢失）。
+    pub async fn close(&mut self) -> Result<()> {
+        if let Some(target_id) = self.target_id.take() {
+            // Target.closeTarget 是 browser-level 命令，不带 session_id
+            self.session
+                .execute("Target.closeTarget", json!({"targetId": target_id}))
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        // 兜底：若用户忘记调 `close()`，在后台 task 中关闭 tab。
+        // 注意：Drop 是同步的无法 await，必须 spawn；
+        // runtime 关闭时 spawn 可能丢失，但比完全不关闭强。
+        if let Some(target_id) = self.target_id.take() {
+            let session = Arc::clone(&self.session);
+            tokio::spawn(async move {
+                let _ = session
+                    .execute("Target.closeTarget", json!({"targetId": target_id}))
+                    .await;
+            });
         }
     }
 }

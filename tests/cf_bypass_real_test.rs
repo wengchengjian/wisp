@@ -35,7 +35,7 @@ async fn proxy_available() -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    client.get("https://www.google.com/generate_204").await.is_ok()
+    client.get("https://www.google.com/generate_204", &[]).await.is_ok()
 }
 
 // === 测试 1: TLS 指纹验证 ===
@@ -55,7 +55,7 @@ async fn test_tls_fingerprint_chrome() {
         .build()
         .unwrap();
 
-    let resp = client.get("https://tls.peet.ws/api/all").await.unwrap();
+    let resp = client.get("https://tls.peet.ws/api/all", &[]).await.unwrap();
     assert_eq!(resp.status, 200, "tls.peet.ws 应返回 200");
 
     let json = resp.json().unwrap();
@@ -99,7 +99,7 @@ async fn test_fetch_with_proxy_bot_detection() {
         .unwrap();
 
     // bot.sannysoft.com 检测基本浏览器特征
-    let resp = client.get("https://quotes.toscrape.com/").await.unwrap();
+    let resp = client.get("https://quotes.toscrape.com/", &[]).await.unwrap();
     assert_eq!(resp.status, 200);
 
     let text = resp.text().unwrap();
@@ -248,7 +248,7 @@ async fn test_multiple_tls_fingerprints() {
             .build()
             .unwrap();
 
-        let resp = client.get("https://quotes.toscrape.com/").await;
+        let resp = client.get("https://quotes.toscrape.com/", &[]).await;
         match resp {
             Ok(r) => {
                 assert_eq!(r.status, 200, "{} 指纹应成功获取页面", name);

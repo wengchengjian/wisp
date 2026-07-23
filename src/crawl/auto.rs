@@ -1,60 +1,14 @@
-﻿//! Auto 模式核心组件：选择器追踪、URL 泛化、规则引擎、拦截检测。
+﻿//! Auto 模式核心组件：URL 泛化、规则引擎、拦截检测。
 //!
 //! Auto 模式流程：
 //! 1. 匹配用户规则 → 直接用指定模式
 //! 2. 匹配自动泛化缓存 → 直接用缓存模式
-//! 3. 都没命中 → HTTP 抓取 → 检测是否需要升级
+//! 3. 都没命中 → HTTP 抓取 → 中间件检测是否需要升级
 
-use std::collections::{HashMap, HashSet};
-use regex::Regex;
+use crate::error::{Result, WispError};
 use crate::fetcher::FetchMode;
-use crate::error::{WispError, Result};
-
-// === 选择器追踪器 ===
-
-/// 追踪 parse() 中所有选择器调用及匹配数。
-///
-/// Auto 模式下，SpiderResponse 的 css()/xpath_auto() 会自动记录到此追踪器。
-/// parse() 结束后 Engine 检查是否有选择器返回 0 节点。
-#[derive(Debug, Default)]
-pub struct SelectorTracker {
-    /// (selector, match_count)
-    records: Vec<(String, usize)>,
-}
-
-impl SelectorTracker {
-    pub fn new() -> Self {
-        Self { records: Vec::new() }
-    }
-
-    /// 记录一次选择器调用。
-    pub fn record(&mut self, selector: &str, match_count: usize) {
-        self.records.push((selector.to_string(), match_count));
-    }
-
-    /// 是否有选择器返回 0 节点（排除用户可选项）。
-    ///
-    /// 返回 true 表示需要升级到 Dynamic 模式。
-    pub fn needs_upgrade(&self, exclude: &HashSet<String>) -> bool {
-        self.records.iter().any(|(sel, count)| {
-            *count == 0 && !exclude.contains(sel.as_str())
-        })
-    }
-
-    /// 获取所有记录（调试用）。
-    pub fn records(&self) -> &[(String, usize)] {
-        &self.records
-    }
-
-    /// 记录数量。
-    pub fn len(&self) -> usize {
-        self.records.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
-    }
-}
+use regex::Regex;
+use std::collections::HashMap;
 
 // === URL 泛化算法 ===
 
@@ -70,7 +24,8 @@ pub fn generalize_url(url: &str) -> String {
         .map(|u| u.path().to_string())
         .unwrap_or_else(|_| url.to_string());
 
-    let segments: Vec<String> = path.split('/')
+    let segments: Vec<String> = path
+        .split('/')
         .map(|seg| {
             if seg.is_empty() {
                 return String::new();
@@ -120,8 +75,9 @@ impl ModeRuleEngine {
 
     /// 用户添加规则（优先级最高）。
     pub fn add_user_rule(&mut self, pattern: &str, mode: FetchMode) -> Result<()> {
-        let re = Regex::new(pattern)
-            .map_err(|e| WispError::CdpError(format!("invalid auto_rule regex '{}': {}", pattern, e)))?;
+        let re = Regex::new(pattern).map_err(|e| {
+            WispError::CdpError(format!("invalid auto_rule regex '{}': {}", pattern, e))
+        })?;
         self.user_rules.push((re, mode));
         Ok(())
     }
@@ -221,7 +177,10 @@ mod tests {
 
     #[test]
     fn test_generalize_numeric_id() {
-        assert_eq!(generalize_url("https://shop.com/products/123"), "/products/\\d+");
+        assert_eq!(
+            generalize_url("https://shop.com/products/123"),
+            "/products/\\d+"
+        );
         assert_eq!(generalize_url("https://shop.com/page/2"), "/page/\\d+");
     }
 
@@ -236,12 +195,18 @@ mod tests {
     #[test]
     fn test_generalize_static_path() {
         assert_eq!(generalize_url("https://shop.com/about"), "/about");
-        assert_eq!(generalize_url("https://shop.com/products/list"), "/products/list");
+        assert_eq!(
+            generalize_url("https://shop.com/products/list"),
+            "/products/list"
+        );
     }
 
     #[test]
     fn test_generalize_mixed() {
-        assert_eq!(generalize_url("https://shop.com/user/42/posts"), "/user/\\d+/posts");
+        assert_eq!(
+            generalize_url("https://shop.com/user/42/posts"),
+            "/user/\\d+/posts"
+        );
     }
 
     #[test]
@@ -259,7 +224,10 @@ mod tests {
         engine.learn("https://shop.com/api/data", FetchMode::Dynamic);
 
         // 用户规则优先
-        assert_eq!(engine.resolve("https://shop.com/api/data"), Some(FetchMode::Http));
+        assert_eq!(
+            engine.resolve("https://shop.com/api/data"),
+            Some(FetchMode::Http)
+        );
     }
 
     #[test]
@@ -268,8 +236,14 @@ mod tests {
         engine.learn("https://shop.com/products/1", FetchMode::Dynamic);
 
         // 同模板 URL 应命中
-        assert_eq!(engine.resolve("https://shop.com/products/2"), Some(FetchMode::Dynamic));
-        assert_eq!(engine.resolve("https://shop.com/products/999"), Some(FetchMode::Dynamic));
+        assert_eq!(
+            engine.resolve("https://shop.com/products/2"),
+            Some(FetchMode::Dynamic)
+        );
+        assert_eq!(
+            engine.resolve("https://shop.com/products/999"),
+            Some(FetchMode::Dynamic)
+        );
     }
 
     #[test]
@@ -285,40 +259,10 @@ mod tests {
         engine.learn("https://shop.com/products/2", FetchMode::Stealth); // 更新
 
         assert_eq!(engine.auto_rule_count(), 1); // 不新增，更新
-        assert_eq!(engine.resolve("https://shop.com/products/3"), Some(FetchMode::Stealth));
-    }
-
-    // === 选择器追踪测试 ===
-
-    #[test]
-    fn test_tracker_zero_match_triggers() {
-        let mut tracker = SelectorTracker::new();
-        tracker.record(".product-card", 0);
-        tracker.record(".header", 1);
-
-        assert!(tracker.needs_upgrade(&HashSet::new()));
-    }
-
-    #[test]
-    fn test_tracker_exclude_respected() {
-        let mut tracker = SelectorTracker::new();
-        tracker.record(".cookie-banner", 0); // 被排除
-        tracker.record(".product-card", 5);
-
-        let mut exclude = HashSet::new();
-        exclude.insert(".cookie-banner".to_string());
-
-        assert!(!tracker.needs_upgrade(&exclude));
-    }
-
-    #[test]
-    fn test_tracker_all_matched_no_upgrade() {
-        let mut tracker = SelectorTracker::new();
-        tracker.record(".product-card", 10);
-        tracker.record(".price", 10);
-        tracker.record("h1", 1);
-
-        assert!(!tracker.needs_upgrade(&HashSet::new()));
+        assert_eq!(
+            engine.resolve("https://shop.com/products/3"),
+            Some(FetchMode::Stealth)
+        );
     }
 
     // === 拦截检测测试 ===

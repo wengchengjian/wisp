@@ -30,6 +30,7 @@ wreq = { version = "6.0.0-rc", features = ["cookies"] }
 wreq-util = "3.0.0-rc"
 toml = "0.8"
 regex = "1"
+aho-corasick = "1"
 # SQLite 统一存储（阶段 1：adaptive + checkpoint）
 rusqlite = { version = "0.32", features = ["bundled"] }
 # checkpoint blob 序列化

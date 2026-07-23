@@ -20,7 +20,6 @@ fn make_resp(url: &str, body: &str, callback: Option<&str>) -> SpiderResponse {
         headers: HashMap::new(),
         body: body.as_bytes().to_vec(),
         request: req,
-        tracker: None,
         from_cache: false,
     }
 }

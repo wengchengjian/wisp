@@ -70,7 +70,7 @@ impl RobotsCache {
 
     async fn fetch_robots(&self, client: &Client, domain: &str) -> RobotsRules {
         let robots_url = format!("{}/robots.txt", domain);
-        let Ok(resp) = client.get(&robots_url).await else { return RobotsRules::default(); };
+        let Ok(resp) = client.get(&robots_url, &[]).await else { return RobotsRules::default(); };
         let Ok(text) = resp.text() else { return RobotsRules::default(); };
         parse_robots_text(&text)
     }

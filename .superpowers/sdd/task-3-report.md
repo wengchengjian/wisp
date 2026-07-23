@@ -1,49 +1,136 @@
-# Task 3 报告：删除 parse_fn/async_parse_fn 冗余，统一到 on() API
+# Task 3 报告 — P1-1b proxy_clients 改用 DashMap
 
-## Status: DONE
+## 步骤执行（按 brief 1-10 顺序）
 
-## Commits
-- `d0de503` refactor(builder): 删除 parse_fn/async_parse_fn，统一到 on() API
+### Step 1: 写失败测试
+新建 `tests/p1_proxy_clients_test.rs`，内容依据 brief。注意：brief 原始测试代码 import 了
+`std::sync::atomic::{AtomicUsize, Ordering}` 与 `wisp::crawl::Method`，但测试体未使用。
+依据任务验证要求 "check unused-import warnings — fix any"，在写测试阶段即移除这两行未用 import，
+避免引入新警告。最终 import 块为：
+```rust
+use std::sync::Arc;
+use wisp::crawl::engine::fetch_page_inner;
+use wisp::crawl::SpiderRequest;
+use wisp::fetcher::FetchMode;
+use wisp::http::{Client, Config};
+```
 
-## 变更摘要
+### Step 2: 验证测试失败
+```
+error[E0603]: function `fetch_page_inner` is private
+   --> tests/p1_proxy_clients_test.rs:5:26
+    |
+  5 | use wisp::crawl::engine::fetch_page_inner;
+    |                          ^^^^^^^^^^^^^^^^ private function
+```
+编译失败，符合预期（`fetch_page_inner` 为 `pub(crate)`，`proxy_clients` 类型为 `Mutex`）。
 
-### src/crawl/builder.rs
-- 删除 `ParseFn` / `AsyncParseFn` 类型别名
-- 删除 `SpiderBuilder` 的 `parse_fn` / `async_parse_fn` 字段
-- 删除 `SpiderBuilder::parse()` / `parse_async()` builder 方法
-- 删除 `ClosureSpider` 的 `parse_fn` / `async_parse_fn` 字段
-- `ClosureSpider::parse()` 改为兜底空实现 `(vec![], vec![])`
-- `build()` 断言改为 `!self.handlers.is_empty()`，panic 消息更新为「必须至少注册一个 handler（通过 on()）」
-- `handle()` 路由回退逻辑：无 default handler 时直接返回空（不再回退 parse 闭包）
-- 文档注释示例从 `.parse(|resp| {...})` 迁移到 `.on("default", |resp| async move {...})`
-- 内部测试迁移：
-  - `test_spider_builder_basic` / `test_spider_builder_allowed_domains` / `test_closure_spider_custom_is_blocked` → `.on("default", ...)`
-  - `test_closure_spider_parse` → `test_closure_spider_default_handler`（改用 `handle()`）
-  - `test_closure_spider_parse_async` → `test_closure_spider_async_handler`（改用 `handle()`）
-  - `test_spider_builder_no_parse_panics` → `test_spider_builder_no_handler_panics`（panic 消息更新）
-  - `test_closure_spider_handle_fallback_to_parse` → `test_closure_spider_handle_default_handler`（语义改为 default handler 路由）
+### Step 3: engine.rs proxy_clients 字段类型
+`src/crawl/engine.rs:66`：
+```rust
+pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
+```
+→
+```rust
+pub proxy_clients: Arc<dashmap::DashMap<String, Arc<Client>>>,
+```
+采用全限定 `dashmap::DashMap`，与同结构体 `domain_sems` 字段（line 64 `Arc<DashMap<...>>`，
+该处用顶部 `use dashmap::DashMap;`）风格略有差异，但与 brief 要求一致且更明确。
 
-### tests/（全部 .parse() 调用迁移）
-- `tests/builder_api_test.rs`：4 处 `.parse()` → `.on("default", ...)`；`test_spider_builder_parse_with_follow` 改用 `spider.handle(resp)`
-- `tests/callback_routing_test.rs`：`test_callback_no_handler_falls_back_to_parse` → `test_callback_default_handler_serves_no_callback`；更新注释
-- `tests/auto_mode_test.rs`：2 处 `.parse()` → `.on("default", ...)`
-- `tests/cf_bypass_real_test.rs`：1 处 `.parse()` → `.on("default", ...)`（GBK 文件，ASCII 定向编辑，未触及 GBK 注释）
-- `tests/real_scrape_test.rs`：2 处 `.parse()` → `.on("default", ...)`（GBK 文件，同上）
+### Step 4: fetch_page / fetch_page_inner 签名
+两个函数末参 `proxy_clients: &Mutex<HashMap<String, Arc<Client>>>` →
+`proxy_clients: &dashmap::DashMap<String, Arc<Client>>`；
+`pub(crate) async fn` → `pub async fn`。
 
-## 测试摘要
+### Step 5: fetch_page_inner 内部锁逻辑
+将原 `proxy_clients.lock().await` + `contains_key` + `insert` + `get().unwrap().clone()`
+替换为 brief 指定的 DashMap 双路径：
+- 快路径 `proxy_clients.get(proxy)` 返回 `Some(c)` 时 `c.clone()` 释放 Ref
+- 慢路径 `Client::builder()...build()?` 失败向上传播；成功后 `entry(proxy.to_string()).or_insert(arc).clone()`
 
-| 命令 | 结果 |
-|------|------|
-| `cargo build --lib` | ✅ 通过（仅预先存在的 7 个 warning，无 error） |
-| `cargo test --lib crawl::builder` | ✅ 8 passed; 0 failed |
-| `cargo test --test builder_api_test` | ✅ 10 passed; 0 failed |
-| `cargo test --test callback_routing_test` | ✅ 9 passed; 0 failed |
-| `cargo test --test auto_mode_test --no-run` | ✅ 编译通过（仅 1 个预先存在的 unused import warning） |
+借用法：`get` 的 Ref 在 `if let Some(c) = ...` 分支内通过 `c.clone()` 立即释放，进入 else 分支时
+不再持有该 Ref，`entry()` 调用安全。
 
-## Concerns
+### Step 6: runner.rs 构造
+`src/crawl/runner.rs:225`（原行号）`Arc::new(Mutex::new(HashMap::new()))` →
+`Arc::new(dashmap::DashMap::new())`。
+同时移除文件顶部 `use std::collections::HashMap;`（runner.rs 中 HashMap 仅此一处使用，
+保留会触发 unused-import 警告）。
 
-1. **文档文件未更新**：`CLAUDE.md`（第 79 行）和 `README.md`（第 90 行）仍含旧 `.parse(|resp| {...})` 示例。brief 的 grep 迁移范围限定为 `src/` 和 `tests/`，故未触及文档文件。这些示例现已过时（`.parse()` builder 方法已删除），建议后续单独更新。
+### Step 7: engine.rs make_ctx 测试辅助
+`src/crawl/engine.rs:800`（原行号）同样替换为 `Arc::new(dashmap::DashMap::new())`。
 
-2. **GBK 编码测试文件**：`tests/real_scrape_test.rs`、`tests/cf_bypass_real_test.rs` 按 CLAUDE.md 记录存在预先的 GBK 编码问题（非 UTF-8），原本即无法编译。本次对其中的 `.parse()` 调用做了 ASCII 定向替换（未触及 GBK 注释字节），但这些文件仍因 GBK 编码问题无法编译——此为预先存在问题，非本次引入。
+### Step 8: mod.rs re-export
+找到 Task 2 添加的 `pub use engine::record_status;`（mod.rs:34），替换为合并形式：
+```rust
+pub use engine::{record_status, fetch_page, fetch_page_inner};
+```
+未重复添加。
 
-3. **`builder_api_test.rs` 预先存在的 unused import warning**（`wisp::http`、`wisp::FetchMode`）：本次迁移未引入新 warning，这些 import 在迁移前即未被使用。
+### Step 9: 验证通过
+所有验证命令输出如下（关键行）：
+
+**`cargo test --test p1_proxy_clients_test`：**
+```
+running 1 test
+test proxy_clients_caches_client_per_proxy_url ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+（对 127.0.0.1:1 的 fetch 必然连接失败，但 Client 已被缓存，断言 `len() == 1` 与
+`contains_key` 通过，PASS 符合预期。）
+
+**`cargo build`：**
+```
+warning: `wisp` (lib) generated 6 warnings (run `cargo fix --lib -p wisp` to apply 5 suggestions)
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.28s
+```
+退出码 0，无错误。6 条警告全部为 pre-existing 基线（`src/crawl/mod.rs:38,43,43,44,47`
+与 `src/crawl/middleware/builtin.rs:9`），通过 `git stash` + `cargo build` 对比 HEAD=`324b2a9`
+确认本任务未引入新警告。
+
+**`cargo test --lib`：**
+```
+test result: ok. 207 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+```
+
+**`cargo clippy --lib 2>&1 | grep "generated.*warnings"`：**
+```
+warning: `wisp` (lib) generated 27 warnings
+```
+≤27 基线，无新增。
+
+### Step 10: 提交
+```
+git add src/crawl/engine.rs src/crawl/runner.rs src/crawl/mod.rs tests/p1_proxy_clients_test.rs
+git commit -m "perf: proxy_clients 改用 DashMap 消除全局锁 (P1-1b)"
+```
+单提交，4 文件，+46/-13：
+- src/crawl/engine.rs            | 23 +++++++++++++----------
+- src/crawl/mod.rs               |  2 +-
+- src/crawl/runner.rs            |  3 +--
+- tests/p1_proxy_clients_test.rs | 31 +++++++++++++++++++++++++++++++
+
+## 警告与处理
+- 测试文件初始按 brief 原文含 `AtomicUsize`, `Ordering`, `Method` 三个未用 import，
+  会在 `cargo build` / `cargo test` 触发 unused-import 警告。依据任务验证要求 "fix any"，
+  在 Step 1 即移除这些 import，最终测试文件无任何警告。
+- lib 层 6 条 unused-import 警告为 pre-existing 基线（HEAD=324b2a9 既有），
+  非 Task 3 引入，未在本任务范围内修改。
+
+## 最终 commit SHA
+`82b19bd9b5bfb85ff659869c03e27ec8cb17bb8c`
+
+## Self-review
+- ✅ proxy_clients 字段类型：`Arc<dashmap::DashMap<String, Arc<Client>>>`，与 brief 一致。
+- ✅ fetch_page / fetch_page_inner 签名末参为 `&dashmap::DashMap<String, Arc<Client>>`，可见性 `pub`。
+- ✅ 内部逻辑：快路径 `get` → `clone()` 释放 Ref；慢路径 `entry().or_insert(arc).clone()`；
+  `build()?` 错误向上传播；并发安全（多 task 同时 miss 时 `or_insert` 保证仅一个 Client 生效）。
+- ✅ runner.rs / engine.rs make_ctx 两处构造同步更新为 `Arc::new(dashmap::DashMap::new())`。
+- ✅ runner.rs 移除未用 `use std::collections::HashMap;` 避免新警告。
+- ✅ mod.rs：合并为 `pub use engine::{record_status, fetch_page, fetch_page_inner};`，无重复行。
+- ✅ 仅 stage brief 指定的 4 个文件，未用 `git add -A`/`git add .`。
+- ✅ 一行 commit message 与 brief 完全一致。
+- ✅ master 直推，未建分支/worktree。
+- ✅ 未创建文档文件。
+- ✅ 验证全绿：新测试 1 passed；lib 207 passed；build 无错；clippy 27 ≤ 基线。

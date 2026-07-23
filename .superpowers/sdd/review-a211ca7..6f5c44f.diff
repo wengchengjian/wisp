@@ -1,0 +1,180 @@
+# Review package: a211ca7..6f5c44f
+
+## Commits
+6f5c44f refactor: Method::as_str() DRY 3 处字符串转换 (P1-5)
+
+## Files changed
+ src/crawl/engine.rs             |  7 +------
+ src/crawl/middleware/builtin.rs | 16 +++-------------
+ src/crawl/mod.rs                | 20 ++++++++++++++++++++
+ 3 files changed, 24 insertions(+), 19 deletions(-)
+
+## Diff
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index f2d16b7..426814a 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -299,26 +299,21 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+                 // 中间件短路（如缓存命中），跳过网络请求直接处理响应
+                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+                 record_status(stats, cached_resp.status).await;
+                 return process_response(ctx, cached_resp, &req).await;
+             }
+             _ => {}
+         }
+     }
+ 
+     // 提前计算 method_str（缓存查询与写入都需要）
+-    let method_str = match req.method {
+-        Method::Get => "GET",
+-        Method::Post => "POST",
+-        Method::Put => "PUT",
+-        Method::Delete => "DELETE",
+-    };
++    let method_str = req.method.as_str();
+ 
+     // 3. 缓存检查
+     match check_request_caches(ctx, &req, method_str).await {
+         CacheResult::Hit(resp) => {
+             return process_response(ctx, *resp, &req).await;
+         }
+         CacheResult::Miss => {}
+     }
+ 
+     // 4. robots + 信号量 + 延迟 + 抓取 + 缓存写入
+diff --git a/src/crawl/middleware/builtin.rs b/src/crawl/middleware/builtin.rs
+index e50087a..1f682fe 100644
+--- a/src/crawl/middleware/builtin.rs
++++ b/src/crawl/middleware/builtin.rs
+@@ -1,20 +1,20 @@
+ //! 内建中间件实现。
+ 
+ use std::collections::HashSet;
+ use std::sync::Arc;
+ use std::time::Duration;
+ use async_trait::async_trait;
+ use tokio::sync::Mutex;
+ 
+ use super::{Middleware, MwAction, ErrorAction, CrawlContext, ItemPipeline};
+-use crate::crawl::{SpiderRequest, SpiderResponse, Method};
++use crate::crawl::{SpiderRequest, SpiderResponse};
+ use crate::crawl::auto::{self, ModeRuleEngine};
+ use crate::crawl::runtime::request_cache::{RequestCache, CachedEntry};
+ use crate::crawl::runtime::robots::RobotsCache;
+ use crate::fetcher::FetchMode;
+ use crate::http::Client;
+ 
+ // === 请求修改类 ===
+ 
+ /// UA 轮换中间件：每次请求随机选择一个 User-Agent。
+ pub struct UaRotationMiddleware {
+@@ -273,50 +273,40 @@ impl CacheMiddleware {
+         Self { cache: RequestCache::new(max_entries, ttl) }
+     }
+ }
+ 
+ #[async_trait]
+ impl Middleware for CacheMiddleware {
+     fn priority(&self) -> u32 { 3 }
+ 
+     async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+         // 键含 method，避免 POST/GET 同 URL 串味（与 engine.rs 保持一致）
+-        let method_str = match req.method {
+-            Method::Get => "GET",
+-            Method::Post => "POST",
+-            Method::Put => "PUT",
+-            Method::Delete => "DELETE",
+-        };
++        let method_str = req.method.as_str();
+         if let Some(entry) = self.cache.get(method_str, &req.url).await {
+             let resp = SpiderResponse {
+                 url: req.url.clone(),
+                 status: entry.status,
+                 headers: entry.headers,
+                 body: entry.body,
+                 request: req.clone(),
+                 tracker: None,
+                 from_cache: true,
+             };
+             return MwAction::Respond(resp);
+         }
+         MwAction::Continue
+     }
+ 
+     async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+         if resp.status >= 200 && resp.status < 400 && !resp.from_cache {
+             // 写入时用请求方法（resp.request.method）作为键的一部分
+-            let method_str = match resp.request.method {
+-                Method::Get => "GET",
+-                Method::Post => "POST",
+-                Method::Put => "PUT",
+-                Method::Delete => "DELETE",
+-            };
++            let method_str = resp.request.method.as_str();
+             self.cache.put(method_str, &resp.url, CachedEntry {
+                 status: resp.status,
+                 headers: resp.headers.clone(),
+                 body: resp.body.clone(),
+             }).await;
+         }
+         MwAction::Continue
+     }
+ }
+ 
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index 30ecc40..5737044 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -45,20 +45,32 @@ use tokio::sync::Mutex;
+ use crate::error::{WispError, Result};
+ use crate::http::{self, Client};
+ use crate::parser::{Node, NodeList};
+ use crate::fetcher::FetchMode;
+ use self::stats::SpiderStats;
+ 
+ /// HTTP method for spider requests.
+ #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+ pub enum Method { Get, Post, Put, Delete }
+ 
++impl Method {
++    /// 返回标准 HTTP 动词字符串（大写）。
++    pub fn as_str(&self) -> &'static str {
++        match self {
++            Method::Get => "GET",
++            Method::Post => "POST",
++            Method::Put => "PUT",
++            Method::Delete => "DELETE",
++        }
++    }
++}
++
+ /// 请求钩子的决策结果。
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum RequestAction {
+     /// 正常执行
+     Proceed,
+     /// 跳过此请求
+     Skip,
+     /// 延迟指定时间后再执行
+     Delay(Duration),
+     /// 终止整个爬取
+@@ -497,11 +509,19 @@ mod tests {
+             from_cache: false,
+         };
+         // 不应 panic
+         let nodes = resp.css("p");
+         assert_eq!(nodes.iter().count(), 1);
+         // tracker 应记录（SelectorTracker.records 为私有，用 len() 方法）
+         let t = resp.tracker.as_ref().unwrap().lock().unwrap();
+         assert_eq!(t.len(), 1, "应记录 1 个选择器匹配");
+         assert_eq!(t.records().len(), 1);
+     }
++
++    #[test]
++    fn test_method_as_str_returns_standard_verbs() {
++        assert_eq!(Method::Get.as_str(), "GET");
++        assert_eq!(Method::Post.as_str(), "POST");
++        assert_eq!(Method::Put.as_str(), "PUT");
++        assert_eq!(Method::Delete.as_str(), "DELETE");
++    }
+ }

@@ -1,0 +1,258 @@
+# Review: bcc90ba..cad9c82
+## Commits
+cad9c82 fix(cache): RequestCache 键含 HTTP 方法
+## Stat
+ src/crawl/engine.rs                | 20 ++++++------
+ src/crawl/middleware/builtin.rs    | 20 ++++++++++--
+ src/crawl/runtime/request_cache.rs | 65 +++++++++++++++++++++++++++-----------
+ 3 files changed, 74 insertions(+), 31 deletions(-)
+## Diff
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index 2f629e4..10949b4 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -135,15 +135,23 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+                 return process_response(ctx, cached_resp, &req).await;
+             }
+             _ => {}
+         }
+     }
+ 
+-    // 2. 内存缓存检查 (RequestCache)
++    // 1.85. 提前计算 method_str（RequestCache 与 dev_mode SQLite 缓存查询都需要）
++    let method_str = match req.method {
++        Method::Get => "GET",
++        Method::Post => "POST",
++        Method::Put => "PUT",
++        Method::Delete => "DELETE",
++    };
++
++    // 2. 内存缓存检查 (RequestCache) — 键含 method，避免 POST/GET 同 URL 串味
+     if let Some(ref rc) = ctx.request_cache {
+-        if let Some(entry) = rc.get(&req.url).await {
++        if let Some(entry) = rc.get(method_str, &req.url).await {
+             let resp = SpiderResponse {
+                 url: req.url.clone(),
+                 status: entry.status,
+                 headers: entry.headers,
+                 body: entry.body,
+                 request: req.clone(),
+@@ -155,18 +163,12 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+             // 直接跳到处理结果阶段
+             return process_response(ctx, resp, &req).await;
+         }
+     }
+ 
+     // 3. 开发模式 SQLite 缓存检查
+-    let method_str = match req.method {
+-        Method::Get => "GET",
+-        Method::Post => "POST",
+-        Method::Put => "PUT",
+-        Method::Delete => "DELETE",
+-    };
+     let cached_resp: Option<crate::storage::CachedResponse> = if ctx.dev_mode {
+         ctx.cache_store.as_ref().and_then(|s| {
+             s.load_cached_response(&req.url, method_str).ok().flatten()
+         })
+     } else {
+         None
+@@ -238,13 +240,13 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+             }
+         }
+ 
+         // 7.5. 写入 RequestCache
+         if let Some(ref rc) = ctx.request_cache {
+             if let Some(ref resp) = final_resp {
+-                rc.put(&req.url, super::request_cache::CachedEntry {
++                rc.put(method_str, &req.url, super::request_cache::CachedEntry {
+                     status: resp.status,
+                     headers: resp.headers.clone(),
+                     body: resp.body.clone(),
+                 }).await;
+             }
+         }
+diff --git a/src/crawl/middleware/builtin.rs b/src/crawl/middleware/builtin.rs
+index 1255d6f..e50087a 100644
+--- a/src/crawl/middleware/builtin.rs
++++ b/src/crawl/middleware/builtin.rs
+@@ -4,13 +4,13 @@ use std::collections::HashSet;
+ use std::sync::Arc;
+ use std::time::Duration;
+ use async_trait::async_trait;
+ use tokio::sync::Mutex;
+ 
+ use super::{Middleware, MwAction, ErrorAction, CrawlContext, ItemPipeline};
+-use crate::crawl::{SpiderRequest, SpiderResponse};
++use crate::crawl::{SpiderRequest, SpiderResponse, Method};
+ use crate::crawl::auto::{self, ModeRuleEngine};
+ use crate::crawl::runtime::request_cache::{RequestCache, CachedEntry};
+ use crate::crawl::runtime::robots::RobotsCache;
+ use crate::fetcher::FetchMode;
+ use crate::http::Client;
+ 
+@@ -276,13 +276,20 @@ impl CacheMiddleware {
+ 
+ #[async_trait]
+ impl Middleware for CacheMiddleware {
+     fn priority(&self) -> u32 { 3 }
+ 
+     async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+-        if let Some(entry) = self.cache.get(&req.url).await {
++        // 键含 method，避免 POST/GET 同 URL 串味（与 engine.rs 保持一致）
++        let method_str = match req.method {
++            Method::Get => "GET",
++            Method::Post => "POST",
++            Method::Put => "PUT",
++            Method::Delete => "DELETE",
++        };
++        if let Some(entry) = self.cache.get(method_str, &req.url).await {
+             let resp = SpiderResponse {
+                 url: req.url.clone(),
+                 status: entry.status,
+                 headers: entry.headers,
+                 body: entry.body,
+                 request: req.clone(),
+@@ -293,13 +300,20 @@ impl Middleware for CacheMiddleware {
+         }
+         MwAction::Continue
+     }
+ 
+     async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+         if resp.status >= 200 && resp.status < 400 && !resp.from_cache {
+-            self.cache.put(&resp.url, CachedEntry {
++            // 写入时用请求方法（resp.request.method）作为键的一部分
++            let method_str = match resp.request.method {
++                Method::Get => "GET",
++                Method::Post => "POST",
++                Method::Put => "PUT",
++                Method::Delete => "DELETE",
++            };
++            self.cache.put(method_str, &resp.url, CachedEntry {
+                 status: resp.status,
+                 headers: resp.headers.clone(),
+                 body: resp.body.clone(),
+             }).await;
+         }
+         MwAction::Continue
+diff --git a/src/crawl/runtime/request_cache.rs b/src/crawl/runtime/request_cache.rs
+index 25fb0dd..4bcbc9a 100644
+--- a/src/crawl/runtime/request_cache.rs
++++ b/src/crawl/runtime/request_cache.rs
+@@ -33,25 +33,31 @@ impl RequestCache {
+                 .max_capacity(max_entries)
+                 .time_to_live(ttl)
+                 .build(),
+         }
+     }
+ 
+-    /// Get a cached response for the given URL.
+-    pub async fn get(&self, url: &str) -> Option<CachedEntry> {
+-        self.inner.get(url).await
++    /// 构造缓存键：`"{method} {url}"`，区分不同 HTTP 方法的响应。
++    /// 与 dev_mode 的 SQLite 缓存（按 `(url, method)` 存储）语义保持一致。
++    fn cache_key(method: &str, url: &str) -> String {
++        format!("{} {}", method, url)
++    }
++
++    /// Get a cached response for the given (method, url).
++    pub async fn get(&self, method: &str, url: &str) -> Option<CachedEntry> {
++        self.inner.get(&Self::cache_key(method, url)).await
+     }
+ 
+     /// Store a response in the cache.
+-    pub async fn put(&self, url: &str, entry: CachedEntry) {
+-        self.inner.insert(url.to_string(), entry).await;
++    pub async fn put(&self, method: &str, url: &str, entry: CachedEntry) {
++        self.inner.insert(Self::cache_key(method, url), entry).await;
+     }
+ 
+-    /// Invalidate a specific URL entry.
+-    pub async fn invalidate(&self, url: &str) {
+-        self.inner.invalidate(url).await;
++    /// Invalidate a specific (method, url) entry.
++    pub async fn invalidate(&self, method: &str, url: &str) {
++        self.inner.invalidate(&Self::cache_key(method, url)).await;
+     }
+ 
+     /// Current number of entries in the cache.
+     pub fn entry_count(&self) -> u64 {
+         self.inner.entry_count()
+     }
+@@ -66,45 +72,66 @@ mod tests {
+         let cache = RequestCache::new(100, Duration::from_secs(60));
+         let entry = CachedEntry {
+             status: 200,
+             headers: HashMap::from([("content-type".to_string(), "text/html".to_string())]),
+             body: b"<html>hello</html>".to_vec(),
+         };
+-        cache.put("https://example.com", entry.clone()).await;
++        cache.put("GET", "https://example.com", entry.clone()).await;
+ 
+-        let got = cache.get("https://example.com").await;
++        let got = cache.get("GET", "https://example.com").await;
+         assert!(got.is_some());
+         let got = got.unwrap();
+         assert_eq!(got.status, 200);
+         assert_eq!(got.body, b"<html>hello</html>");
+     }
+ 
+     #[tokio::test]
+     async fn test_cache_miss() {
+         let cache = RequestCache::new(100, Duration::from_secs(60));
+-        assert!(cache.get("https://nonexistent.com").await.is_none());
++        assert!(cache.get("GET", "https://nonexistent.com").await.is_none());
+     }
+ 
+     #[tokio::test]
+     async fn test_cache_invalidate() {
+         let cache = RequestCache::new(100, Duration::from_secs(60));
+         let entry = CachedEntry { status: 200, headers: HashMap::new(), body: vec![] };
+-        cache.put("https://example.com/page", entry).await;
+-        assert!(cache.get("https://example.com/page").await.is_some());
++        cache.put("GET", "https://example.com/page", entry).await;
++        assert!(cache.get("GET", "https://example.com/page").await.is_some());
+ 
+-        cache.invalidate("https://example.com/page").await;
+-        assert!(cache.get("https://example.com/page").await.is_none());
++        cache.invalidate("GET", "https://example.com/page").await;
++        assert!(cache.get("GET", "https://example.com/page").await.is_none());
+     }
+ 
+     #[tokio::test]
+     async fn test_cache_entry_count() {
+         let cache = RequestCache::new(100, Duration::from_secs(60));
+         assert_eq!(cache.entry_count(), 0);
+ 
+         let entry = CachedEntry { status: 200, headers: HashMap::new(), body: vec![] };
+-        cache.put("https://a.com", entry.clone()).await;
+-        cache.put("https://b.com", entry).await;
++        cache.put("GET", "https://a.com", entry.clone()).await;
++        cache.put("GET", "https://b.com", entry).await;
+         // moka entry_count is eventually consistent; verify via get instead
+-        assert!(cache.get("https://a.com").await.is_some());
+-        assert!(cache.get("https://b.com").await.is_some());
++        assert!(cache.get("GET", "https://a.com").await.is_some());
++        assert!(cache.get("GET", "https://b.com").await.is_some());
++    }
++
++    /// Task 8: POST 与 GET 同 URL 不应共享缓存。
++    #[tokio::test]
++    async fn cache_key_includes_method() {
++        let cache = RequestCache::new(100, Duration::from_secs(60));
++        let get_entry = CachedEntry {
++            status: 200,
++            headers: HashMap::new(),
++            body: b"GET-RESPONSE".to_vec(),
++        };
++        // 存 GET 响应
++        cache.put("GET", "https://example.com/api", get_entry).await;
++
++        // GET 命中
++        let got = cache.get("GET", "https://example.com/api").await;
++        assert!(got.is_some(), "GET 应命中");
++
++        // POST 不应命中 GET 的缓存
++        let post = cache.get("POST", "https://example.com/api").await;
++        assert!(post.is_none(), "POST 不应命中 GET 缓存，实际 {:?}", post);
+     }
+ }

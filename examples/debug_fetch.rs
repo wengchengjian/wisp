@@ -19,11 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             vec![("Cookie".to_string(), cookies.join("; "))]
         };
 
-        let r = if headers.is_empty() {
-            client.get("https://www.qishuxia.com/").await?
-        } else {
-            client.get_with_headers("https://www.qishuxia.com/", &headers).await?
-        };
+        let r = client.get("https://www.qishuxia.com/", &headers).await?;
 
         if r.status == 403 {
             if let Some(sc) = r.headers.get("set-cookie") {

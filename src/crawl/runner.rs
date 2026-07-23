@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::http::Client;
+use crate::fetcher::FetchClient;
 use super::*;
 use super::stats::SpiderStats;
 
@@ -21,7 +21,6 @@ use super::stats::SpiderStats;
 /// - 控制：per-Engine `EngineControl`（替代原全局 static）
 #[derive(Clone)]
 pub struct Engine {
-    pub(crate) client: Arc<Client>,
     pub(crate) cache_store: Option<Arc<crate::storage::Store>>,
     pub(crate) request_cache: Option<RequestCache>,
     pub(crate) max_concurrent: usize,
@@ -43,7 +42,6 @@ pub struct EngineBuilder {
     max_pages: usize,
     max_depth: Option<u32>,
     max_refetch_rounds: usize,
-    proxy_url: Option<String>,
     cache_store: Option<Arc<crate::storage::Store>>,
     request_cache: Option<RequestCache>,
     dev_mode: bool,
@@ -63,7 +61,6 @@ impl Engine {
             max_pages: 1000,
             max_depth: None,
             max_refetch_rounds: 5,
-            proxy_url: None,
             cache_store: None,
             request_cache: None,
             dev_mode: false,
@@ -157,12 +154,14 @@ impl Engine {
         }
         let rule_engine = Arc::new(Mutex::new(rule_engine));
         let allowed = Arc::new(spider.allowed_domains());
-        let fetcher_config = spider.fetcher_config();
+        let fetch_client_config = spider.fetch_client_config();
         let fetch_mode = spider.fetch_mode();
         let max_concurrent = self.max_concurrent;
         let max_depth = self.max_depth.unwrap_or_else(|| spider.max_depth());
         let obey_robots = spider.obey_robots();
-        let auto_excludes = spider.auto_exclude();
+
+        // 每个 Spider 自带 FetchClientConfig，构造独立 FetchClient（含 HTTP 连接池 + BrowserPool）
+        let fetch_client = Arc::new(FetchClient::new(fetch_client_config)?);
 
         let sched = Arc::new(scheduler::Scheduler::new());
         let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
@@ -203,8 +202,7 @@ impl Engine {
 
         let ctx = Arc::new(engine::EngineContext {
             config: engine::EngineConfig {
-                client: self.client.clone(),
-                fetcher_config,
+                client: fetch_client,
                 fetch_mode,
                 max_concurrent,
                 max_depth,
@@ -213,7 +211,6 @@ impl Engine {
                 max_refetch_rounds: self.max_refetch_rounds,
                 dev_mode: self.dev_mode,
                 allowed,
-                auto_excludes,
             },
             shared: engine::EngineShared {
                 sched: sched.clone(),
@@ -397,8 +394,6 @@ impl EngineBuilder {
     pub fn max_depth(mut self, n: u32) -> Self { self.max_depth = Some(n); self }
     /// 设置中间件 Refetch 最大轮数（默认 5）。
     pub fn max_refetch_rounds(mut self, n: usize) -> Self { self.max_refetch_rounds = n; self }
-    /// 设置固定 HTTP 代理（如 "http://127.0.0.1:7897"）。
-    pub fn proxy(mut self, url: &str) -> Self { self.proxy_url = Some(url.to_string()); self }
     pub fn cache_store(mut self, s: Arc<crate::storage::Store>) -> Self { self.cache_store = Some(s); self }
     pub fn request_cache(mut self, c: RequestCache) -> Self { self.request_cache = Some(c); self }
     pub fn dev_mode(mut self, s: Arc<crate::storage::Store>) -> Self {
@@ -430,14 +425,7 @@ impl EngineBuilder {
     }
 
     pub fn build(self) -> Result<Engine> {
-        let mut builder = Client::builder()
-            .timeout(std::time::Duration::from_secs(30));
-        if let Some(ref proxy) = self.proxy_url {
-            builder = builder.proxy(proxy);
-        }
-        let client = Arc::new(builder.build()?);
         Ok(Engine {
-            client,
             cache_store: self.cache_store,
             request_cache: self.request_cache,
             max_concurrent: self.max_concurrent,

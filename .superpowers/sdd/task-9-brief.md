@@ -1,96 +1,77 @@
-# Task 9: 多 Spider 路由 + until 终止 E2E 测试
+### Task 9: 修复 resolve_href 不过滤非 http scheme
 
-## 目标
+**Files:**
+- Modify: `src/crawl/mod.rs:166-172`（resolve_href）
+- Test: `src/crawl/mod.rs` 内 `#[cfg(test)]`
 
-创建 `tests/multi_spider_test.rs`，包含多 Spider 共享队列 + 路由 + until 终止策略的骨架测试。
+**Interfaces:**
+- Consumes: `url::Url::parse` / `Url::join` / `Url::scheme`
+- Produces: `SpiderResponse::follow("javascript:...")` 等返回 `None`，不再产生非法请求
 
-这是骨架测试 + StopCondition 单元验证，不跑真实 HTTP。完整 HTTP 路由测试在 Task 10 补充。
+**背景：** `resolve_href`（L166-172）对绝对 URL 仅检查 `http://`/`https://` 前缀，但 `url::Url::join` 对 `javascript:`、`mailto:`、`data:` 等 scheme 会构造非 http URL，后续 fetch 时失败或被误处理。
 
-## Files
+- [ ] **Step 1: 写失败测试**
 
-- Create: `tests/multi_spider_test.rs`
-
-## 完整代码（来自 plan）
+在 `src/crawl/mod.rs` 的 `#[cfg(test)] mod tests` 末尾追加：
 
 ```rust
-//! 多 Spider 共享队列 + 路由 + until 终止策略 E2E 测试。
-//!
-//! 场景：ListSpider 爬取列表页 50 页停，DetailSpider 消费详情 URL。
-
-use std::time::Duration;
-use async_trait::async_trait;
-use serde_json::{json, Value};
-use wisp::crawl::{Spider, SpiderRequest, SpiderResponse, Engine};
-use wisp::crawl::{MaxPages, NeverStop};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// 列表页 Spider：从 list/1 开始，产出 list/N+1 和 detail/X
-struct ListSpider {
-    max_page: usize,
-    list_counter: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl Spider for ListSpider {
-    fn name(&self) -> &str { "list" }
-    fn start_urls(&self) -> Vec<String> { vec!["http://test.example/list/1".into()] }
-    fn patterns(&self) -> Vec<String> { vec![r"test\.example/list/\d+".into()] }
-    fn until(&self) -> Arc<dyn wisp::crawl::StopCondition> {
-        Arc::new(MaxPages(self.max_page))
+    #[test]
+    fn resolve_href_rejects_non_http_schemes() {
+        // 绝对 URL：仅 http/https 通过
+        assert!(resolve_href("https://example.com", "https://other.com/p").is_some());
+        assert!(resolve_href("https://example.com", "http://other.com/p").is_some());
+        // 非 http scheme 应拒绝
+        assert!(resolve_href("https://example.com", "javascript:void(0)").is_none(),
+            "javascript: scheme 应被拒绝");
+        assert!(resolve_href("https://example.com", "mailto:a@b.com").is_none(),
+            "mailto: scheme 应被拒绝");
+        assert!(resolve_href("https://example.com", "data:text/html,xxx").is_none(),
+            "data: scheme 应被拒绝");
+        // 相对链接仍正常解析
+        assert!(resolve_href("https://example.com/a/", "b").is_some());
+        assert_eq!(resolve_href("https://example.com/a/", "b"), Some("https://example.com/a/b".into()));
     }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        let n = self.list_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let items = vec![json!({ "list_page": n })];
-        // follow 下一页列表 + 一个详情
-        let next = resp.follow(&format!("/list/{}", n + 1)).unwrap();
-        let detail = resp.follow(&format!("/detail/{}", n)).unwrap();
-        (items, vec![next, detail])
-    }
-}
+```
 
-/// 详情页 Spider：消费 detail URL
-struct DetailSpider {
-    detail_counter: Arc<AtomicUsize>,
-}
+- [ ] **Step 2: 运行测试确认失败**
 
-#[async_trait]
-impl Spider for DetailSpider {
-    fn name(&self) -> &str { "detail" }
-    fn start_urls(&self) -> Vec<String> { vec![] }
-    fn patterns(&self) -> Vec<String> { vec![r"test\.example/detail/\d+".into()] }
-    fn until(&self) -> Arc<dyn wisp::crawl::StopCondition> {
-        Arc::new(NeverStop)  // 受限于上游 ListSpider
-    }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        let n = self.detail_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        (vec![json!({ "detail_page": n })], vec![])
-    }
-}
+Run: `cargo test --lib crawl::tests::resolve_href_rejects_non_http_schemes 2>&1 | tail -15`
+Expected: FAIL — `javascript:` 等经 `Url::join` 后返回 Some（非 None）。
 
-#[test]
-fn test_max_pages_condition() {
-    // 不实际跑爬虫，只验证 StopCondition 逻辑
-    use wisp::crawl::StopContext;
-    let cond = MaxPages(50);
-    let ctx = StopContext { pages: 50, items: 0, errors: 0, in_flight: 0, elapsed: Duration::ZERO, queue_size: 0 };
-    assert!(cond.should_stop(&ctx));
+- [ ] **Step 3: 修复 resolve_href**
+
+修改 `src/crawl/mod.rs` L166-172：
+
+```rust
+fn resolve_href(base: &str, href: &str) -> Option<String> {
+    if href.starts_with("http://") || href.starts_with("https://") {
+        return Some(href.to_string());
+    }
+    let base_url = url::Url::parse(base).ok()?;
+    let joined = base_url.join(href).ok()?;
+    // 仅接受 http/https 结果（过滤 javascript: mailto: data: 等被 join 构造的非法 URL）
+    if joined.scheme() == "http" || joined.scheme() == "https" {
+        Some(joined.to_string())
+    } else {
+        None
+    }
 }
 ```
 
-## 验证步骤
+- [ ] **Step 4: 运行测试确认通过**
 
-1. `cargo test --test multi_spider_test` — 必须通过
-2. 如果编译失败，检查：
-   - `SpiderResponse::follow` 方法是否存在及签名
-   - import 路径是否正确（`wisp::crawl::{MaxPages, NeverStop, StopContext}` 在 Task 2 的 mod.rs 中重导出）
-   - `StopContext` 字段是否匹配（pages/items/errors/in_flight/elapsed/queue_size）
-   - `Spider` trait 的方法签名是否匹配（patterns/until/parse）
+Run: `cargo test --lib crawl::tests::resolve_href 2>&1 | tail -10`
+Expected: PASS。
 
-## Commit
+- [ ] **Step 5: Commit**
 
-PowerShell 兼容（不支持 heredoc），用 -m：
-```powershell
-git add tests/multi_spider_test.rs
-git commit -m "test: 多 Spider 路由与 until 终止策略骨架测试"
+```bash
+git add src/crawl/mod.rs
+git commit -m "fix(crawl): resolve_href 过滤非 http/https scheme
+
+- 对 Url::join 结果检查 scheme，拒绝 javascript:/mailto:/data: 等
+- 修复 follow 非法链接产生无效请求的问题"
 ```
+
+---
+

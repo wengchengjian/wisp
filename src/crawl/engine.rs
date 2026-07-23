@@ -9,23 +9,22 @@
 //! Task 3 重构：EngineContext 单 Spider 化（删除 Vec + 路由），process_request
 //! 调 `spider.handle()` 而非 `spider.parse()`，items 收集到 `ctx.items`。
 
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
 use dashmap::DashMap;
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::error::Result;
-use crate::http::{self, Client};
-use crate::fetcher::FetchMode;
-use super::{
-    Spider, SpiderRequest, SpiderResponse, Method,
-    CrawlStats, CrawlEvent, CrawlState,
-    auto, scheduler, robots, control, middleware,
-};
 use super::stats::SpiderStats;
+use super::{
+    auto, control, middleware, robots, scheduler, CrawlEvent, CrawlState, CrawlStats, Method,
+    Spider, SpiderRequest, SpiderResponse,
+};
+use crate::error::Result;
+use crate::fetcher::FetchMode;
+use crate::http::Client;
 
 // === EngineContext: 打包所有共享状态 ===
 
@@ -42,8 +41,7 @@ pub(crate) struct EngineContext {
 
 /// 只读配置（从 Spider 提取，run 期间不变）。
 pub(crate) struct EngineConfig {
-    pub client: Arc<Client>,
-    pub fetcher_config: http::Config,
+    pub client: Arc<crate::fetcher::FetchClient>,
     pub fetch_mode: FetchMode,
     pub max_concurrent: usize,
     pub max_depth: u32,
@@ -52,7 +50,6 @@ pub(crate) struct EngineConfig {
     pub max_refetch_rounds: usize,
     pub dev_mode: bool,
     pub allowed: Arc<HashSet<String>>,
-    pub auto_excludes: HashSet<String>,
 }
 
 /// 跨 task 共享的可变状态。
@@ -130,9 +127,15 @@ async fn check_request_filters(ctx: &EngineContext, req: &SpiderRequest) -> Filt
     }
 
     // 1.6. per-Engine 控制状态检查
-    if ctx.shared.control.is_cancelled(&req.url).await { return FilterAction::Skip; }
-    if !ctx.shared.control.wait_if_paused(&req.url).await { return FilterAction::Skip; }
-    if ctx.shared.control.is_shutdown() { return FilterAction::Skip; }
+    if ctx.shared.control.is_cancelled(&req.url).await {
+        return FilterAction::Skip;
+    }
+    if !ctx.shared.control.wait_if_paused(&req.url).await {
+        return FilterAction::Skip;
+    }
+    if ctx.shared.control.is_shutdown() {
+        return FilterAction::Skip;
+    }
 
     // 1.7. 异步钩子检查
     match ctx.state.spider.on_before_request(req).await {
@@ -147,7 +150,11 @@ async fn check_request_filters(ctx: &EngineContext, req: &SpiderRequest) -> Filt
 ///
 /// 返回 CacheResult::Hit(resp) 表示命中缓存，直接处理响应；
 /// 返回 CacheResult::Miss 表示未命中，继续网络请求。
-async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_str: &str) -> CacheResult {
+async fn check_request_caches(
+    ctx: &EngineContext,
+    req: &SpiderRequest,
+    method_str: &str,
+) -> CacheResult {
     let stats = &ctx.state.stats;
 
     // 内存缓存检查 (RequestCache)
@@ -159,7 +166,6 @@ async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_s
                 headers: entry.headers,
                 body: entry.body,
                 request: req.clone(),
-                tracker: None,
                 from_cache: true,
             };
             stats.cache_hits.fetch_add(1, Ordering::SeqCst);
@@ -171,14 +177,17 @@ async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_s
     // 开发模式 SQLite 缓存检查
     if ctx.config.dev_mode {
         if let Some(ref store) = ctx.shared.cache_store {
-            if let Some(cached) = store.load_cached_response(&req.url, method_str).ok().flatten() {
+            if let Some(cached) = store
+                .load_cached_response(&req.url, method_str)
+                .ok()
+                .flatten()
+            {
                 let resp = SpiderResponse {
                     url: req.url.clone(),
                     status: cached.status,
                     headers: cached.headers,
                     body: cached.body,
                     request: req.clone(),
-                    tracker: None,
                     from_cache: true,
                 };
                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
@@ -206,7 +215,7 @@ async fn acquire_and_fetch(
     if obey_robots {
         let allowed_flag = {
             let mut rc = ctx.shared.robots_cache.lock().await;
-            rc.is_allowed(&ctx.config.client, &req.url).await
+            rc.is_allowed(ctx.config.client.http(), &req.url).await
         };
         if !allowed_flag {
             return (None, None);
@@ -219,7 +228,8 @@ async fn acquire_and_fetch(
         .and_then(|u| u.host_str().map(|s| s.to_string()))
         .unwrap_or_default();
     let sem = {
-        ctx.shared.domain_sems
+        ctx.shared
+            .domain_sems
             .entry(domain)
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
             .clone()
@@ -253,11 +263,16 @@ async fn acquire_and_fetch(
     // 写入 RequestCache
     if let Some(ref rc) = ctx.shared.request_cache {
         if let Some(ref resp) = resp {
-            rc.put(method_str, &req.url, super::request_cache::CachedEntry {
-                status: resp.status,
-                headers: resp.headers.clone(),
-                body: resp.body.clone(),
-            }).await;
+            rc.put(
+                method_str,
+                &req.url,
+                super::request_cache::CachedEntry {
+                    status: resp.status,
+                    headers: resp.headers.clone(),
+                    body: resp.body.clone(),
+                },
+            )
+            .await;
         }
     }
 
@@ -281,7 +296,9 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
             ctx.state.abort_flag.store(true, Ordering::SeqCst);
             return;
         }
-        FilterAction::Delay(d) => { tokio::time::sleep(d).await; }
+        FilterAction::Delay(d) => {
+            tokio::time::sleep(d).await;
+        }
     }
 
     // 2. 中间件请求拦截
@@ -289,7 +306,12 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     let stats = &ctx.state.stats;
     if !ctx.shared.middleware_chain.is_empty() {
         let crawl_ctx = build_crawl_context(ctx);
-        match ctx.shared.middleware_chain.run_request_middlewares(&mut req, &crawl_ctx).await {
+        match ctx
+            .shared
+            .middleware_chain
+            .run_request_middlewares(&mut req, &crawl_ctx)
+            .await
+        {
             middleware::MwAction::Skip => return,
             middleware::MwAction::Abort(reason) => {
                 tracing::warn!("middleware abort: {} - {}", reason, req.url);
@@ -299,9 +321,12 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
                 // 中间件短路（如缓存命中），跳过网络请求直接处理响应
                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
                 record_status(stats, cached_resp.status);
-                return process_response(ctx, cached_resp, &req).await;
+                return process_response(ctx, cached_resp).await;
             }
-            _ => {}
+            // Continue / Modified / Refetch：继续正常请求流程
+            middleware::MwAction::Continue
+            | middleware::MwAction::Modified
+            | middleware::MwAction::Refetch(_) => {}
         }
     }
 
@@ -311,7 +336,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     // 3. 缓存检查
     match check_request_caches(ctx, &req, method_str).await {
         CacheResult::Hit(resp) => {
-            return process_response(ctx, *resp, &req).await;
+            return process_response(ctx, *resp).await;
         }
         CacheResult::Miss => {}
     }
@@ -321,10 +346,15 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
 
     // 5. 处理结果
     if let Some(resp) = final_resp {
-        process_response(ctx, resp, &req).await;
+        process_response(ctx, resp).await;
     } else if let Some(err) = last_error {
         if let Some(ref tx) = ctx.state.tx {
-            let _ = tx.send(CrawlEvent::Error { url: req.url.clone(), error: err }).await;
+            let _ = tx
+                .send(CrawlEvent::Error {
+                    url: req.url.clone(),
+                    error: err,
+                })
+                .await;
         }
     }
 }
@@ -333,7 +363,10 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
 ///
 /// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
 /// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
-pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, req: &SpiderRequest) {
+pub(crate) async fn process_response(
+    ctx: &EngineContext,
+    resp: SpiderResponse,
+) {
     let spider = &ctx.state.spider;
     let stats = &ctx.state.stats;
 
@@ -348,7 +381,12 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
     if !ctx.shared.middleware_chain.is_empty() {
         loop {
             let crawl_ctx = build_crawl_context(ctx);
-            match ctx.shared.middleware_chain.run_response_middlewares(&mut resp, &crawl_ctx).await {
+            match ctx
+                .shared
+                .middleware_chain
+                .run_response_middlewares(&mut resp, &crawl_ctx)
+                .await
+            {
                 middleware::MwAction::Skip => return,
                 middleware::MwAction::Abort(reason) => {
                     tracing::warn!("response middleware abort: {} - {}", reason, page_url);
@@ -357,13 +395,20 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
                 middleware::MwAction::Refetch(new_req) => {
                     refetch_depth += 1;
                     if refetch_depth > ctx.config.max_refetch_rounds as u32 {
-                        tracing::warn!("Refetch 超过 {} 轮上限，放弃: {}", ctx.config.max_refetch_rounds, new_req.url);
+                        tracing::warn!(
+                            "Refetch 超过 {} 轮上限，放弃: {}",
+                            ctx.config.max_refetch_rounds,
+                            new_req.url
+                        );
                         return;
                     }
                     tracing::debug!("中间件 Refetch (round {}): {}", refetch_depth, new_req.url);
                     let (new_resp, _err) = fetch_dispatch(ctx, &new_req).await;
                     match new_resp {
-                        Some(r) => { resp = r; continue; }
+                        Some(r) => {
+                            resp = r;
+                            continue;
+                        }
                         None => return, // 获取失败，放弃
                     }
                 }
@@ -372,17 +417,8 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
         }
     }
 
-    let tracker_ref = resp.tracker.clone();
     // Task 3：调用 handle()（callback 路由），而非 parse()
-    let (mut items, mut follows) = spider.handle(resp).await;
-
-    // Auto 升级检查
-    if ctx.config.fetch_mode == FetchMode::Auto {
-        if let Some(result) = auto_upgrade_check(ctx, &tracker_ref, &page_url, req).await {
-            items = result.0;
-            follows = result.1;
-        }
-    }
+    let (items, follows) = spider.handle(resp).await;
 
     // 发送 items：经过 pipeline 链处理后收集到 ctx.items 和 tx（若有）
     for item in items {
@@ -396,7 +432,10 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
             Some(item)
         } else {
             let crawl_ctx = build_crawl_context(ctx);
-            ctx.shared.middleware_chain.run_pipelines(item, &crawl_ctx).await
+            ctx.shared
+                .middleware_chain
+                .run_pipelines(item, &crawl_ctx)
+                .await
         };
         if let Some(processed) = item {
             stats.items.fetch_add(1, Ordering::SeqCst);
@@ -415,10 +454,12 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
     // PageScraped 事件
     if let Some(ref tx) = ctx.state.tx {
         let status_codes_snapshot = stats.status_codes_snapshot();
-        let _ = tx.send(CrawlEvent::PageScraped {
-            url: page_url,
-            stats: snapshot_stats_for(stats, status_codes_snapshot, ctx.state.start),
-        }).await;
+        let _ = tx
+            .send(CrawlEvent::PageScraped {
+                url: page_url,
+                stats: snapshot_stats_for(stats, status_codes_snapshot, ctx.state.start),
+            })
+            .await;
     }
 }
 
@@ -428,11 +469,13 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
 ///
 /// 注意：blocked 重试和 error 重试已分别由 BlockedRetryMiddleware / RetryMiddleware
 /// 通过 Refetch / ErrorAction::Retry 承担。此函数保留为无中间件时的 fallback。
-async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<SpiderResponse>, Option<String>) {
+async fn fetch_dispatch(
+    ctx: &EngineContext,
+    req: &SpiderRequest,
+) -> (Option<SpiderResponse>, Option<String>) {
     let spider = &ctx.state.spider;
     let stats = &ctx.state.stats;
     let fetch_mode = ctx.config.fetch_mode;
-    let fetcher_config = &ctx.config.fetcher_config;
     let rule_engine = &ctx.shared.rule_engine;
     let max_retries = spider.max_retries();
     let mut attempt: u32 = 0;
@@ -440,7 +483,16 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
     loop {
         attempt += 1;
         let proxy = req.proxy.clone();
-        match fetch_page(&ctx.config.client, req, proxy.as_deref(), fetch_mode, fetcher_config, rule_engine, &ctx.shared.proxy_clients).await {
+        match fetch_page(
+            &ctx.config.client,
+            req,
+            proxy.as_deref(),
+            fetch_mode,
+            rule_engine,
+            &ctx.shared.proxy_clients,
+        )
+        .await
+        {
             Ok(resp) => {
                 record_status(stats, resp.status);
                 if spider.is_blocked(&resp) {
@@ -450,16 +502,35 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
                     if attempt <= max_retries {
                         stats.retries.fetch_add(1, Ordering::SeqCst);
                         let delay = spider.download_delay();
-                        if delay > Duration::ZERO { tokio::time::sleep(delay).await; }
-                        tracing::warn!("blocked (status={}, attempt={}/{}), retrying: {}", resp.status, attempt, max_retries, req.url);
+                        if delay > Duration::ZERO {
+                            tokio::time::sleep(delay).await;
+                        }
+                        tracing::warn!(
+                            "blocked (status={}, attempt={}/{}), retrying: {}",
+                            resp.status,
+                            attempt,
+                            max_retries,
+                            req.url
+                        );
                         continue;
                     }
                     stats.errors.fetch_add(1, Ordering::SeqCst);
-                    spider.on_error(req, &format!("blocked after {} retries (status={})", max_retries, resp.status)).await;
-                    return (None, Some(format!(
-                        "blocked after {} retries (status={}, total attempts={})",
-                        max_retries, resp.status, attempt
-                    )));
+                    spider
+                        .on_error(
+                            req,
+                            &format!(
+                                "blocked after {} retries (status={})",
+                                max_retries, resp.status
+                            ),
+                        )
+                        .await;
+                    return (
+                        None,
+                        Some(format!(
+                            "blocked after {} retries (status={}, total attempts={})",
+                            max_retries, resp.status, attempt
+                        )),
+                    );
                 }
                 return (Some(resp), None);
             }
@@ -467,7 +538,12 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
                 // 中间件链：错误处理（可决定重试或放弃）
                 if !ctx.shared.middleware_chain.is_empty() {
                     let crawl_ctx = build_crawl_context(ctx);
-                    if let middleware::ErrorAction::Retry = ctx.shared.middleware_chain.run_error_middlewares(req, &e.to_string(), &crawl_ctx).await {
+                    if let middleware::ErrorAction::Retry = ctx
+                        .shared
+                        .middleware_chain
+                        .run_error_middlewares(req, &e.to_string(), &crawl_ctx)
+                        .await
+                    {
                         stats.retries.fetch_add(1, Ordering::SeqCst);
                         continue;
                     }
@@ -475,58 +551,29 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
                 if attempt <= max_retries {
                     stats.retries.fetch_add(1, Ordering::SeqCst);
                     let delay = spider.download_delay();
-                    if delay > Duration::ZERO { tokio::time::sleep(delay).await; }
-                    tracing::warn!("fetch error (attempt={}/{}): {} - {}", attempt, max_retries, e, req.url);
+                    if delay > Duration::ZERO {
+                        tokio::time::sleep(delay).await;
+                    }
+                    tracing::warn!(
+                        "fetch error (attempt={}/{}): {} - {}",
+                        attempt,
+                        max_retries,
+                        e,
+                        req.url
+                    );
                     continue;
                 }
                 stats.errors.fetch_add(1, Ordering::SeqCst);
                 spider.on_error(req, &e.to_string()).await;
-                return (None, Some(format!(
-                    "fetch failed after {} retries (total attempts={}): {}",
-                    max_retries, attempt, e
-                )));
+                return (
+                    None,
+                    Some(format!(
+                        "fetch failed after {} retries (total attempts={}): {}",
+                        max_retries, attempt, e
+                    )),
+                );
             }
         }
-    }
-}
-
-// === Auto 升级检查 ===
-
-/// Auto 模式：检查 tracker 中选择器是否有 0 匹配，若有则升级 Dynamic 重取。
-/// 返回 Some((items, follows)) 表示已升级并重新 parse；None 表示无需升级。
-async fn auto_upgrade_check(
-    ctx: &EngineContext,
-    tracker: &Option<Arc<std::sync::Mutex<auto::SelectorTracker>>>,
-    page_url: &str,
-    req: &SpiderRequest,
-) -> Option<(Vec<Value>, Vec<SpiderRequest>)> {
-    let spider = &ctx.state.spider;
-    let fetcher_config = &ctx.config.fetcher_config;
-    let rule_engine = &ctx.shared.rule_engine;
-    let auto_exclude = &ctx.config.auto_excludes;
-    let tracker = tracker.as_ref()?;
-    let needs = tracker.lock().unwrap_or_else(|e| e.into_inner()).needs_upgrade(auto_exclude);
-
-    if needs {
-        {
-            let mut engine = rule_engine.lock().await;
-            engine.learn(page_url, FetchMode::Dynamic);
-        }
-        tracing::info!("Auto: '{}' 选择器无内容，升级 Dynamic", page_url);
-        let proxy = req.proxy.clone();
-        let dynamic_resp = fetch_page_inner(
-            &ctx.config.client, req, proxy.as_deref(), FetchMode::Dynamic, fetcher_config, &ctx.shared.proxy_clients,
-        ).await;
-        if let Ok(new_resp) = dynamic_resp {
-            // Auto 升级时也走 handle() 路由（保持一致）
-            let (items, follows) = spider.handle(new_resp).await;
-            return Some((items, follows));
-        }
-        None
-    } else {
-        let mut engine = rule_engine.lock().await;
-        engine.learn(page_url, FetchMode::Http);
-        None
     }
 }
 
@@ -551,7 +598,9 @@ pub fn record_status(stats: &Arc<SpiderStats>, status: u16) {
     stats
         .status_codes
         .entry(status)
-        .and_modify(|c| { c.fetch_add(1, Ordering::Relaxed); })
+        .and_modify(|c| {
+            c.fetch_add(1, Ordering::Relaxed);
+        })
         .or_insert(AtomicUsize::new(1));
 }
 
@@ -560,11 +609,13 @@ async fn apply_delay(ctx: &EngineContext, url: &str, spider: &Arc<dyn Spider>, o
     if obey_robots {
         let robots_delay = {
             let mut rc = ctx.shared.robots_cache.lock().await;
-            rc.crawl_delay(&ctx.config.client, url).await
+            rc.crawl_delay(ctx.config.client.http(), url).await
         };
         if let Some(secs) = robots_delay {
             let robots_dur = Duration::from_secs_f64(secs);
-            if robots_dur > delay { delay = robots_dur; }
+            if robots_dur > delay {
+                delay = robots_dur;
+            }
         }
     }
     if delay > Duration::ZERO {
@@ -630,68 +681,81 @@ pub(crate) async fn save_checkpoint(
 
 #[doc(hidden)]
 pub async fn fetch_page(
-    client: &Client,
+    fetch_client: &crate::fetcher::FetchClient,
     req: &SpiderRequest,
     proxy_url: Option<&str>,
     mode: FetchMode,
-    config: &http::Config,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
     proxy_clients: &DashMap<String, Arc<Client>>,
 ) -> Result<SpiderResponse> {
     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
     if let Some(override_mode) = req.fetch_mode_override {
-        return fetch_page_inner(client, req, proxy_url, override_mode, config, proxy_clients).await;
+        return fetch_page_inner(fetch_client, req, proxy_url, override_mode, proxy_clients)
+            .await;
     }
 
     // 2. Auto 模式：rule_engine 缓存 → HTTP 先行，blocked 检测由 StealthUpgradeMiddleware 承担
     if mode == FetchMode::Auto {
         let resolved = { rule_engine.lock().await.resolve(&req.url) };
         if let Some(cached_mode) = resolved {
-            return fetch_page_inner(client, req, proxy_url, cached_mode, config, proxy_clients).await;
+            return fetch_page_inner(fetch_client, req, proxy_url, cached_mode, proxy_clients)
+                .await;
         }
-        // HTTP 先行，附加 SelectorTracker（用于 auto_upgrade_check 检测选择器匹配）
-        let resp = fetch_page_inner(client, req, proxy_url, FetchMode::Http, config, proxy_clients).await?;
-        let tracker = Arc::new(std::sync::Mutex::new(auto::SelectorTracker::new()));
-        return Ok(SpiderResponse { tracker: Some(tracker), ..resp });
+        // HTTP 先行（升级由 DynamicUpgradeMiddleware 中间件通过 Refetch 触发）
+        let resp = fetch_page_inner(
+            fetch_client,
+            req,
+            proxy_url,
+            FetchMode::Http,
+            proxy_clients,
+        )
+        .await?;
+        return Ok(resp);
     }
 
     // 3. 非 Auto：直接按指定模式抓取
-    fetch_page_inner(client, req, proxy_url, mode, config, proxy_clients).await
+    fetch_page_inner(fetch_client, req, proxy_url, mode, proxy_clients).await
 }
 
 /// 内部实际抓取（根据模式分发）。
 #[doc(hidden)]
 pub async fn fetch_page_inner(
-    client: &Client,
+    fetch_client: &crate::fetcher::FetchClient,
     req: &SpiderRequest,
     proxy_url: Option<&str>,
     mode: FetchMode,
-    config: &http::Config,
     proxy_clients: &DashMap<String, Arc<Client>>,
 ) -> Result<SpiderResponse> {
+    // 浏览器模式：通过 BrowserPool 复用实例（RAII 自动归还，无泄漏）
     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
-        let mut builder = match mode {
-            FetchMode::Dynamic => crate::fetcher::Fetcher::dynamic(),
-            FetchMode::Stealth => crate::fetcher::Fetcher::stealth(),
-            _ => unreachable!(),
+        let solve_cf = mode == FetchMode::Stealth;
+        let fetch_method = match req.method {
+            crate::crawl::Method::Get => crate::fetcher::Method::Get,
+            crate::crawl::Method::Post => crate::fetcher::Method::Post,
+            crate::crawl::Method::Put => crate::fetcher::Method::Put,
+            crate::crawl::Method::Delete => crate::fetcher::Method::Delete,
         };
-        builder = builder.timeout(config.timeout);
-        if let Some(proxy) = proxy_url {
-            builder = builder.proxy(proxy);
-        }
-        let resp = builder.get(&req.url).await?;
+        let fetch_req = crate::fetcher::Request {
+            url: req.url.clone(),
+            method: fetch_method,
+            headers: req.headers.clone(),
+            body: req.body.clone(),
+            ..Default::default()
+        };
+        let resp = fetch_client.fetch_browser(&fetch_req, solve_cf).await?;
         return Ok(SpiderResponse {
             url: resp.url.clone(),
             status: resp.status,
             headers: resp.headers.clone(),
             body: resp.body.clone(),
             request: req.clone(),
-            tracker: None,
             from_cache: false,
         });
     }
 
     // Http 模式
+    let base_client = fetch_client.http();
+
     // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手。
     // 用 Entry match 保证原子性：Vacant 分支在持 shard 锁期间 build + insert，
     // 消除 get→entry 之间另一 task 抢先插入导致的偶发多余 Client 构建。
@@ -701,7 +765,7 @@ pub async fn fetch_page_inner(
             Entry::Occupied(o) => Some(o.get().clone()),
             Entry::Vacant(v) => {
                 let new_client = Client::builder()
-                    .timeout(client.config_ref().timeout)
+                    .timeout(base_client.config_ref().timeout)
                     .proxy(proxy)
                     .build()?;
                 Some(v.insert(Arc::new(new_client)).clone())
@@ -712,29 +776,30 @@ pub async fn fetch_page_inner(
     };
     let use_client: &Client = match &proxy_client {
         Some(c) => c.as_ref(),
-        None => client,
+        None => base_client,
     };
 
     // 收集中间件/请求级 headers（如 UaRotationMiddleware 设置的 User-Agent，
     // 或 CookieChallengeMiddleware 累积的 Cookie）
-    let extra_headers: Vec<(String, String)> = req.headers.iter()
+    let extra_headers: Vec<(String, String)> = req
+        .headers
+        .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
-    let resp = if extra_headers.is_empty() {
-        match req.method {
-            Method::Get => use_client.get(&req.url).await?,
-            Method::Post => use_client.post(&req.url, req.body.as_deref(), None).await?,
-            Method::Put => use_client.put(&req.url, req.body.as_deref(), None).await?,
-            Method::Delete => use_client.delete(&req.url).await?,
+    let resp = match req.method {
+        Method::Get => use_client.get(&req.url, &extra_headers).await?,
+        Method::Post => {
+            use_client
+                .post(&req.url, req.body.as_deref(), None, &extra_headers)
+                .await?
         }
-    } else {
-        match req.method {
-            Method::Get => use_client.get_with_headers(&req.url, &extra_headers).await?,
-            Method::Post => use_client.post_with_headers(&req.url, req.body.as_deref(), None, &extra_headers).await?,
-            Method::Put => use_client.put(&req.url, req.body.as_deref(), None).await?,
-            Method::Delete => use_client.delete(&req.url).await?,
+        Method::Put => {
+            use_client
+                .put(&req.url, req.body.as_deref(), None, &extra_headers)
+                .await?
         }
+        Method::Delete => use_client.delete(&req.url, &extra_headers).await?,
     };
 
     Ok(SpiderResponse {
@@ -743,7 +808,6 @@ pub async fn fetch_page_inner(
         headers: resp.headers.clone(),
         body: resp.body.clone(),
         request: req.clone(),
-        tracker: None,
         from_cache: false,
     })
 }
@@ -771,8 +835,12 @@ mod tests {
 
     #[async_trait]
     impl Spider for DummySpider {
-        fn name(&self) -> &str { "dummy" }
-        fn start_urls(&self) -> Vec<String> { vec![] }
+        fn name(&self) -> &str {
+            "dummy"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            vec![]
+        }
         async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
             (vec![], vec![])
         }
@@ -785,8 +853,12 @@ mod tests {
         let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
         let ctx = EngineContext {
             config: EngineConfig {
-                client: Arc::new(Client::new().expect("build http client")),
-                fetcher_config: http::Config::default(),
+                client: Arc::new(
+                    crate::fetcher::FetchClient::new(
+                        crate::fetcher::FetchClientConfig::default(),
+                    )
+                    .expect("build fetch client"),
+                ),
                 fetch_mode: FetchMode::Http,
                 max_concurrent: 8,
                 max_depth: u32::MAX,
@@ -795,7 +867,6 @@ mod tests {
                 max_refetch_rounds: 5,
                 dev_mode: false,
                 allowed: Arc::new(HashSet::new()),
-                auto_excludes: HashSet::new(),
             },
             shared: EngineShared {
                 sched: Arc::new(scheduler::Scheduler::new()),
@@ -832,7 +903,6 @@ mod tests {
             headers: HashMap::new(),
             body: vec![],
             request: SpiderRequest::get("http://example.com/page"),
-            tracker: None,
             from_cache,
         }
     }
@@ -841,9 +911,8 @@ mod tests {
     #[tokio::test]
     async fn process_response_from_cache_does_not_increment_pages() {
         let (ctx, stats) = make_ctx();
-        let req = SpiderRequest::get("http://example.com/page");
         let resp = make_resp(true);
-        process_response(&ctx, resp, &req).await;
+        process_response(&ctx, resp).await;
         assert_eq!(
             stats.pages.load(Ordering::SeqCst),
             0,
@@ -855,9 +924,8 @@ mod tests {
     #[tokio::test]
     async fn process_response_not_from_cache_increments_pages() {
         let (ctx, stats) = make_ctx();
-        let req = SpiderRequest::get("http://example.com/page");
         let resp = make_resp(false);
-        process_response(&ctx, resp, &req).await;
+        process_response(&ctx, resp).await;
         assert_eq!(
             stats.pages.load(Ordering::SeqCst),
             1,
@@ -874,8 +942,12 @@ mod tests {
         let store = crate::storage::Store::open_in_memory().expect("open in-memory store");
         let sched = scheduler::Scheduler::new();
         // push 两个 URL：进入 heap 与 seen 集合
-        sched.push(SpiderRequest::get("https://example.com/a")).await;
-        sched.push(SpiderRequest::get("https://example.com/b")).await;
+        sched
+            .push(SpiderRequest::get("https://example.com/a"))
+            .await;
+        sched
+            .push(SpiderRequest::get("https://example.com/b"))
+            .await;
 
         let stats = Arc::new(SpiderStats::new());
         save_checkpoint(&store, "seen_persist_spider", &sched, &stats).await;

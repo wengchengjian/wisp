@@ -37,7 +37,7 @@ async fn httpbin_reachable() -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    match client.get("https://httpbin.org/status/200").await {
+    match client.get("https://httpbin.org/status/200", &[]).await {
         Ok(r) => r.status == 200,
         Err(_) => false,
     }

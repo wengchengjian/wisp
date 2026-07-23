@@ -1,325 +1,185 @@
-# Task 8: Engine 重构为 buffer_unordered 并发（修正版）
+### Task 8: 修复 RequestCache 键忽略 HTTP 方法
 
 **Files:**
-- Modify: `src/crawl/mod.rs`（重写 Engine struct + impl + fetch_page）
-- Create: `tests/crawl_concurrency_test.rs`
+- Modify: `src/crawl/runtime/request_cache.rs:40-52`（get/put/invalidate 签名加 method）
+- Modify: `src/crawl/engine.rs:142-157, 241-250`（调用处传 method）
+- Test: `src/crawl/runtime/request_cache.rs` 内 `#[cfg(test)]`
 
-**注意：** 本 brief 修正了原 plan 中的 3 个编译问题：
-1. `self.spider` 部分移动后访问 `self.config` → 提前提取所有 config 值
-2. skip 路径返回 `()` vs future 类型不一致 → 所有逻辑放入单个 `async move` 块
-3. `start_urls()` 在 `Arc::new(self.spider)` 后调用 → 提前提取
+**Interfaces:**
+- Consumes: `Method`（crawl/mod.rs:53），`RequestCache.inner: moka::Cache<String, CachedEntry>`
+- Produces: `RequestCache::{get,put,invalidate}` 新增 `method: &str` 参数；键为 `"{method} {url}"`；POST/GET 同 URL 不冲突
 
-- [ ] **Step 1: 创建 tests/crawl_concurrency_test.rs**
+**背景：** `RequestCache`（request_cache.rs:40-47）键只用 URL。`process_request`（engine.rs:142-157）查询时也只用 `req.url`。导致 POST 与 GET 同 URL 共享缓存，返回错误响应。dev_mode 的 SQLite 缓存用 `(url, method)` 正确，两者不一致。
 
-```rust
-//! Verify Spider Engine respects max_concurrent limit.
+- [ ] **Step 1: 写失败测试 — POST 与 GET 同 URL 不共享缓存**
 
-use std::sync::Arc;
-use async_trait::async_trait;
-use wisp::crawl::{Spider, SpiderRequest, SpiderResponse, Engine};
-use serde_json::Value;
-
-struct ConcurrencySpider;
-
-#[async_trait]
-impl Spider for ConcurrencySpider {
-    fn name(&self) -> &str { "concurrency-test" }
-    fn start_urls(&self) -> Vec<String> {
-        // 10 URLs that each take 100ms to respond
-        (0..10).map(|i| format!("https://httpbin.org/delay/0.1?i={}", i)).collect()
-    }
-    fn concurrent_requests(&self) -> u32 { 4 }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        (vec![], vec![])
-    }
-    async fn on_start(&self) {}
-    async fn on_close(&self) {}
-}
-
-#[tokio::test]
-#[ignore = "requires network access to httpbin.org"]
-async fn test_max_concurrent_respected() {
-    let spider = ConcurrencySpider;
-    let stats = Engine::new(spider)
-        .max_pages(10)
-        .run()
-        .await
-        .unwrap();
-    // Smoke test: should complete without panic
-    assert_eq!(stats.pages_crawled, 10);
-}
-```
-
-- [ ] **Step 2: 重写 src/crawl/mod.rs 的 Engine 部分**
-
-**保留不变的部分：** `SpiderRequest`, `SpiderResponse`, `Spider` trait, `Method`, `CrawlStats`, 以及顶部的模块声明和 imports。
-
-**替换：** `Engine` struct + `impl Engine<S>` + `fetch_page` 函数。
-
-在文件顶部的 imports 区域，确保有以下 imports（追加到现有 use 语句之后）：
+在 `src/crawl/runtime/request_cache.rs` 的 `#[cfg(test)]` 末尾追加：
 
 ```rust
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::collections::HashMap;
-use futures::stream::{self, StreamExt};
-use tokio::sync::Mutex;
-```
-
-注意：现有文件已有 `use std::collections::{HashMap, HashSet};` 和 `use std::time::Duration;` 等。需要合并，不要重复 import。具体来说：
-- `HashMap` 已在 `use std::collections::{HashMap, HashSet};` 中导入
-- `Duration` 已导入
-- 需要新增：`AtomicUsize`, `Ordering`, `Arc`, `futures::stream`, `tokio::sync::Mutex`
-
-替换 Engine struct 和 impl 块（从 `/// The crawling engine` 到文件末尾的 `}`）为：
-
-```rust
-/// Engine configuration.
-pub struct EngineConfig {
-    pub max_pages: usize,
-    pub max_concurrent: usize,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self { max_pages: 1000, max_concurrent: 8 }
-    }
-}
-
-/// The crawling engine that drives a Spider.
-pub struct Engine<S: Spider> {
-    spider: S,
-    config: EngineConfig,
-}
-
-impl<S: Spider> Engine<S> {
-    pub fn new(spider: S) -> Self {
-        let max_concurrent = spider.concurrent_requests() as usize;
-        Self {
-            spider,
-            config: EngineConfig {
-                max_concurrent,
-                ..Default::default()
-            },
-        }
-    }
-
-    pub fn max_pages(mut self, n: usize) -> Self { self.config.max_pages = n; self }
-    pub fn max_concurrent(mut self, n: usize) -> Self { self.config.max_concurrent = n; self }
-
-    pub async fn run(self) -> Result<CrawlStats> {
-        let start = std::time::Instant::now();
-        // 提前提取所有需要的信息（避免 self 部分移动问题）
-        let max_pages = self.config.max_pages;
-        let max_concurrent = self.config.max_concurrent;
-        let obey_robots = self.spider.obey_robots();
-        let allowed = self.spider.allowed_domains();
-        let start_urls = self.spider.start_urls();
-        let fetcher_config = self.spider.fetcher_config();
-
-        let client = Client::builder()
-            .timeout(fetcher_config.timeout)
-            .build()?;
-
-        self.spider.on_start().await;
-
-        let spider = Arc::new(self.spider);
-        let sched = Arc::new(scheduler::Scheduler::new());
-        let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
-
-        // Seed start URLs
-        for url in start_urls {
-            sched.push(SpiderRequest::get(&url)).await;
-        }
-
-        // Channel for follow requests 回灌
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
-        let stats_items = Arc::new(AtomicUsize::new(0));
-        let stats_pages = Arc::new(AtomicUsize::new(0));
-        let stats_errors = Arc::new(AtomicUsize::new(0));
-
-        // Domain semaphores for per-domain throttling
-        let domain_sems: Arc<Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-
-        let follow_rx = Arc::new(Mutex::new(follow_rx));
-        let client = Arc::new(client);
-        let allowed = Arc::new(allowed);
-
-        let mut stream = {
-            let sched = sched.clone();
-            let follow_rx = follow_rx.clone();
-            let follow_tx = follow_tx.clone();
-            let spider = spider.clone();
-            let client = client.clone();
-            let stats_pages = stats_pages.clone();
-            let stats_errors = stats_errors.clone();
-            let stats_items = stats_items.clone();
-            let domain_sems = domain_sems.clone();
-            let robots_cache = robots_cache.clone();
-            let allowed = allowed.clone();
-
-            stream::unfold((), move |_| {
-                let sched = sched.clone();
-                let follow_rx = follow_rx.clone();
-                let follow_tx = follow_tx.clone();
-                let spider = spider.clone();
-                let client = client.clone();
-                let stats_pages = stats_pages.clone();
-                let stats_errors = stats_errors.clone();
-                let stats_items = stats_items.clone();
-                let domain_sems = domain_sems.clone();
-                let robots_cache = robots_cache.clone();
-                let allowed = allowed.clone();
-
-                async move {
-                    // 1. Drain follow channel into scheduler
-                    let mut rx_guard = follow_rx.lock().await;
-                    while let Ok(req) = rx_guard.try_recv() {
-                        sched.push(req).await;
-                    }
-                    drop(rx_guard);
-
-                    // 2. Check page budget
-                    if stats_pages.load(Ordering::SeqCst) >= max_pages {
-                        return None;
-                    }
-
-                    // 3. Pop next request
-                    let req = sched.pop().await?;
-
-                    // 4-7. All logic in a single async block (unified future type)
-                    let spider_clone = spider.clone();
-                    let stats_pages_c = stats_pages.clone();
-                    let stats_errors_c = stats_errors.clone();
-                    let stats_items_c = stats_items.clone();
-                    let follow_tx_c = follow_tx.clone();
-                    let client_c = client.clone();
-                    let domain_sems_c = domain_sems.clone();
-                    let robots_cache_c = robots_cache.clone();
-                    let allowed_c = allowed.clone();
-
-                    let fut = async move {
-                        // 4. Domain filter
-                        if !allowed_c.is_empty() {
-                            if let Ok(parsed) = url::Url::parse(&req.url) {
-                                if let Some(host) = parsed.host_str() {
-                                    if !allowed_c.contains(host) {
-                                        return;  // skip
-                                    }
-                                }
-                            }
-                        }
-
-                        // 5. Robots check
-                        if obey_robots {
-                            let url_clone = req.url.clone();
-                            let client_r = client_c.clone();
-                            let allowed = {
-                                let rc = robots_cache_c.lock().await;
-                                rc.is_allowed(&client_r, &url_clone).await
-                            };
-                            if !allowed {
-                                return;
-                            }
-                        }
-
-                        // 6. Per-domain throttle
-                        let domain = url::Url::parse(&req.url)
-                            .ok()
-                            .and_then(|u| u.host_str().map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        let sem = {
-                            let mut sems = domain_sems_c.lock().await;
-                            sems.entry(domain.clone())
-                                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
-                                .clone()
-                        };
-                        let _permit = sem.acquire_owned().await.unwrap();
-
-                        // 7. Fetch
-                        match fetch_page(&client_c, &req).await {
-                            Ok(resp) => {
-                                if spider_clone.is_blocked(&resp) {
-                                    stats_errors_c.fetch_add(1, Ordering::SeqCst);
-                                    return;
-                                }
-                                stats_pages_c.fetch_add(1, Ordering::SeqCst);
-                                let (items, follows) = spider_clone.parse(resp).await;
-                                for item in items {
-                                    if let Some(_processed) = spider_clone.on_item(item).await {
-                                        stats_items_c.fetch_add(1, Ordering::SeqCst);
-                                    }
-                                }
-                                for f in follows {
-                                    let _ = follow_tx_c.send(f);
-                                }
-                            }
-                            Err(e) => {
-                                stats_errors_c.fetch_add(1, Ordering::SeqCst);
-                                spider_clone.on_error(&req, &e.to_string()).await;
-                            }
-                        }
-                    };
-
-                    // Return the future for buffer_unordered
-                    Some((fut, ()))
-                }
-            })
-            .map(|(fut, _)| fut)
-            .buffer_unordered(max_concurrent)
+    #[tokio::test]
+    async fn cache_key_includes_method() {
+        let cache = RequestCache::new(100, Duration::from_secs(60));
+        let get_entry = CachedEntry {
+            status: 200,
+            headers: HashMap::new(),
+            body: b"GET-RESPONSE".to_vec(),
         };
+        // 存 GET 响应
+        cache.put("GET", "https://example.com/api", get_entry).await;
 
-        // Drive the stream to completion
-        while stream.next().await.is_some() {}
+        // GET 命中
+        let got = cache.get("GET", "https://example.com/api").await;
+        assert!(got.is_some(), "GET 应命中");
 
-        spider.on_close().await;
+        // POST 不应命中 GET 的缓存
+        let post = cache.get("POST", "https://example.com/api").await;
+        assert!(post.is_none(), "POST 不应命中 GET 缓存，实际 {:?}", post);
+    }
+```
 
-        Ok(CrawlStats {
-            items_scraped: stats_items.load(Ordering::SeqCst),
-            pages_crawled: stats_pages.load(Ordering::SeqCst),
-            errors: stats_errors.load(Ordering::SeqCst),
-            duration: start.elapsed(),
-        })
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `cargo test --lib crawl::runtime::request_cache::tests::cache_key_includes_method 2>&1 | tail -15`
+Expected: 编译失败（put/get 签名不匹配）或 FAIL（同 URL 命中）。
+
+- [ ] **Step 3: 修改 RequestCache 签名加 method**
+
+修改 `src/crawl/runtime/request_cache.rs` L26-58：
+
+```rust
+impl RequestCache {
+    pub fn new(max_entries: u64, ttl: Duration) -> Self {
+        Self {
+            inner: Cache::builder()
+                .max_capacity(max_entries)
+                .time_to_live(ttl)
+                .build(),
+        }
+    }
+
+    /// 构造缓存键："{method} {url}"，区分不同 HTTP 方法的响应。
+    fn cache_key(method: &str, url: &str) -> String {
+        format!("{} {}", method, url)
+    }
+
+    /// Get a cached response for the given (method, url).
+    pub async fn get(&self, method: &str, url: &str) -> Option<CachedEntry> {
+        self.inner.get(&Self::cache_key(method, url)).await
+    }
+
+    /// Store a response in the cache.
+    pub async fn put(&self, method: &str, url: &str, entry: CachedEntry) {
+        self.inner.insert(Self::cache_key(method, url), entry).await;
+    }
+
+    /// Invalidate a specific (method, url) entry.
+    pub async fn invalidate(&self, method: &str, url: &str) {
+        self.inner.invalidate(&Self::cache_key(method, url)).await;
+    }
+
+    pub fn entry_count(&self) -> u64 {
+        self.inner.entry_count()
     }
 }
+```
 
-async fn fetch_page(client: &Client, req: &SpiderRequest) -> Result<SpiderResponse> {
-    let resp = match req.method {
-        Method::Get => client.get(&req.url).await?,
-        Method::Post => client.post(&req.url, req.body.as_deref(), None).await?,
-        Method::Put => client.put(&req.url, req.body.as_deref(), None).await?,
-        Method::Delete => client.delete(&req.url).await?,
+- [ ] **Step 4: 更新现有 request_cache 测试调用**
+
+修改 `src/crawl/runtime/request_cache.rs` 内现有 4 个测试，给 put/get/invalidate 加 method 参数。例如 `test_cache_put_and_get`：
+
+```rust
+    #[tokio::test]
+    async fn test_cache_put_and_get() {
+        let cache = RequestCache::new(100, Duration::from_secs(60));
+        let entry = CachedEntry {
+            status: 200,
+            headers: HashMap::from([("content-type".to_string(), "text/html".to_string())]),
+            body: b"<html>hello</html>".to_vec(),
+        };
+        cache.put("GET", "https://example.com", entry.clone()).await;
+
+        let got = cache.get("GET", "https://example.com").await;
+        assert!(got.is_some());
+        let got = got.unwrap();
+        assert_eq!(got.status, 200);
+        assert_eq!(got.body, b"<html>hello</html>");
+    }
+```
+
+对其余 3 个测试（`test_cache_miss`、`test_cache_invalidate`、`test_cache_entry_count`）同样加 `"GET"` 参数。
+
+- [ ] **Step 5: 更新 engine.rs 调用处**
+
+修改 `src/crawl/engine.rs` 的 `process_request`。先定义 method_str（已有，L161-166，但定义在缓存查询之后）。把 method_str 提前到 RequestCache 查询之前。
+
+当前 L142-157（RequestCache 查询）在 L161（method_str 定义）之前。调整顺序：把 method_str 定义移到 L141 之前。
+
+```rust
+    // 1.85. 提前计算 method_str（RequestCache 查询需要）
+    let method_str = match req.method {
+        Method::Get => "GET",
+        Method::Post => "POST",
+        Method::Put => "PUT",
+        Method::Delete => "DELETE",
     };
 
-    Ok(SpiderResponse {
-        url: resp.url.clone(),
-        status: resp.status,
-        headers: resp.headers.clone(),
-        body: resp.body.clone(),
-        request: req.clone(),
-    })
-}
+    // 2. 内存缓存检查 (RequestCache) — 键含 method
+    if let Some(ref rc) = ctx.request_cache {
+        if let Some(entry) = rc.get(method_str, &req.url).await {
+            let resp = SpiderResponse {
+                url: req.url.clone(),
+                status: entry.status,
+                headers: entry.headers,
+                body: entry.body,
+                request: req.clone(),
+                tracker: None,
+                from_cache: true,
+            };
+            stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+            record_status(stats, resp.status).await;
+            return process_response(ctx, resp, &req).await;
+        }
+    }
 ```
 
-- [ ] **Step 3: 运行 cargo check 验证编译**
+删除原 L161-166 的 method_str 定义（已上移）。保留 dev_mode SQLite 缓存段（L167-237）使用已有的 method_str。
 
-Run: `cargo check`
-Expected: 编译通过。如果有编译错误，根据错误信息修复（常见问题见下）。
+修改 RequestCache 写入（L241-250）：
 
-常见编译问题及修复：
-1. `RobotsCache::is_allowed` 需要 `&mut self`，但 `rc` 是 `MutexGuard` — `MutexGuard` 实现了 `DerefMut`，所以 `rc.is_allowed(...)` 应该能工作。如果不行，尝试 `(&mut *rc).is_allowed(...)`。
-2. `atomic` imports 重复 — 确保只在文件顶部 import 一次
-3. `HashSet` 已在现有 imports 中 — 不要重复
+```rust
+        // 7.5. 写入 RequestCache
+        if let Some(ref rc) = ctx.request_cache {
+            if let Some(ref resp) = final_resp {
+                rc.put(method_str, &req.url, super::request_cache::CachedEntry {
+                    status: resp.status,
+                    headers: resp.headers.clone(),
+                    body: resp.body.clone(),
+                }).await;
+            }
+        }
+```
 
-- [ ] **Step 4: 运行已有测试确保未破坏**
+- [ ] **Step 6: 运行测试确认通过**
 
-Run: `cargo test --lib`
-Expected: 现有测试通过
+Run: `cargo build 2>&1 | tail -10`
+Expected: 编译通过（所有 RequestCache 调用点已更新）。
 
-- [ ] **Step 5: 提交**
+Run: `cargo test --lib crawl::runtime::request_cache 2>&1 | tail -10`
+Expected: PASS（含新测试 + 现有 4 个）。
+
+Run: `cargo test --test unified_fetcher_test 2>&1 | tail -10`（若有用 RequestCache）
+Expected: 通过。
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/crawl/mod.rs tests/crawl_concurrency_test.rs
-git commit -m "refactor: Engine 重构为 buffer_unordered 真并发 + per-domain 信号量"
+git add src/crawl/runtime/request_cache.rs src/crawl/engine.rs
+git commit -m "fix(cache): RequestCache 键含 HTTP 方法
+
+- get/put/invalidate 新增 method 参数，键为 \"{method} {url}\"
+- engine.rs 调用处传入 method_str，与 dev_mode SQLite 缓存一致
+- 修复 POST 与 GET 同 URL 共享缓存返回错误响应的问题"
 ```
+
+---
+

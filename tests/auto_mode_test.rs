@@ -1,7 +1,6 @@
-//! Auto 模式测试：URL 泛化、规则引擎、选择器追踪、拦截检测。
+//! Auto 模式测试：URL 泛化、规则引擎、拦截检测、Dynamic 升级中间件。
 
-use std::collections::HashSet;
-use wisp::crawl::auto::{generalize_url, ModeRuleEngine, SelectorTracker, is_blocked_response};
+use wisp::crawl::auto::{generalize_url, ModeRuleEngine, is_blocked_response};
 use wisp::FetchMode;
 use std::collections::HashMap;
 
@@ -45,7 +44,6 @@ fn test_generalize_mixed() {
 fn test_user_rule_priority() {
     let mut engine = ModeRuleEngine::new();
     engine.add_user_rule(r"/api/.*", FetchMode::Http).unwrap();
-    // 自动规则说 /api/data 需要 Dynamic
     engine.learn("https://shop.com/api/data", FetchMode::Dynamic);
 
     // 用户规则优先
@@ -86,47 +84,7 @@ fn test_multiple_patterns_coexist() {
     engine.learn("https://shop.com/blog/hello-world", FetchMode::Http);
 
     assert_eq!(engine.resolve("https://shop.com/products/5"), Some(FetchMode::Dynamic));
-    // /blog/hello-world 泛化后是 /blog/hello-world（字面量），不匹配其他 blog
     assert_eq!(engine.resolve("https://shop.com/blog/hello-world"), Some(FetchMode::Http));
-}
-
-// === 选择器追踪测试 ===
-
-#[test]
-fn test_tracker_zero_match_triggers_upgrade() {
-    let mut tracker = SelectorTracker::new();
-    tracker.record(".product-card", 0);
-    tracker.record(".header", 1);
-
-    assert!(tracker.needs_upgrade(&HashSet::new()));
-}
-
-#[test]
-fn test_tracker_exclude_respected() {
-    let mut tracker = SelectorTracker::new();
-    tracker.record(".cookie-banner", 0);
-    tracker.record(".product-card", 5);
-
-    let mut exclude = HashSet::new();
-    exclude.insert(".cookie-banner".to_string());
-
-    assert!(!tracker.needs_upgrade(&exclude));
-}
-
-#[test]
-fn test_tracker_all_matched_no_upgrade() {
-    let mut tracker = SelectorTracker::new();
-    tracker.record(".product-card", 10);
-    tracker.record(".price", 10);
-    tracker.record("h1", 1);
-
-    assert!(!tracker.needs_upgrade(&HashSet::new()));
-}
-
-#[test]
-fn test_tracker_empty_records_no_upgrade() {
-    let tracker = SelectorTracker::new();
-    assert!(!tracker.needs_upgrade(&HashSet::new()));
 }
 
 // === 拦截检测测试 ===
@@ -160,117 +118,4 @@ fn test_blocked_cf_header() {
 fn test_normal_page_not_blocked() {
     let body = b"<html><body><h1>Hello World</h1><p>Content here</p></body></html>";
     assert!(!is_blocked_response(200, body, &HashMap::new()));
-}
-
-// === 集成测试（本地服务器）===
-
-#[tokio::test]
-async fn test_auto_mode_with_local_server() {
-    use wisp::crawl::{SpiderBuilder, Engine};
-    use wisp::crawl::auto::SelectorTracker;
-    use serde_json::Value;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    // 模拟一个 SPA 页面：HTML 中 .product 为空（需要 JS 渲染）
-    let html = r#"<html><body><div id="app"></div><script>/* render products */</script></body></html>"#;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else { return };
-            let html = html;
-            tokio::spawn(async move {
-                let mut buf = [0u8; 2048];
-                let _ = socket.read(&mut buf).await;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-            });
-        }
-    });
-
-    let base_url = format!("http://{}/products/1", addr);
-
-    // 使用 Auto 模式 + css() 追踪
-    let spider = SpiderBuilder::new("auto-test")
-        .start_urls(vec![base_url.clone()])
-        .mode(FetchMode::Auto)
-        .obey_robots(false)
-        .on("default", |resp| async move {
-            // 使用 resp.css() 触发追踪
-            let products = resp.css(".product");
-            let items: Vec<Value> = products.iter().map(|p| {
-                serde_json::json!({ "text": p.text() })
-            }).collect();
-            (items, vec![])
-        })
-        .build();
-
-    // Auto 模式会检测到 .product 返回 0 节点
-    // 但由于本地服务器不支持 Dynamic（无 Chrome），升级会失败
-    // 这里主要验证 Auto 逻辑不 panic 且正常完成
-    let engine = Engine::infra()
-        .max_pages(1)
-        .build()
-        .unwrap();
-    let (stats, _items) = engine.run(spider).await.unwrap();
-
-    // 页面应被爬取（即使升级失败，HTTP 结果仍被使用）
-    assert_eq!(stats.pages_crawled, 1);
-}
-
-#[tokio::test]
-async fn test_auto_mode_static_page_no_upgrade() {
-    use wisp::crawl::{SpiderBuilder, Engine};
-    use serde_json::Value;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    // 静态页面：.product 有内容
-    let html = r#"<html><body><div class="product">Item 1</div><div class="product">Item 2</div></body></html>"#;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else { return };
-            let html = html;
-            tokio::spawn(async move {
-                let mut buf = [0u8; 2048];
-                let _ = socket.read(&mut buf).await;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-            });
-        }
-    });
-
-    let base_url = format!("http://{}/products/1", addr);
-
-    let spider = SpiderBuilder::new("auto-static")
-        .start_urls(vec![base_url])
-        .mode(FetchMode::Auto)
-        .obey_robots(false)
-        .on("default", |resp| async move {
-            let products = resp.css(".product");
-            let items: Vec<Value> = products.iter().map(|p| {
-                serde_json::json!({ "text": p.text() })
-            }).collect();
-            (items, vec![])
-        })
-        .build();
-
-    let engine = Engine::infra()
-        .max_pages(1)
-        .build()
-        .unwrap();
-    let (stats, _items) = engine.run(spider).await.unwrap();
-
-    // 静态页面：HTTP 即可，不升级，2 个 item
-    assert_eq!(stats.pages_crawled, 1);
-    assert_eq!(stats.items_scraped, 2);
 }

@@ -41,8 +41,8 @@ pub mod storage;
 pub mod mcp;
 
 // === 统一入口 ===
-pub use fetcher::{Fetcher, FetchMode, FetcherConfig, FetcherBuilder};
-pub use fetcher::{Response, Request, Method, Session};
+pub use fetcher::{FetchClient, FetchClientConfig, Fetcher, FetchMode, FetcherBuilder};
+pub use fetcher::{Response, Request, Method};
 
 // === 核心类型 ===
 pub use browser::{Browser, Page};
@@ -57,5 +57,5 @@ pub use storage::Store;
 pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider, RequestCache};
 pub use http::UaRotator;
 
-// === 兼容层 ===
-pub use http::{Client, HttpSession, DomainBlocker};
+// === 底层类型（FetchClientConfig 公共字段需要） ===
+pub use http::DomainBlocker;

@@ -4,11 +4,9 @@
 
 pub mod encoding;
 pub mod proxy;
-pub mod session;
 pub mod block;
 pub mod ua;
 
-pub use session::HttpSession;
 pub use block::DomainBlocker;
 pub use ua::UaRotator;
 
@@ -144,17 +142,17 @@ impl Client {
     pub fn config_ref(&self) -> &Config { &self.config }
 
     /// GET request.
-    pub async fn get(&self, url: &str) -> Result<Response> {
+    pub async fn get(&self, url: &str, extra_headers: &[(String, String)]) -> Result<Response> {
         let resp = self.http.get(url)
-            .headers(self.build_headers())
+            .headers(self.build_headers_with(extra_headers))
             .send().await
             .map_err(|e| WispError::CdpError(format!("GET {url}: {e}")))?;
         self.build_response(resp).await
     }
 
     /// POST request with optional body/json.
-    pub async fn post(&self, url: &str, body: Option<&str>, json: Option<&Value>) -> Result<Response> {
-        let mut req = self.http.post(url).headers(self.build_headers());
+    pub async fn post(&self, url: &str, body: Option<&str>, json: Option<&Value>, extra_headers: &[(String, String)]) -> Result<Response> {
+        let mut req = self.http.post(url).headers(self.build_headers_with(extra_headers));
         if let Some(b) = body { req = req.body(b.to_string()); }
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
@@ -167,8 +165,8 @@ impl Client {
     }
 
     /// PUT request.
-    pub async fn put(&self, url: &str, body: Option<&str>, json: Option<&Value>) -> Result<Response> {
-        let mut req = self.http.put(url).headers(self.build_headers());
+    pub async fn put(&self, url: &str, body: Option<&str>, json: Option<&Value>, extra_headers: &[(String, String)]) -> Result<Response> {
+        let mut req = self.http.put(url).headers(self.build_headers_with(extra_headers));
         if let Some(b) = body { req = req.body(b.to_string()); }
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
@@ -181,53 +179,26 @@ impl Client {
     }
 
     /// DELETE request.
-    pub async fn delete(&self, url: &str) -> Result<Response> {
+    pub async fn delete(&self, url: &str, extra_headers: &[(String, String)]) -> Result<Response> {
         let resp = self.http.delete(url)
-            .headers(self.build_headers())
+            .headers(self.build_headers_with(extra_headers))
             .send().await
             .map_err(|e| WispError::CdpError(format!("DELETE {url}: {e}")))?;
         self.build_response(resp).await
     }
 
-    /// GET request with extra headers (用于 Session cookie 注入)。
-    pub async fn get_with_headers(&self, url: &str, extra_headers: &[(String, String)]) -> Result<Response> {
-        let mut headers = self.build_headers();
+    /// 合并 config headers 与 per-request extra headers（extra 覆盖同名 config header）。
+    fn build_headers_with(&self, extra_headers: &[(String, String)]) -> wreq::header::HeaderMap {
+        let mut map = self.build_headers();
         for (k, v) in extra_headers {
             if let (Ok(name), Ok(val)) = (
                 wreq::header::HeaderName::from_bytes(k.as_bytes()),
                 wreq::header::HeaderValue::from_str(v),
             ) {
-                headers.insert(name, val);
+                map.insert(name, val);
             }
         }
-        let resp = self.http.get(url)
-            .headers(headers)
-            .send().await
-            .map_err(|e| WispError::CdpError(format!("GET {url}: {e}")))?;
-        self.build_response(resp).await
-    }
-
-    /// POST request with extra headers (用于 Session cookie 注入)。
-    pub async fn post_with_headers(&self, url: &str, body: Option<&str>, json: Option<&serde_json::Value>, extra_headers: &[(String, String)]) -> Result<Response> {
-        let mut headers = self.build_headers();
-        for (k, v) in extra_headers {
-            if let (Ok(name), Ok(val)) = (
-                wreq::header::HeaderName::from_bytes(k.as_bytes()),
-                wreq::header::HeaderValue::from_str(v),
-            ) {
-                headers.insert(name, val);
-            }
-        }
-        let mut req = self.http.post(url).headers(headers);
-        if let Some(b) = body { req = req.body(b.to_string()); }
-        if let Some(j) = json {
-            let json_str = serde_json::to_string(j)
-                .map_err(|e| WispError::CdpError(format!("JSON serialize: {e}")))?;
-            req = req.header(wreq::header::CONTENT_TYPE, "application/json").body(json_str);
-        }
-        let resp = req.send().await
-            .map_err(|e| WispError::CdpError(format!("POST {url}: {e}")))?;
-        self.build_response(resp).await
+        map
     }
 
     fn build_headers(&self) -> wreq::header::HeaderMap {
@@ -292,4 +263,89 @@ impl Response {
     }
 
     pub fn is_ok(&self) -> bool { self.status >= 200 && self.status < 300 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 启动测试 HTTP 服务器，回显收到的请求 headers（每行一个 header）。
+    async fn spawn_echo_server() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 16384];
+                    let mut total = 0usize;
+                    // 循环读取直到收到完整的 HTTP 请求头（\r\n\r\n 结尾）
+                    while total < buf.len() {
+                        let n = socket.read(&mut buf[total..]).await.unwrap_or(0);
+                        if n == 0 { break; }
+                        total += n;
+                        if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                    }
+                    let request = String::from_utf8_lossy(&buf[..total]);
+                    // 回显收到的 headers（跳过请求行）
+                    let headers: String = request
+                        .lines()
+                        .skip(1)
+                        .take_while(|line| !line.is_empty())
+                        .filter(|line| line.contains(':'))
+                        .map(|line| format!("{}\n", line))
+                        .collect();
+                    let body = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        headers.len(),
+                        headers
+                    );
+                    let _ = socket.write_all(body.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    #[tokio::test]
+    async fn put_with_extra_headers_sends_them() {
+        let base = spawn_echo_server().await;
+        let client = Client::builder().no_emulation().build().unwrap();
+        let extra = vec![("X-Custom".to_string(), "put-val".to_string())];
+        let resp = client
+            .put(&format!("{}/item", base), None, None, &extra)
+            .await
+            .unwrap();
+        let text = resp.text().unwrap();
+        assert!(
+            text.to_ascii_lowercase().contains("x-custom: put-val"),
+            "PUT 应发送 extra headers, 实际: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_with_extra_headers_sends_them() {
+        let base = spawn_echo_server().await;
+        let client = Client::builder().no_emulation().build().unwrap();
+        let extra = vec![("X-Custom".to_string(), "del-val".to_string())];
+        let resp = client
+            .delete(&format!("{}/item", base), &extra)
+            .await
+            .unwrap();
+        let text = resp.text().unwrap();
+        assert!(
+            text.to_ascii_lowercase().contains("x-custom: del-val"),
+            "DELETE 应发送 extra headers, 实际: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_with_empty_extra_headers_still_works() {
+        let base = spawn_echo_server().await;
+        let client = Client::builder().no_emulation().build().unwrap();
+        let resp = client.get(&format!("{}/item", base), &[]).await.unwrap();
+        assert_eq!(resp.status, 200);
+    }
 }

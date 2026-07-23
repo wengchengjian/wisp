@@ -95,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Scrape { url, selector, format } => {
             use wisp::http::Client;
             let client = Client::builder().build()?;
-            let resp = client.get(&url).await?;
+            let resp = client.get(&url, &[]).await?;
             let html = resp.text()?;
             if let Some(sel) = selector {
                 use wisp::parser::Node;

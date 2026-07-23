@@ -4,8 +4,7 @@
 //! 且统一的解析 API（css/xpath/find_by_text/follow）正常工作。
 
 use std::time::Duration;
-use wisp::{Fetcher, FetchMode, Response, Request, Session};
-use wisp::FetcherConfig;
+use wisp::{Fetcher, FetchMode, Response, Request};
 
 // === 单元测试：Response 统一 API ===
 
@@ -127,9 +126,9 @@ fn test_unified_response_parse_and_navigate() {
 #[test]
 fn test_fetcher_three_modes_return_same_type() {
     // 验证三模式的 builder 都能构建，且返回相同 Fetcher 类型
-    let http = Fetcher::http().build();
-    let dynamic = Fetcher::dynamic().build();
-    let stealth = Fetcher::stealth().build();
+    let http = Fetcher::http().build().expect("build http fetcher");
+    let dynamic = Fetcher::dynamic().build().expect("build dynamic fetcher");
+    let stealth = Fetcher::stealth().build().expect("build stealth fetcher");
 
     assert_eq!(http.mode(), FetchMode::Http);
     assert_eq!(dynamic.mode(), FetchMode::Dynamic);
@@ -149,7 +148,8 @@ fn test_fetcher_builder_full_config() {
         .block_ads()
         .block_domains(&["analytics.google.com"])
         .dns_over_https("https://1.1.1.1/dns-query")
-        .build();
+        .build()
+        .expect("build stealth fetcher");
 
     let config = fetcher.config();
     assert_eq!(config.proxy.as_deref(), Some("http://127.0.0.1:7897"));
@@ -161,39 +161,6 @@ fn test_fetcher_builder_full_config() {
     assert_eq!(config.extra_wait_ms, 1000);
     assert!(config.domain_blocker.is_some());
     assert_eq!(config.dns_over_https.as_deref(), Some("https://1.1.1.1/dns-query"));
-}
-
-// === Session 测试 ===
-
-#[test]
-fn test_session_three_modes() {
-    let http_session = Session::http().build();
-    let dynamic_session = Session::dynamic().build();
-    let stealth_session = Session::stealth().proxy("http://127.0.0.1:7897").build();
-
-    assert!(http_session.is_ok());
-    assert!(dynamic_session.is_ok());
-    assert!(stealth_session.is_ok());
-
-    assert_eq!(http_session.unwrap().fetcher().mode(), FetchMode::Http);
-    assert_eq!(dynamic_session.unwrap().fetcher().mode(), FetchMode::Dynamic);
-    assert_eq!(stealth_session.unwrap().fetcher().mode(), FetchMode::Stealth);
-}
-
-#[tokio::test]
-async fn test_session_cookie_management() {
-    let session = Session::http().build().unwrap();
-
-    session.set_cookie("example.com", "token", "abc123").await;
-    session.set_cookie("example.com", "sid", "xyz").await;
-
-    let cookies = session.cookies_for("example.com").await;
-    assert_eq!(cookies.get("token").unwrap(), "abc123");
-    assert_eq!(cookies.get("sid").unwrap(), "xyz");
-
-    session.clear_cookies().await;
-    let cookies = session.cookies_for("example.com").await;
-    assert!(cookies.is_empty());
 }
 
 // === 真实网络测试（需要网络）===

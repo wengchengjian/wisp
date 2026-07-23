@@ -28,7 +28,7 @@ pub async fn fetch_page(args: Value) -> Result<Value> {
     }
 
     let client = builder.build()?;
-    let resp = client.get(url).await?;
+    let resp = client.get(url, &[]).await?;
     let html = resp.text()?;
 
     Ok(json!({
@@ -165,7 +165,7 @@ pub async fn adaptive_scrape(args: Value, store: &Arc<Store>) -> Result<Value> {
         .ok_or_else(|| WispError::McpError("missing 'key'".into()))?;
 
     let client = Client::builder().build()?;
-    let resp = client.get(url).await?;
+    let resp = client.get(url, &[]).await?;
     let html = resp.text()?;
     let doc = Node::from_html(&html);
 

@@ -9,7 +9,7 @@ use serde_json::json;
 use wisp::crawl::{Engine, SpiderBuilder};
 use wisp::crawl::stop::MaxPages;
 use wisp::crawl::middleware::{UaRotationMiddleware, HeadersMiddleware, CookieChallengeMiddleware, JsonlWriterPipeline};
-use wisp::FetchMode;
+use wisp::fetcher::{FetchClientConfig, FetchMode};
 
 /// 小说条目结构。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -39,6 +39,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .start_urls(vec!["https://www.qishuxia.com/"])
         .delay(Duration::from_millis(500))
         .obey_robots(false)
+        // 代理配置（通过 FetchClientConfig 统一注入 HTTP 与浏览器请求）
+        .fetch_client_config(FetchClientConfig {
+            proxy: Some("http://127.0.0.1:7897".into()),
+            ..Default::default()
+        })
         // Auto 模式：先尝试 HTTP，遇 403/CF 拦截自动升级 Stealth 浏览器模式
         .mode(FetchMode::Auto)
         // 中间件：每次请求自动轮换 User-Agent
@@ -201,11 +206,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .until(MaxPages(200))
         .build();
 
-    // 构建引擎并运行（配置代理以绕过目标站 IP 封锁）
+    // 构建引擎并运行（代理已在 SpiderBuilder.fetch_client_config 中配置）
     let engine = Engine::infra()
         .max_concurrent(4)
         .max_pages(200)
-        .proxy("http://127.0.0.1:7897")
         .build()?;
 
     println!("=== 开始爬取 qishuxia.com ===\n");

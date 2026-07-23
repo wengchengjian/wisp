@@ -1,64 +1,83 @@
-# Task 10: 更新现有测试与文档
+### Task 10: 修复浏览器模式代理认证丢失
 
-## 目标
+**Files:**
+- Modify: `src/browser/launch.rs:95-98`（build_stealth_args proxy 段）
+- Modify: `src/browser/mod.rs`（Browser 启动后注入代理认证，若 launch 不支持则记录）
+- Test: `src/browser/launch.rs` 内 `#[cfg(test)]`
 
-1. 跑全量编译 `cargo build` 和全量测试 `cargo test`
-2. 修复任何因本次重构（Task 1-9）导致的测试编译错误
-3. 更新文档（如有 CLAUDE.md）
+**Interfaces:**
+- Consumes: `ProxyConfig { server, username, password }`，`Page::evaluate`（注入 JS 设置代理认证）
+- Produces: `build_stealth_args` 仍只设 `proxy-server`（Chrome 限制），但启动后通过 CDP `Fetch.requestPaused` 或 JS 注入 `chrome.webRequest` 处理 407。鉴于实现复杂，此 task 采用文档化限制 + 启动日志告警。
 
-## Files
+**背景：** Chrome 的 `--proxy-server` 不支持内联认证。代理认证需通过 CDP 拦截 407 响应或扩展程序。完整实现超出本修复范围。本 task 采用务实方案：当配置了 username/password 时记录 warn 日志明确告知限制，避免静默丢失。
 
-- Modify: `tests/integration.rs`（如有 SpiderResponse 构造，补 from_cache: false）
-- Modify: `tests/fetch_test.rs`（同上）
-- Modify: `CLAUDE.md`（如有，说明新 patterns/until 用法）
-- 其他因重构导致的编译失败的测试文件
+- [ ] **Step 1: 写测试 — 配置认证时记录告警（验证日志或行为）**
 
-## 主要问题点（预期）
+由于日志验证复杂，改为验证 `build_stealth_args` 在有认证时不崩溃且仍设 proxy-server。在 `src/browser/launch.rs` 的 `#[cfg(test)]` 末尾追加：
 
-1. `SpiderResponse` 构造缺 `from_cache` 字段（Task 4 引入）
-   - 注意：Task 4 已修复大部分，但可能有遗漏的构造点
-2. `EngineContext` 字段变化导致测试中直接调用 `run_spider_once` 的点失败
-   - 注意：`run_spider_once` 已在 Task 8 中删除，改为 `run_with_sender`
-3. 其他因 Spider trait 变化（patterns/matches/until）或 EngineBuilder 变化导致的编译错误
-
-## 预先存在的问题（不要修复）
-
-以下文件有预先存在的 GBK 编码问题（非本次重构引入），不要尝试修复，在报告中说明即可：
-- `tests/real_scrape_test.rs`
-- `tests/cf_bypass_real_test.rs`
-- `tests/session_test.rs`
-
-这些文件在重构前就无法编译，用 `git stash` 验证过非本次引入。如果 cargo test 因这些文件失败，可以用 `--lib` 和指定测试文件的方式验证本次重构的测试。
-
-## 验证步骤
-
-1. `cargo build` — 必须通过（lib + bins）
-2. `cargo test --lib` — 必须通过
-3. `cargo test --test stop_condition_test` — 必须通过
-4. `cargo test --test builder_api_test` — 必须通过
-5. `cargo test --test multi_spider_test` — 必须通过
-6. 对于其他 tests/*.rs：
-   - 如能编译则跑
-   - 如因预先存在的 GBK 编码问题失败，在报告中说明
-   - 如因本次重构导致编译错误，修复
-
-## 文档更新
-
-如有 `CLAUDE.md`，补充说明：
-- `Spider::patterns(&self) -> Vec<String>` — URL 路由匹配模式（正则字符串）
-- `Spider::matches(&self, url: &str) -> bool` — 默认实现，编译 patterns 为 regex
-- `Spider::until(&self) -> Arc<dyn StopCondition>` — per-spider 终止策略
-- `SpiderBuilder::patterns(Vec<String>)` — 设置路由模式
-- `SpiderBuilder::until<C: StopCondition>(cond: C)` — 设置终止条件
-- `Engine::spiders(Vec<Arc<dyn Spider>>)` — 多 Spider 共享队列
-
-如无 CLAUDE.md，跳过文档更新。
-
-## Commit
-
-PowerShell 兼容，用 -m：
-```powershell
-git add tests/ CLAUDE.md
-git commit -m "test: 适配共享队列重构与 from_cache 字段" -m "修复因 Task 1-9 重构导致的测试编译错误"
+```rust
+    #[test]
+    fn test_stealth_args_proxy_with_auth_still_sets_server() {
+        let opts = LaunchOptions {
+            proxy: Some(crate::config::ProxyConfig {
+                server: "http://127.0.0.1:8080".into(),
+                username: Some("user".into()),
+                password: Some("pass".into()),
+            }),
+            ..Default::default()
+        };
+        let args = build_stealth_args(&opts);
+        // proxy-server 仍设置
+        assert!(args.iter().any(|a| a == "proxy-server=http://127.0.0.1:8080"),
+            "proxy-server 应设置");
+    }
 ```
-（如无 CLAUDE.md 改动，只 add tests/）
+
+- [ ] **Step 2: 运行测试确认通过（现有实现已满足）**
+
+Run: `cargo test --lib browser::launch::tests::test_stealth_args_proxy_with_auth_still_sets_server 2>&1 | tail -10`
+Expected: PASS（现有实现已设 proxy-server，仅认证未应用）。
+
+此测试验证不崩溃。告警逻辑在 Step 3 添加。
+
+- [ ] **Step 3: 添加告警日志**
+
+修改 `src/browser/launch.rs` 的 `build_stealth_args` proxy 段（L95-98）：
+
+```rust
+    // Proxy
+    if let Some(ref proxy) = options.proxy {
+        args.push(format!("proxy-server={}", proxy.server));
+        // Chrome --proxy-server 不支持内联认证；username/password 无法通过命令行传递。
+        // 需通过 CDP Fetch.requestPaused 拦截 407 或扩展程序处理（当前未实现）。
+        if proxy.username.is_some() || proxy.password.is_some() {
+            tracing::warn!(
+                "Browser proxy auth (username/password) is not supported via --proxy-server. \
+                 The proxy will be used without authentication; expect 407 responses. \
+                 To use authenticated proxies with browser mode, configure the proxy to \
+                 whitelist the client IP or use an unauthenticated proxy."
+            );
+        }
+    }
+```
+
+- [ ] **Step 4: 编译并运行测试**
+
+Run: `cargo build 2>&1 | tail -10`
+Expected: 编译通过。
+
+Run: `cargo test --lib browser::launch 2>&1 | tail -10`
+Expected: PASS。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/browser/launch.rs
+git commit -m "fix(browser): 代理认证丢失改为显式告警
+
+- Chrome --proxy-server 不支持内联认证，配置 username/password 时记录 warn
+- 明确告知限制（需 CDP 407 拦截或 IP 白名单），避免静默丢失"
+```
+
+---
+

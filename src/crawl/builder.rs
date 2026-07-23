@@ -61,7 +61,6 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 
 use super::{Spider, SpiderRequest, SpiderResponse};
-use crate::http;
 
 /// 异步 handler 签名：接收 SpiderResponse，返回 (items, follows)。
 ///
@@ -83,10 +82,9 @@ pub struct SpiderBuilder {
     delay: Duration,
     obey_robots: bool,
     max_retries: u32,
-    fetcher_config: http::Config,
+    fetch_client_config: crate::fetcher::FetchClientConfig,
     fetch_mode: crate::fetcher::FetchMode,
     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
-    auto_exclude: HashSet<String>,
     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
     middlewares: Vec<Arc<dyn super::middleware::Middleware>>,
@@ -104,10 +102,9 @@ impl SpiderBuilder {
             delay: Duration::ZERO,
             obey_robots: true,
             max_retries: 3,
-            fetcher_config: http::Config::default(),
+            fetch_client_config: crate::fetcher::FetchClientConfig::default(),
             fetch_mode: crate::fetcher::FetchMode::Http,
             auto_rules: Vec::new(),
-            auto_exclude: HashSet::new(),
             is_blocked_fn: None,
             until_cond: Arc::new(super::NeverStop),
             middlewares: Vec::new(),
@@ -151,9 +148,9 @@ impl SpiderBuilder {
         self
     }
 
-    /// 设置 fetcher 配置。
-    pub fn fetcher_config(mut self, config: http::Config) -> Self {
-        self.fetcher_config = config;
+    /// 设置 fetch client 配置。
+    pub fn fetch_client_config(mut self, config: crate::fetcher::FetchClientConfig) -> Self {
+        self.fetch_client_config = config;
         self
     }
 
@@ -168,14 +165,6 @@ impl SpiderBuilder {
     /// 匹配该规则的 URL 直接使用指定模式，跳过 Auto 嗅探。
     pub fn auto_rule(mut self, pattern: &str, mode: crate::fetcher::FetchMode) -> Self {
         self.auto_rules.push((pattern.to_string(), mode));
-        self
-    }
-
-    /// Auto 模式：可选选择器（返回 0 节点不触发升级）。
-    pub fn auto_exclude(mut self, selectors: Vec<&str>) -> Self {
-        for s in selectors {
-            self.auto_exclude.insert(s.to_string());
-        }
         self
     }
 
@@ -272,10 +261,9 @@ impl SpiderBuilder {
             delay: self.delay,
             obey_robots: self.obey_robots,
             max_retries: self.max_retries,
-            fetcher_config: self.fetcher_config,
+            fetch_client_config: self.fetch_client_config,
             fetch_mode: self.fetch_mode,
             auto_rules: self.auto_rules,
-            auto_exclude: self.auto_exclude,
             is_blocked_fn: self.is_blocked_fn,
             until_cond: self.until_cond,
             middlewares: self.middlewares,
@@ -293,10 +281,9 @@ pub struct ClosureSpider {
     delay: Duration,
     obey_robots: bool,
     max_retries: u32,
-    fetcher_config: http::Config,
+    fetch_client_config: crate::fetcher::FetchClientConfig,
     fetch_mode: crate::fetcher::FetchMode,
     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
-    auto_exclude: HashSet<String>,
     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
     middlewares: Vec<Arc<dyn super::middleware::Middleware>>,
@@ -311,10 +298,9 @@ impl Spider for ClosureSpider {
     fn download_delay(&self) -> Duration { self.delay }
     fn obey_robots(&self) -> bool { self.obey_robots }
     fn max_retries(&self) -> u32 { self.max_retries }
-    fn fetcher_config(&self) -> http::Config { self.fetcher_config.clone() }
+    fn fetch_client_config(&self) -> crate::fetcher::FetchClientConfig { self.fetch_client_config.clone() }
     fn fetch_mode(&self) -> crate::fetcher::FetchMode { self.fetch_mode }
     fn auto_rules(&self) -> Vec<(String, crate::fetcher::FetchMode)> { self.auto_rules.clone() }
-    fn auto_exclude(&self) -> HashSet<String> { self.auto_exclude.clone() }
 
     /// callback 路由：根据 `resp.request.callback` 查表分发。
     ///
@@ -425,7 +411,6 @@ mod tests {
             headers: Default::default(),
             body: b"<html><body><h1>Hello</h1></body></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/"),
-            tracker: None,
             from_cache: false,
         };
 
@@ -452,7 +437,6 @@ mod tests {
             headers: Default::default(),
             body: b"<html><body><p>World</p></body></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/"),
-            tracker: None,
             from_cache: false,
         };
 
@@ -474,7 +458,6 @@ mod tests {
             headers: Default::default(),
             body: b"you are blocked".to_vec(),
             request: SpiderRequest::get("http://x.com"),
-            tracker: None,
             from_cache: false,
         };
         assert!(spider.is_blocked(&resp));
@@ -510,7 +493,6 @@ mod tests {
             headers: Default::default(),
             body: b"<html></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/"),
-            tracker: None,
             from_cache: false,
         };
         let (items, _) = spider.handle(resp_default).await;
@@ -523,7 +505,6 @@ mod tests {
             headers: Default::default(),
             body: b"<html></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/detail/1").with_callback("detail"),
-            tracker: None,
             from_cache: false,
         };
         let (items, _) = spider.handle(resp_detail).await;
@@ -536,7 +517,6 @@ mod tests {
             headers: Default::default(),
             body: b"<html><h1>Title</h1></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/content/1").with_callback("content"),
-            tracker: None,
             from_cache: false,
         };
         let (items, _) = spider.handle(resp_content).await;
@@ -550,7 +530,6 @@ mod tests {
             headers: Default::default(),
             body: b"<html></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/unknown").with_callback("unknown"),
-            tracker: None,
             from_cache: false,
         };
         let (items, _) = spider.handle(resp_unknown).await;
@@ -573,7 +552,6 @@ mod tests {
             headers: Default::default(),
             body: b"<html></html>".to_vec(),
             request: SpiderRequest::get("https://example.com/"),
-            tracker: None,
             from_cache: false,
         };
         let (items, _) = spider.handle(resp).await;

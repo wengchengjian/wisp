@@ -1,117 +1,67 @@
-# Task 6: SpiderBuilder/ClosureSpider 加 patterns 与 until 支持
+### Task 6: 最终回归验证与清理
 
 **Files:**
-- Modify: `src/crawl/builder.rs`
+- 全量测试
+- `docs/superpowers/plans/2026-07-23-p1-optimization.md`（本文件，标记完成）
 
-## Steps
+**Interfaces:**
+- 无新增接口
 
-### Step 1: SpiderBuilder 加字段
-
-在 `SpiderBuilder` 结构体定义中（约第 41-56 行），在 `is_blocked_fn` 字段之后加两个字段：
-
-```rust
-    patterns: Vec<String>,
-    until_cond: Arc<dyn super::stop::StopCondition>,
-```
-
-完整结构体应为：
-```rust
-pub struct SpiderBuilder {
-    name: String,
-    start_urls: Vec<String>,
-    allowed_domains: HashSet<String>,
-    concurrent: u32,
-    delay: Duration,
-    obey_robots: bool,
-    max_retries: u32,
-    fetcher_config: http::Config,
-    fetch_mode: crate::fetcher::FetchMode,
-    auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
-    auto_exclude: HashSet<String>,
-    parse_fn: Option<ParseFn>,
-    async_parse_fn: Option<AsyncParseFn>,
-    is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
-    patterns: Vec<String>,
-    until_cond: Arc<dyn super::stop::StopCondition>,
-}
-```
-
-### Step 2: SpiderBuilder::new 初始化
-
-在 `new()` 函数中（约第 60-77 行），在 `is_blocked_fn: None,` 之后加：
-
-```rust
-            patterns: Vec::new(),
-            until_cond: Arc::new(super::NeverStop),
-```
-
-### Step 3: 加 .patterns() 和 .until() 方法
-
-在 `SpiderBuilder` 的 `is_blocked` 方法之后、`build` 方法之前，加两个 builder 方法：
-
-```rust
-    /// 设置 URL 匹配模式（正则字符串数组）。任一匹配即处理该 URL。
-    pub fn patterns(mut self, patterns: Vec<String>) -> Self {
-        self.patterns = patterns;
-        self
-    }
-
-    /// 设置终止条件策略。
-    pub fn until<C: super::stop::StopCondition + 'static>(mut self, cond: C) -> Self {
-        self.until_cond = Arc::new(cond);
-        self
-    }
-```
-
-### Step 4: ClosureSpider 加字段
-
-在 `ClosureSpider` 结构体定义中（约第 206-221 行），在 `is_blocked_fn` 字段之后加：
-
-```rust
-    patterns: Vec<String>,
-    until_cond: Arc<dyn super::stop::StopCondition>,
-```
-
-### Step 5: build() 传递新字段
-
-在 `build()` 方法中（约第 186-202 行），在 `is_blocked_fn: self.is_blocked_fn,` 之后加：
-
-```rust
-            patterns: self.patterns,
-            until_cond: self.until_cond,
-```
-
-### Step 6: ClosureSpider impl Spider
-
-在 `ClosureSpider` 的 `impl Spider for ClosureSpider` 块中，在 `is_blocked` 方法之后加：
-
-```rust
-    fn patterns(&self) -> Vec<String> { self.patterns.clone() }
-
-    fn until(&self) -> Arc<dyn super::stop::StopCondition> {
-        Arc::clone(&self.until_cond)
-    }
-```
-
-### Step 7: 编译验证
-
-Run: `cargo build --lib`
-Expected: PASS
-
-### Step 8: 运行测试
+- [ ] **Step 1: 全量 lib + 集成测试**
 
 Run: `cargo test --lib`
-Expected: PASS（现有 builder 测试不受影响）
+Expected: 206+ 测试全绿（可能因新增单元测试略增）。
 
-### Step 9: Commit
+Run: `cargo test --test p1_status_codes_test --test p1_proxy_clients_test --test p1_scheduler_test --test p1_meta_persistence_test --test p0_autoscale_test --test p0_dashmap_test --test engine_infra_test --test crawl_concurrency_test --test multi_spider_test --test builder_api_test --test cr_fix_engine_test`
+Expected: 全部 PASS。
 
-```bash
-git add src/crawl/builder.rs
-git commit -m "feat: SpiderBuilder/ClosureSpider 支持 patterns 与 until"
-```
+- [ ] **Step 2: 验证 clippy 无新警告**
 
-## 注意
+Run: `cargo clippy --lib 2>&1 | grep "generated.*warnings"`
+Expected: `28 warnings`（与 P0 完成后基线一致，不新增）。
 
-- `Arc` 需要导入：确认 builder.rs 顶部有 `use std::sync::Arc;`，如果没有则添加
-- `super::stop::StopCondition` 路径：通过 `super::` 访问父模块的 stop 模块（因为 stop 是 `pub mod stop;`）
-- `super::NeverStop` 同理
+- [ ] **Step 3: 标记 plan 完成**
+
+在 plan 文件中将所有 `- [ ]` 改为 `- [x]`：
+
+Run: `sed -i 's/^- \[ \]/- [x]/g' docs/superpowers/plans/2026-07-23-p1-optimization.md`
+
+- [ ] **Step 4: 提交 plan 完成标记**
+
+`docs/` 已被本地 `.gitignore`（工作区修改），plan 文件为本地工作文件，无法 commit。此 Step 为 no-op，跳过提交，仅本地标记完成。
+
+---
+
+## Self-Review
+
+### 1. Spec coverage
+
+| Spec 项 | Plan Task |
+|---|---|
+| P1-1 status_codes/proxy_clients 每请求锁 | Task 2 (status_codes DashMap) + Task 3 (proxy_clients DashMap) |
+| P1-2 Scheduler 单 Mutex<BinaryHeap> | Task 4 (seen DashSet + heap 独立 Mutex) |
+| P1-5 Method 枚举与转换重复 | Task 1 (Method::as_str + 替换 3 处) |
+| P1-7 SpiderRequest.meta 不持久化 | Task 5 (meta_serde 自定义 serde) |
+| P1-3 反检测能力薄弱 | 不在本计划（大特性，单独 spec） |
+| P1-4 Storage 后端单一 | 不在本计划（大特性，单独 spec） |
+| P1-6 双轨重试逻辑 | 不在本计划（核心抓取改动大、回归风险高） |
+
+覆盖 4/7 P1 项，其余 3 项按风险/规模显式排除，已在 plan 头部说明。
+
+### 2. Placeholder scan
+
+无 TBD/TODO/"实现细节后补"。每步含完整代码或精确命令。
+
+### 3. Type consistency
+
+- `record_status`: Task 2 定义为 `pub fn record_status(stats: &Arc<SpiderStats>, status: u16)`（同步），Step 5 移除调用点 `.await`。Task 2 Step 8 re-export `pub use engine::record_status;`。一致。
+- `fetch_page_inner`: Task 3 定义为 `pub async fn fetch_page_inner(..., proxy_clients: &dashmap::DashMap<String, Arc<Client>>)`, Step 8 re-export。一致。
+- `status_codes_snapshot`: Task 2 Step 3 定义为 `pub fn status_codes_snapshot(&self) -> HashMap<u16, usize>`，Task 2 Step 6/7 调用。一致。
+- `Scheduler`: Task 4 拆分后字段 `heap`/`seen_exact`/`seen_fp`/`strategy`，公开方法签名不变。一致。
+- `meta_serde`: Task 5 Step 3 定义 `serialize`/`deserialize`，Step 4 `#[serde(with = "meta_serde")]` 引用。一致。
+
+### 执行顺序
+
+Task 1（最小、无依赖）→ Task 2（status_codes）→ Task 3（proxy_clients，依赖 Task 2 的 re-export 位置合并）→ Task 4（Scheduler，独立）→ Task 5（meta，独立）→ Task 6（回归）。
+
+Task 3 Step 8 与 Task 2 Step 8 都修改 `src/crawl/mod.rs` 的 re-export 区，按顺序执行时 Task 3 合并为 `pub use engine::{record_status, fetch_page, fetch_page_inner};`（覆盖 Task 2 的单行）。
