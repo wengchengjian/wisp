@@ -49,6 +49,23 @@ use crate::parser::{Node, NodeList};
 use crate::fetcher::FetchMode;
 pub use self::stats::SpiderStats;
 
+/// 自定义 serde：把 `serde_json::Value` 编码为 `Vec<u8>` JSON 字节，
+/// 绕过 bincode 1.x 不支持 `deserialize_any` 的限制，使 meta 随 checkpoint 往返。
+mod meta_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+
+    pub fn serialize<S: Serializer>(v: &Value, s: S) -> Result<S::Ok, S::Error> {
+        let bytes = serde_json::to_vec(v).map_err(serde::ser::Error::custom)?;
+        bytes.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Value, D::Error> {
+        let bytes = Vec::<u8>::deserialize(d)?;
+        serde_json::from_slice(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
 /// HTTP method for spider requests.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Method { Get, Post, Put, Delete }
@@ -85,14 +102,10 @@ pub struct SpiderRequest {
     pub method: Method,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
-    // Task 3：必须用 `#[serde(skip)]` 而非 `#[serde(default)]`。
-    // `serde_json::Value` 的 Deserialize 依赖 `deserialize_any`，bincode 1.x 不支持；
-    // 用 `#[serde(default)]` 会让 `bincode::deserialize::<CrawlState>`（含 SpiderRequest）
-    // 在 checkpoint 恢复路径抛 `DeserializeAnyNotSupported`，导致 seen/pending 全部丢失。
-    // `#[serde(skip)]` 在序列化与反序列化两端都跳过 meta（用 Value::Null 默认值），
-    // 与 Task 9 的既定行为一致（meta 当前不从 checkpoint 读回）。
-    // 83cb940 误改为 `#[serde(default)]` 引入回归，此处恢复。
-    #[serde(skip)]
+    // P1-7：用 `#[serde(with = "meta_serde")]` 使 meta 随 bincode checkpoint 往返。
+    // bincode 1.x 不支持 `serde_json::Value` 的 `deserialize_any`，
+    // 故通过 `meta_serde` 把 Value 编码为 `Vec<u8>` JSON 字节，bincode 可处理。
+    #[serde(with = "meta_serde")]
     pub meta: Value,
     pub callback: Option<String>,
     pub priority: i32,
