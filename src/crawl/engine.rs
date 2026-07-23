@@ -29,14 +29,34 @@ use super::stats::SpiderStats;
 
 // === EngineContext: 打包所有共享状态 ===
 
-/// Engine 运行时上下文（单 Spider）。
+/// Engine 运行时上下文（单 Spider），由三层子结构组成。
 ///
-/// 共享字段：client / sched / robots_cache / follow_tx / follow_rx / domain_sems /
-/// cache_store / request_cache / abort_flag / start / tx / dev_mode /
-/// control / items。
-/// per-Spider 字段单值持有（原 Vec 数组已删除，无路由）。
+/// - `config`: 只读配置（从 Spider 提取，run 期间不变）
+/// - `shared`: 跨 task 共享的可变状态
+/// - `state`: per-run 可变状态
 pub(crate) struct EngineContext {
+    pub config: EngineConfig,
+    pub shared: EngineShared,
+    pub state: EngineState,
+}
+
+/// 只读配置（从 Spider 提取，run 期间不变）。
+pub(crate) struct EngineConfig {
     pub client: Arc<Client>,
+    pub fetcher_config: http::Config,
+    pub fetch_mode: FetchMode,
+    pub max_concurrent: usize,
+    pub max_depth: u32,
+    pub obey_robots: bool,
+    pub engine_max_pages: usize,
+    pub max_refetch_rounds: usize,
+    pub dev_mode: bool,
+    pub allowed: Arc<HashSet<String>>,
+    pub auto_excludes: HashSet<String>,
+}
+
+/// 跨 task 共享的可变状态。
+pub(crate) struct EngineShared {
     pub sched: Arc<scheduler::Scheduler>,
     pub robots_cache: Arc<Mutex<robots::RobotsCache>>,
     pub follow_tx: tokio::sync::mpsc::UnboundedSender<SpiderRequest>,
@@ -46,45 +66,33 @@ pub(crate) struct EngineContext {
     pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
     pub cache_store: Option<Arc<crate::storage::Store>>,
     pub request_cache: Option<super::request_cache::RequestCache>,
+    pub control: Arc<control::EngineControl>,
+    pub work_notify: Arc<tokio::sync::Notify>,
+    pub middleware_chain: Arc<middleware::MiddlewareChain>,
+    pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
+}
+
+/// per-run 可变状态。
+pub(crate) struct EngineState {
+    pub spider: Arc<dyn Spider>,
+    pub stats: Arc<SpiderStats>,
+    pub items: Arc<Mutex<Vec<Value>>>,
     pub abort_flag: Arc<AtomicBool>,
     pub start: std::time::Instant,
     pub tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
-    pub dev_mode: bool,
-    // === 单 Spider 配置与统计 ===
-    pub spider: Arc<dyn Spider>,
-    pub stats: Arc<SpiderStats>,
-    pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
-    pub auto_excludes: HashSet<String>,
-    pub allowed: Arc<HashSet<String>>,
-    pub fetcher_config: http::Config,
-    pub fetch_mode: FetchMode,
-    pub max_concurrent: usize,
-    pub max_depth: u32,
-    pub obey_robots: bool,
     pub global_in_flight: Arc<AtomicUsize>,
-    pub engine_max_pages: usize,
-    /// 中间件 Refetch 最大轮数。
-    pub max_refetch_rounds: usize,
-    /// per-Engine 控制状态（替代原全局 static）。
-    pub control: Arc<control::EngineControl>,
-    /// 本次 run 产出的 items 收集（run() 返回时取出）。
-    pub items: Arc<Mutex<Vec<Value>>>,
-    /// 新工作通知（follow 发送时 notify，主循环等待时避免 CPU 空转）。
-    pub work_notify: Arc<tokio::sync::Notify>,
-    /// 中间件链（请求/响应拦截 + Item 管道）。
-    pub middleware_chain: Arc<middleware::MiddlewareChain>,
 }
 
 // === 核心函数：处理单个请求 ===
 
 /// 处理单个请求的完整流程：域名过滤 → 深度检查 → 缓存 → robots → 信号量 → 延迟 → 重试 → Auto 检查 → handle。
 pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
-    let spider = &ctx.spider;
-    let stats = &ctx.stats;
-    let allowed = &ctx.allowed;
-    let max_depth = ctx.max_depth;
-    let max_concurrent = ctx.max_concurrent;
-    let obey_robots = ctx.obey_robots;
+    let spider = &ctx.state.spider;
+    let stats = &ctx.state.stats;
+    let allowed = &ctx.config.allowed;
+    let max_depth = ctx.config.max_depth;
+    let max_concurrent = ctx.config.max_concurrent;
+    let obey_robots = ctx.config.obey_robots;
 
     // 1. 域名过滤
     if !allowed.is_empty() {
@@ -104,9 +112,9 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     }
 
     // 1.6. per-Engine 控制状态检查（替代原全局 control::is_cancelled 等）
-    if ctx.control.is_cancelled(&req.url).await { return; }
-    if !ctx.control.wait_if_paused(&req.url).await { return; }
-    if ctx.control.is_shutdown() { return; }
+    if ctx.shared.control.is_cancelled(&req.url).await { return; }
+    if !ctx.shared.control.wait_if_paused(&req.url).await { return; }
+    if ctx.shared.control.is_shutdown() { return; }
 
     // 1.7. 异步钩子检查
     match spider.on_before_request(&req).await {
@@ -114,16 +122,16 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         super::RequestAction::Skip => { return; },
         super::RequestAction::Delay(d) => { tokio::time::sleep(d).await; },
         super::RequestAction::Abort => {
-            ctx.abort_flag.store(true, Ordering::SeqCst);
+            ctx.state.abort_flag.store(true, Ordering::SeqCst);
             return;
         }
     }
 
     // 1.8. 中间件链：请求前拦截
     let mut req = req;
-    if !ctx.middleware_chain.is_empty() {
+    if !ctx.shared.middleware_chain.is_empty() {
         let crawl_ctx = build_crawl_context(ctx);
-        match ctx.middleware_chain.run_request_middlewares(&mut req, &crawl_ctx).await {
+        match ctx.shared.middleware_chain.run_request_middlewares(&mut req, &crawl_ctx).await {
             middleware::MwAction::Skip => return,
             middleware::MwAction::Abort(reason) => {
                 tracing::warn!("middleware abort: {} - {}", reason, req.url);
@@ -148,7 +156,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     };
 
     // 2. 内存缓存检查 (RequestCache) — 键含 method，避免 POST/GET 同 URL 串味
-    if let Some(ref rc) = ctx.request_cache {
+    if let Some(ref rc) = ctx.shared.request_cache {
         if let Some(entry) = rc.get(method_str, &req.url).await {
             let resp = SpiderResponse {
                 url: req.url.clone(),
@@ -167,8 +175,8 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     }
 
     // 3. 开发模式 SQLite 缓存检查
-    let cached_resp: Option<crate::storage::CachedResponse> = if ctx.dev_mode {
-        ctx.cache_store.as_ref().and_then(|s| {
+    let cached_resp: Option<crate::storage::CachedResponse> = if ctx.config.dev_mode {
+        ctx.shared.cache_store.as_ref().and_then(|s| {
             s.load_cached_response(&req.url, method_str).ok().flatten()
         })
     } else {
@@ -196,8 +204,8 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         // 3. Robots 检查
         if obey_robots {
             let allowed_flag = {
-                let mut rc = ctx.robots_cache.lock().await;
-                rc.is_allowed(&ctx.client, &req.url).await
+                let mut rc = ctx.shared.robots_cache.lock().await;
+                rc.is_allowed(&ctx.config.client, &req.url).await
             };
             if !allowed_flag { return; }
         }
@@ -208,7 +216,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
             .and_then(|u| u.host_str().map(|s| s.to_string()))
             .unwrap_or_default();
         let sem = {
-            ctx.domain_sems
+            ctx.shared.domain_sems
                 .entry(domain)
                 .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
                 .clone()
@@ -227,8 +235,8 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         last_error = err;
 
         // 7. 开发模式缓存保存
-        if ctx.dev_mode {
-            if let Some(ref store) = ctx.cache_store {
+        if ctx.config.dev_mode {
+            if let Some(ref store) = ctx.shared.cache_store {
                 if let Some(ref resp) = final_resp {
                     let cached = crate::storage::CachedResponse {
                         status: resp.status,
@@ -242,7 +250,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         }
 
         // 7.5. 写入 RequestCache
-        if let Some(ref rc) = ctx.request_cache {
+        if let Some(ref rc) = ctx.shared.request_cache {
             if let Some(ref resp) = final_resp {
                 rc.put(method_str, &req.url, super::request_cache::CachedEntry {
                     status: resp.status,
@@ -257,7 +265,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     if let Some(resp) = final_resp {
         process_response(ctx, resp, &req).await;
     } else if let Some(err) = last_error {
-        if let Some(ref tx) = ctx.tx {
+        if let Some(ref tx) = ctx.state.tx {
             let _ = tx.send(CrawlEvent::Error { url: req.url.clone(), error: err }).await;
         }
     }
@@ -268,8 +276,8 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
 /// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
 /// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
 pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, req: &SpiderRequest) {
-    let spider = &ctx.spider;
-    let stats = &ctx.stats;
+    let spider = &ctx.state.spider;
+    let stats = &ctx.state.stats;
 
     if !resp.from_cache {
         stats.pages.fetch_add(1, Ordering::SeqCst);
@@ -279,10 +287,10 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
     // 中间件链：响应后拦截（支持 Refetch 循环，最多 5 轮）
     let mut resp = resp;
     let mut refetch_depth = 0u32;
-    if !ctx.middleware_chain.is_empty() {
+    if !ctx.shared.middleware_chain.is_empty() {
         loop {
             let crawl_ctx = build_crawl_context(ctx);
-            match ctx.middleware_chain.run_response_middlewares(&mut resp, &crawl_ctx).await {
+            match ctx.shared.middleware_chain.run_response_middlewares(&mut resp, &crawl_ctx).await {
                 middleware::MwAction::Skip => return,
                 middleware::MwAction::Abort(reason) => {
                     tracing::warn!("response middleware abort: {} - {}", reason, page_url);
@@ -290,8 +298,8 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
                 }
                 middleware::MwAction::Refetch(new_req) => {
                     refetch_depth += 1;
-                    if refetch_depth > ctx.max_refetch_rounds as u32 {
-                        tracing::warn!("Refetch 超过 {} 轮上限，放弃: {}", ctx.max_refetch_rounds, new_req.url);
+                    if refetch_depth > ctx.config.max_refetch_rounds as u32 {
+                        tracing::warn!("Refetch 超过 {} 轮上限，放弃: {}", ctx.config.max_refetch_rounds, new_req.url);
                         return;
                     }
                     tracing::debug!("中间件 Refetch (round {}): {}", refetch_depth, new_req.url);
@@ -311,7 +319,7 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
     let (mut items, mut follows) = spider.handle(resp).await;
 
     // Auto 升级检查
-    if ctx.fetch_mode == FetchMode::Auto {
+    if ctx.config.fetch_mode == FetchMode::Auto {
         if let Some(result) = auto_upgrade_check(ctx, &tracker_ref, &page_url, req).await {
             items = result.0;
             follows = result.1;
@@ -326,32 +334,32 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
             None => continue,
         };
         // 再经过中间件 pipeline 链
-        let item = if ctx.middleware_chain.is_empty() {
+        let item = if ctx.shared.middleware_chain.is_empty() {
             Some(item)
         } else {
             let crawl_ctx = build_crawl_context(ctx);
-            ctx.middleware_chain.run_pipelines(item, &crawl_ctx).await
+            ctx.shared.middleware_chain.run_pipelines(item, &crawl_ctx).await
         };
         if let Some(processed) = item {
             stats.items.fetch_add(1, Ordering::SeqCst);
-            if let Some(ref tx) = ctx.tx {
+            if let Some(ref tx) = ctx.state.tx {
                 let _ = tx.send(CrawlEvent::Item(processed.clone())).await;
             }
-            ctx.items.lock().await.push(processed);
+            ctx.state.items.lock().await.push(processed);
         }
     }
     for f in follows {
-        let _ = ctx.follow_tx.send(f);
+        let _ = ctx.shared.follow_tx.send(f);
     }
     // 通知主循环有新工作到来
-    ctx.work_notify.notify_one();
+    ctx.shared.work_notify.notify_one();
 
     // PageScraped 事件
-    if let Some(ref tx) = ctx.tx {
+    if let Some(ref tx) = ctx.state.tx {
         let status_codes_snapshot = stats.status_codes.lock().await.clone();
         let _ = tx.send(CrawlEvent::PageScraped {
             url: page_url,
-            stats: snapshot_stats_for(stats, status_codes_snapshot, ctx.start),
+            stats: snapshot_stats_for(stats, status_codes_snapshot, ctx.state.start),
         }).await;
     }
 }
@@ -363,18 +371,18 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
 /// 注意：blocked 重试和 error 重试已分别由 BlockedRetryMiddleware / RetryMiddleware
 /// 通过 Refetch / ErrorAction::Retry 承担。此函数保留为无中间件时的 fallback。
 async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<SpiderResponse>, Option<String>) {
-    let spider = &ctx.spider;
-    let stats = &ctx.stats;
-    let fetch_mode = ctx.fetch_mode;
-    let fetcher_config = &ctx.fetcher_config;
-    let rule_engine = &ctx.rule_engine;
+    let spider = &ctx.state.spider;
+    let stats = &ctx.state.stats;
+    let fetch_mode = ctx.config.fetch_mode;
+    let fetcher_config = &ctx.config.fetcher_config;
+    let rule_engine = &ctx.shared.rule_engine;
     let max_retries = spider.max_retries();
     let mut attempt: u32 = 0;
 
     loop {
         attempt += 1;
         let proxy = req.proxy.clone();
-        match fetch_page(&ctx.client, req, proxy.as_deref(), fetch_mode, fetcher_config, rule_engine, &ctx.proxy_clients).await {
+        match fetch_page(&ctx.config.client, req, proxy.as_deref(), fetch_mode, fetcher_config, rule_engine, &ctx.shared.proxy_clients).await {
             Ok(resp) => {
                 record_status(stats, resp.status).await;
                 if spider.is_blocked(&resp) {
@@ -398,9 +406,9 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
             }
             Err(e) => {
                 // 中间件链：错误处理（可决定重试或放弃）
-                if !ctx.middleware_chain.is_empty() {
+                if !ctx.shared.middleware_chain.is_empty() {
                     let crawl_ctx = build_crawl_context(ctx);
-                    if let middleware::ErrorAction::Retry = ctx.middleware_chain.run_error_middlewares(req, &e.to_string(), &crawl_ctx).await {
+                    if let middleware::ErrorAction::Retry = ctx.shared.middleware_chain.run_error_middlewares(req, &e.to_string(), &crawl_ctx).await {
                         stats.retries.fetch_add(1, Ordering::SeqCst);
                         continue;
                     }
@@ -433,10 +441,10 @@ async fn auto_upgrade_check(
     page_url: &str,
     req: &SpiderRequest,
 ) -> Option<(Vec<Value>, Vec<SpiderRequest>)> {
-    let spider = &ctx.spider;
-    let fetcher_config = &ctx.fetcher_config;
-    let rule_engine = &ctx.rule_engine;
-    let auto_exclude = &ctx.auto_excludes;
+    let spider = &ctx.state.spider;
+    let fetcher_config = &ctx.config.fetcher_config;
+    let rule_engine = &ctx.shared.rule_engine;
+    let auto_exclude = &ctx.config.auto_excludes;
     let tracker = tracker.as_ref()?;
     let needs = tracker.lock().unwrap_or_else(|e| e.into_inner()).needs_upgrade(auto_exclude);
 
@@ -448,7 +456,7 @@ async fn auto_upgrade_check(
         tracing::info!("Auto: '{}' 选择器无内容，升级 Dynamic", page_url);
         let proxy = req.proxy.clone();
         let dynamic_resp = fetch_page_inner(
-            &ctx.client, req, proxy.as_deref(), FetchMode::Dynamic, fetcher_config, &ctx.proxy_clients,
+            &ctx.config.client, req, proxy.as_deref(), FetchMode::Dynamic, fetcher_config, &ctx.shared.proxy_clients,
         ).await;
         if let Ok(new_resp) = dynamic_resp {
             // Auto 升级时也走 handle() 路由（保持一致）
@@ -468,13 +476,13 @@ async fn auto_upgrade_check(
 /// 从 EngineContext 构建中间件用的 CrawlContext 只读视图。
 pub(crate) fn build_crawl_context(ctx: &EngineContext) -> middleware::CrawlContext {
     middleware::CrawlContext {
-        spider_name: ctx.spider.name().to_string(),
-        fetch_mode: ctx.fetch_mode,
-        max_concurrent: ctx.max_concurrent,
-        max_pages: ctx.engine_max_pages,
-        obey_robots: ctx.obey_robots,
-        pages_crawled: ctx.stats.pages.load(Ordering::SeqCst),
-        errors: ctx.stats.errors.load(Ordering::SeqCst),
+        spider_name: ctx.state.spider.name().to_string(),
+        fetch_mode: ctx.config.fetch_mode,
+        max_concurrent: ctx.config.max_concurrent,
+        max_pages: ctx.config.engine_max_pages,
+        obey_robots: ctx.config.obey_robots,
+        pages_crawled: ctx.state.stats.pages.load(Ordering::SeqCst),
+        errors: ctx.state.stats.errors.load(Ordering::SeqCst),
     }
 }
 
@@ -487,8 +495,8 @@ async fn apply_delay(ctx: &EngineContext, url: &str, spider: &Arc<dyn Spider>, o
     let mut delay = spider.download_delay();
     if obey_robots {
         let robots_delay = {
-            let mut rc = ctx.robots_cache.lock().await;
-            rc.crawl_delay(&ctx.client, url).await
+            let mut rc = ctx.shared.robots_cache.lock().await;
+            rc.crawl_delay(&ctx.config.client, url).await
         };
         if let Some(secs) = robots_delay {
             let robots_dur = Duration::from_secs_f64(secs);
@@ -706,36 +714,42 @@ mod tests {
         let stats = Arc::new(SpiderStats::new());
         let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
         let ctx = EngineContext {
-            client: Arc::new(Client::new().expect("build http client")),
-            sched: Arc::new(scheduler::Scheduler::new()),
-            robots_cache: Arc::new(Mutex::new(robots::RobotsCache::new())),
-            follow_tx,
-            follow_rx: Arc::new(Mutex::new(follow_rx)),
-            domain_sems: Arc::new(DashMap::new()),
-            proxy_clients: Arc::new(Mutex::new(HashMap::new())),
-            cache_store: None,
-            request_cache: None,
-            abort_flag: Arc::new(AtomicBool::new(false)),
-            start: Instant::now(),
-            tx: None,
-            dev_mode: false,
-            spider: Arc::new(DummySpider) as Arc<dyn Spider>,
-            stats: stats.clone(),
-            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-            auto_excludes: HashSet::new(),
-            allowed: Arc::new(HashSet::new()),
-            fetcher_config: http::Config::default(),
-            fetch_mode: FetchMode::Http,
-            max_concurrent: 8,
-            max_depth: u32::MAX,
-            obey_robots: false,
-            global_in_flight: Arc::new(AtomicUsize::new(0)),
-            engine_max_pages: 100,
-            max_refetch_rounds: 5,
-            control: Arc::new(control::EngineControl::new()),
-            items: Arc::new(Mutex::new(Vec::new())),
-            work_notify: Arc::new(tokio::sync::Notify::new()),
-            middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
+            config: EngineConfig {
+                client: Arc::new(Client::new().expect("build http client")),
+                fetcher_config: http::Config::default(),
+                fetch_mode: FetchMode::Http,
+                max_concurrent: 8,
+                max_depth: u32::MAX,
+                obey_robots: false,
+                engine_max_pages: 100,
+                max_refetch_rounds: 5,
+                dev_mode: false,
+                allowed: Arc::new(HashSet::new()),
+                auto_excludes: HashSet::new(),
+            },
+            shared: EngineShared {
+                sched: Arc::new(scheduler::Scheduler::new()),
+                robots_cache: Arc::new(Mutex::new(robots::RobotsCache::new())),
+                follow_tx,
+                follow_rx: Arc::new(Mutex::new(follow_rx)),
+                domain_sems: Arc::new(DashMap::new()),
+                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
+                cache_store: None,
+                request_cache: None,
+                control: Arc::new(control::EngineControl::new()),
+                work_notify: Arc::new(tokio::sync::Notify::new()),
+                middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
+                rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+            },
+            state: EngineState {
+                spider: Arc::new(DummySpider) as Arc<dyn Spider>,
+                stats: stats.clone(),
+                items: Arc::new(Mutex::new(Vec::new())),
+                abort_flag: Arc::new(AtomicBool::new(false)),
+                start: Instant::now(),
+                tx: None,
+                global_in_flight: Arc::new(AtomicUsize::new(0)),
+            },
         };
         (ctx, stats)
     }

@@ -199,110 +199,116 @@ impl Engine {
         spider.on_start().await;
 
         let ctx = Arc::new(engine::EngineContext {
-            client: self.client.clone(),
-            sched: sched.clone(),
-            robots_cache,
-            follow_tx,
-            follow_rx: Arc::new(Mutex::new(follow_rx)),
-            domain_sems: Arc::new(dashmap::DashMap::new()),
-            proxy_clients: Arc::new(Mutex::new(HashMap::new())),
-            cache_store: self.cache_store.clone(),
-            request_cache: self.request_cache.clone(),
-            abort_flag: Arc::new(AtomicBool::new(false)),
-            start: std::time::Instant::now(),
-            tx,
-            dev_mode: self.dev_mode,
-            spider: spider.clone(),
-            stats: stats.clone(),
-            rule_engine,
-            auto_excludes,
-            allowed,
-            fetcher_config,
-            fetch_mode,
-            max_concurrent,
-            max_depth,
-            obey_robots,
-            global_in_flight: Arc::new(AtomicUsize::new(0)),
-            engine_max_pages: self.max_pages,
-            max_refetch_rounds: self.max_refetch_rounds,
-            control: self.control.clone(),
-            items,
-            work_notify: Arc::new(tokio::sync::Notify::new()),
-            middleware_chain: {
-                let mut chain = middleware::MiddlewareChain::new();
-                chain.middlewares = spider.middlewares();
-                chain.pipelines = spider.pipelines();
-                chain.sort(); // 按 priority 排序
-                Arc::new(chain)
+            config: engine::EngineConfig {
+                client: self.client.clone(),
+                fetcher_config,
+                fetch_mode,
+                max_concurrent,
+                max_depth,
+                obey_robots,
+                engine_max_pages: self.max_pages,
+                max_refetch_rounds: self.max_refetch_rounds,
+                dev_mode: self.dev_mode,
+                allowed,
+                auto_excludes,
+            },
+            shared: engine::EngineShared {
+                sched: sched.clone(),
+                robots_cache,
+                follow_tx,
+                follow_rx: Arc::new(Mutex::new(follow_rx)),
+                domain_sems: Arc::new(dashmap::DashMap::new()),
+                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
+                cache_store: self.cache_store.clone(),
+                request_cache: self.request_cache.clone(),
+                control: self.control.clone(),
+                work_notify: Arc::new(tokio::sync::Notify::new()),
+                middleware_chain: {
+                    let mut chain = middleware::MiddlewareChain::new();
+                    chain.middlewares = spider.middlewares();
+                    chain.pipelines = spider.pipelines();
+                    chain.sort(); // 按 priority 排序
+                    Arc::new(chain)
+                },
+                rule_engine,
+            },
+            state: engine::EngineState {
+                spider: spider.clone(),
+                stats: stats.clone(),
+                items,
+                abort_flag: Arc::new(AtomicBool::new(false)),
+                start: std::time::Instant::now(),
+                tx,
+                global_in_flight: Arc::new(AtomicUsize::new(0)),
             },
         });
 
         // 中间件初始化：在爬取开始前调用所有中间件的 init + pipeline 的 open
-        if !ctx.middleware_chain.is_empty() {
+        if !ctx.shared.middleware_chain.is_empty() {
             let crawl_ctx = engine::build_crawl_context(&ctx);
-            ctx.middleware_chain.run_init(&crawl_ctx).await;
-            ctx.middleware_chain.run_pipelines_open(&crawl_ctx).await;
+            ctx.shared.middleware_chain.run_init(&crawl_ctx).await;
+            ctx.shared.middleware_chain.run_pipelines_open(&crawl_ctx).await;
         }
 
         // 构建并发流：单 Spider，无路由
         let stream = {
             let ctx = ctx.clone();
-            let max_concurrent = ctx.max_concurrent;
+            let max_concurrent = ctx.config.max_concurrent;
             stream::unfold((), move |_| {
                 let ctx = ctx.clone();
                 async move {
                     loop {
-                        if ctx.control.is_shutdown() || ctx.abort_flag.load(Ordering::SeqCst) {
+                        if ctx.shared.control.is_shutdown() || ctx.state.abort_flag.load(Ordering::SeqCst) {
                             return None;
                         }
 
                         // drain follow channel
-                        let mut rx_guard = ctx.follow_rx.lock().await;
+                        let mut rx_guard = ctx.shared.follow_rx.lock().await;
                         while let Ok(req) = rx_guard.try_recv() {
-                            ctx.sched.push(req).await;
+                            ctx.shared.sched.push(req).await;
                         }
                         drop(rx_guard);
 
                         // 引擎级 max_pages 兜底
-                        let pages = ctx.stats.pages.load(Ordering::SeqCst);
-                        if pages + ctx.global_in_flight.load(Ordering::SeqCst) >= ctx.engine_max_pages {
-                            if ctx.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
+                        let pages = ctx.state.stats.pages.load(Ordering::SeqCst);
+                        if pages + ctx.state.global_in_flight.load(Ordering::SeqCst) >= ctx.config.engine_max_pages {
+                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
                             tokio::task::yield_now().await;
                             continue;
                         }
 
                         // Spider until 终止条件检查
-                        let queue_size = ctx.sched.len().await;
+                        let queue_size = ctx.shared.sched.len().await;
                         let stop_ctx = stop::StopContext {
-                            pages: ctx.stats.pages.load(Ordering::SeqCst),
-                            items: ctx.stats.items.load(Ordering::SeqCst),
-                            errors: ctx.stats.errors.load(Ordering::SeqCst),
-                            in_flight: ctx.stats.in_flight.load(Ordering::SeqCst),
-                            elapsed: ctx.stats.start.elapsed(),
+                            pages: ctx.state.stats.pages.load(Ordering::SeqCst),
+                            items: ctx.state.stats.items.load(Ordering::SeqCst),
+                            errors: ctx.state.stats.errors.load(Ordering::SeqCst),
+                            in_flight: ctx.state.stats.in_flight.load(Ordering::SeqCst),
+                            elapsed: ctx.state.stats.start.elapsed(),
                             queue_size,
                         };
-                        if ctx.spider.until().should_stop(&stop_ctx) {
-                            if ctx.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
+                        if ctx.state.spider.until().should_stop(&stop_ctx) {
+                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
                             tokio::task::yield_now().await;
                             continue;
                         }
 
-                        let req = match ctx.sched.pop().await {
+                        let req = match ctx.shared.sched.pop().await {
                             Some(req) => req,
                             None => {
-                                if ctx.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
-                                tokio::time::timeout(Duration::from_millis(100), ctx.work_notify.notified()).await.ok();
+                                if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
+                                tokio::time::timeout(Duration::from_millis(100), ctx.shared.work_notify.notified()).await.ok();
                                 continue;
                             }
                         };
 
                         // 单 Spider：直接派发，无路由
-                        ctx.global_in_flight.fetch_add(1, Ordering::SeqCst);
-                        ctx.stats.in_flight.fetch_add(1, Ordering::SeqCst);
+                        ctx.state.global_in_flight.fetch_add(1, Ordering::SeqCst);
+                        ctx.state.stats.in_flight.fetch_add(1, Ordering::SeqCst);
                         let ctx_c = ctx.clone();
                         let fut = async move {
-                            let _g1 = engine::InFlightGuard { counter: ctx_c.global_in_flight.clone() };
-                            let _g2 = engine::InFlightGuard { counter: ctx_c.stats.in_flight.clone() };
+                            let _g1 = engine::InFlightGuard { counter: ctx_c.state.global_in_flight.clone() };
+                            let _g2 = engine::InFlightGuard { counter: ctx_c.state.stats.in_flight.clone() };
                             engine::process_request(&ctx_c, req).await;
                         };
                         return Some((fut, ()));
@@ -319,16 +325,16 @@ impl Engine {
             pages_since_checkpoint += 1;
             if pages_since_checkpoint >= self.checkpoint_interval {
                 if let Some(ref store) = self.checkpoint_store {
-                    engine::save_checkpoint(store, &spider_name, &sched, &ctx.stats).await;
+                    engine::save_checkpoint(store, &spider_name, &sched, &ctx.state.stats).await;
                 }
                 pages_since_checkpoint = 0;
             }
         }
 
         // pipeline 关闭：爬取结束后释放资源
-        if !ctx.middleware_chain.is_empty() {
+        if !ctx.shared.middleware_chain.is_empty() {
             let crawl_ctx = engine::build_crawl_context(&ctx);
-            ctx.middleware_chain.run_pipelines_close(&crawl_ctx).await;
+            ctx.shared.middleware_chain.run_pipelines_close(&crawl_ctx).await;
         }
 
         spider.on_close().await;
@@ -339,8 +345,8 @@ impl Engine {
             }
         }
 
-        let status_codes = ctx.stats.status_codes.lock().await.clone();
-        Ok(engine::snapshot_stats_for(&ctx.stats, status_codes, ctx.start))
+        let status_codes = ctx.state.stats.status_codes.lock().await.clone();
+        Ok(engine::snapshot_stats_for(&ctx.state.stats, status_codes, ctx.state.start))
     }
 }
 
