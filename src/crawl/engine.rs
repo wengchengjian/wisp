@@ -138,9 +138,17 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         }
     }
 
-    // 2. 内存缓存检查 (RequestCache)
+    // 1.85. 提前计算 method_str（RequestCache 与 dev_mode SQLite 缓存查询都需要）
+    let method_str = match req.method {
+        Method::Get => "GET",
+        Method::Post => "POST",
+        Method::Put => "PUT",
+        Method::Delete => "DELETE",
+    };
+
+    // 2. 内存缓存检查 (RequestCache) — 键含 method，避免 POST/GET 同 URL 串味
     if let Some(ref rc) = ctx.request_cache {
-        if let Some(entry) = rc.get(&req.url).await {
+        if let Some(entry) = rc.get(method_str, &req.url).await {
             let resp = SpiderResponse {
                 url: req.url.clone(),
                 status: entry.status,
@@ -158,12 +166,6 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     }
 
     // 3. 开发模式 SQLite 缓存检查
-    let method_str = match req.method {
-        Method::Get => "GET",
-        Method::Post => "POST",
-        Method::Put => "PUT",
-        Method::Delete => "DELETE",
-    };
     let cached_resp: Option<crate::storage::CachedResponse> = if ctx.dev_mode {
         ctx.cache_store.as_ref().and_then(|s| {
             s.load_cached_response(&req.url, method_str).ok().flatten()
@@ -241,7 +243,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         // 7.5. 写入 RequestCache
         if let Some(ref rc) = ctx.request_cache {
             if let Some(ref resp) = final_resp {
-                rc.put(&req.url, super::request_cache::CachedEntry {
+                rc.put(method_str, &req.url, super::request_cache::CachedEntry {
                     status: resp.status,
                     headers: resp.headers.clone(),
                     body: resp.body.clone(),
@@ -435,7 +437,7 @@ async fn auto_upgrade_check(
     let rule_engine = &ctx.rule_engine;
     let auto_exclude = &ctx.auto_excludes;
     let tracker = tracker.as_ref()?;
-    let needs = tracker.lock().unwrap().needs_upgrade(auto_exclude);
+    let needs = tracker.lock().unwrap_or_else(|e| e.into_inner()).needs_upgrade(auto_exclude);
 
     if needs {
         {
@@ -525,12 +527,20 @@ pub(crate) async fn save_checkpoint(
     stats: &Arc<SpiderStats>,
 ) {
     let pending = sched.pending_urls().await;
+    let seen = sched.seen_urls().await; // 持久化 seen 去重集合
     let snapshot = snapshot_stats_for(stats, HashMap::new(), stats.start);
-    let state = CrawlState::from_stats(
-        spider_name.to_string(),
-        &snapshot,
-        pending,
-    );
+    // 手动构造 CrawlState 填入 seen_urls；
+    // `CrawlState::from_stats` 硬编码 seen_urls 为空，不能直接用。
+    let state = CrawlState {
+        spider_name: spider_name.to_string(),
+        pending_urls: pending,
+        seen_urls: seen,
+        items_scraped: snapshot.items_scraped,
+        pages_crawled: snapshot.pages_crawled,
+        errors: snapshot.errors,
+        duration_ms: snapshot.duration.as_millis(),
+        saved_at: chrono::Utc::now(),
+    };
     match bincode::serialize(&state) {
         Ok(blob) => {
             if let Err(e) = store.save_checkpoint(spider_name, &blob, state.saved_at.timestamp()) {
@@ -767,6 +777,38 @@ mod tests {
             stats.pages.load(Ordering::SeqCst),
             1,
             "非缓存响应 pages 应递增到 1"
+        );
+    }
+
+    /// Task 3：验证 save_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
+    ///
+    /// RED：当前 save_checkpoint 用 `CrawlState::from_stats`，其 seen_urls 硬编码为空，
+    /// 故反序列化后的 state.seen_urls 必为空，断言失败。
+    #[tokio::test]
+    async fn save_checkpoint_persists_seen_urls() {
+        let store = crate::storage::Store::open_in_memory().expect("open in-memory store");
+        let sched = scheduler::Scheduler::new();
+        // push 两个 URL：进入 heap 与 seen 集合
+        sched.push(SpiderRequest::get("https://example.com/a")).await;
+        sched.push(SpiderRequest::get("https://example.com/b")).await;
+
+        let stats = Arc::new(SpiderStats::new());
+        save_checkpoint(&store, "seen_persist_spider", &sched, &stats).await;
+
+        let blob = store
+            .load_checkpoint("seen_persist_spider")
+            .expect("load checkpoint ok")
+            .expect("checkpoint should exist");
+        let state: CrawlState = bincode::deserialize(&blob).expect("deserialize state");
+        assert!(
+            state.seen_urls.contains("https://example.com/a"),
+            "seen_urls 必须包含已爬 URL a，当前 seen = {:?}",
+            state.seen_urls
+        );
+        assert!(
+            state.seen_urls.contains("https://example.com/b"),
+            "seen_urls 必须包含已爬 URL b，当前 seen = {:?}",
+            state.seen_urls
         );
     }
 }

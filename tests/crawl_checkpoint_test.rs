@@ -2,6 +2,7 @@
 
 use wisp::crawl::{CrawlState, SpiderRequest, CrawlStats};
 use wisp::storage::Store;
+use std::collections::HashSet;
 
 #[test]
 fn test_checkpoint_save_load_roundtrip() {
@@ -65,4 +66,29 @@ fn test_crawl_state_new_defaults() {
     assert_eq!(state.duration_ms, 0);
     assert!(state.pending_urls.is_empty());
     assert!(state.seen_urls.is_empty());
+}
+
+/// Task 3：验证 CrawlState 序列化层 seen_urls 往返。
+///
+/// 此测试模拟 save_checkpoint 写入：手动构造含 seen_urls 的 CrawlState，
+/// 经 bincode 序列化 → Store 持久化 → 加载 → 反序列化，确认 seen_urls 不丢失。
+/// 注意：此处只验证序列化层契约；save_checkpoint 真正写入 seen_urls 的行为
+/// 由 engine.rs 内部 lib 测试 `save_checkpoint_persists_seen_urls` 覆盖。
+#[tokio::test]
+async fn checkpoint_restore_preserves_seen_urls() {
+    let store = Store::open_in_memory().unwrap();
+    // 模拟 save_checkpoint 写入：构造含 seen_urls 的 CrawlState
+    let mut state = CrawlState::new("test_spider".into());
+    state.pending_urls = vec![SpiderRequest::get("https://example.com/pending")];
+    state.seen_urls = HashSet::from([
+        "https://example.com/already-crawled".to_string(),
+    ]);
+    let blob = bincode::serialize(&state).unwrap();
+    store.save_checkpoint("test_spider", &blob, 0).unwrap();
+
+    // 加载并验证 seen_urls 被持久化
+    let loaded = store.load_checkpoint("test_spider").unwrap().unwrap();
+    let restored: CrawlState = bincode::deserialize(&loaded).unwrap();
+    assert!(restored.seen_urls.contains("https://example.com/already-crawled"),
+        "seen_urls 必须被持久化与恢复");
 }

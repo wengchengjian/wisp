@@ -174,12 +174,13 @@ impl Engine {
                     Ok(state) => {
                         if !state.pending_urls.is_empty() {
                             let n = state.pending_urls.len();
-                            for req in state.pending_urls {
-                                sched.push(req).await;
-                            }
+                            // 用 restore 一次性恢复 pending + seen 去重集合，
+                            // 避免逐个 push 时已爬 URL 因 seen 丢失被重新入队。
+                            let seen = state.seen_urls.clone();
+                            sched.restore(state.pending_urls, seen).await;
                             tracing::info!(
-                                "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs",
-                                spider_name, n
+                                "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs (含 {} seen)",
+                                spider_name, n, sched.seen_urls().await.len()
                             );
                             restored_pending = true;
                         }

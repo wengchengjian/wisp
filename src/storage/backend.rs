@@ -110,14 +110,8 @@ impl StorageBackend for SqliteBackend {
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
-        // SQLite 后端通过覆盖为空实现逻辑删除
-        let cached = super::CachedResponse {
-            status: 0,
-            headers: HashMap::new(),
-            body: vec![],
-            cached_at: 0,
-        };
-        self.store.save_cached_response(key, "KV", &cached)
+        // 真删除行（原实现用空 body 覆盖，导致 get 仍返回 Some([])，违反 StorageBackend::get 契约）
+        self.store.delete_cached_response(key, "KV")
     }
 
     async fn keys(&self, _prefix: &str) -> Result<Vec<String>> {

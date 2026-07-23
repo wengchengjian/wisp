@@ -1,4 +1,4 @@
-﻿//! Spider-based crawling engine.
+//! Spider-based crawling engine.
 
 pub mod middleware;
 pub mod observability;
@@ -72,7 +72,14 @@ pub struct SpiderRequest {
     pub method: Method,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
-    #[serde(default)]
+    // Task 3：必须用 `#[serde(skip)]` 而非 `#[serde(default)]`。
+    // `serde_json::Value` 的 Deserialize 依赖 `deserialize_any`，bincode 1.x 不支持；
+    // 用 `#[serde(default)]` 会让 `bincode::deserialize::<CrawlState>`（含 SpiderRequest）
+    // 在 checkpoint 恢复路径抛 `DeserializeAnyNotSupported`，导致 seen/pending 全部丢失。
+    // `#[serde(skip)]` 在序列化与反序列化两端都跳过 meta（用 Value::Null 默认值），
+    // 与 Task 9 的既定行为一致（meta 当前不从 checkpoint 读回）。
+    // 83cb940 误改为 `#[serde(default)]` 引入回归，此处恢复。
+    #[serde(skip)]
     pub meta: Value,
     pub callback: Option<String>,
     pub priority: i32,
@@ -148,7 +155,7 @@ impl SpiderResponse {
     pub fn css(&self, sel: &str) -> NodeList {
         let result = self.parse().map(|doc| doc.select(sel)).unwrap_or_else(|_| NodeList::new(vec![]));
         if let Some(ref t) = self.tracker {
-            t.lock().unwrap().record(sel, result.len());
+            t.lock().unwrap_or_else(|e| e.into_inner()).record(sel, result.len());
         }
         result
     }
@@ -157,7 +164,7 @@ impl SpiderResponse {
     pub fn xpath_auto(&self, expr: &str) -> NodeList {
         let result = self.parse().map(|doc| doc.xpath(expr)).unwrap_or_else(|_| NodeList::new(vec![]));
         if let Some(ref t) = self.tracker {
-            t.lock().unwrap().record(expr, result.len());
+            t.lock().unwrap_or_else(|e| e.into_inner()).record(expr, result.len());
         }
         result
     }
@@ -168,7 +175,13 @@ fn resolve_href(base: &str, href: &str) -> Option<String> {
         return Some(href.to_string());
     }
     let base_url = url::Url::parse(base).ok()?;
-    base_url.join(href).ok().map(|u| u.to_string())
+    let joined = base_url.join(href).ok()?;
+    // 仅接受 http/https 结果（过滤 javascript: mailto: data: 等被 join 构造的非法 URL）
+    if joined.scheme() == "http" || joined.scheme() == "https" {
+        Some(joined.to_string())
+    } else {
+        None
+    }
 }
 
 /// The core Spider trait users implement to define a crawler.
@@ -449,5 +462,46 @@ mod tests {
         let mut count = 0;
         while items_stream.next().await.is_some() { count += 1; }
         assert!(count >= 1, "items() 应产出至少 1 个 item");
+    }
+
+    #[test]
+    fn resolve_href_rejects_non_http_schemes() {
+        // 绝对 URL：仅 http/https 通过
+        assert!(resolve_href("https://example.com", "https://other.com/p").is_some());
+        assert!(resolve_href("https://example.com", "http://other.com/p").is_some());
+        // 非 http scheme 应拒绝
+        assert!(resolve_href("https://example.com", "javascript:void(0)").is_none(),
+            "javascript: scheme 应被拒绝");
+        assert!(resolve_href("https://example.com", "mailto:a@b.com").is_none(),
+            "mailto: scheme 应被拒绝");
+        assert!(resolve_href("https://example.com", "data:text/html,xxx").is_none(),
+            "data: scheme 应被拒绝");
+        // 相对链接仍正常解析
+        assert!(resolve_href("https://example.com/a/", "b").is_some());
+        assert_eq!(resolve_href("https://example.com/a/", "b"), Some("https://example.com/a/b".into()));
+    }
+
+    #[test]
+    fn spider_response_css_with_tracker_does_not_panic() {
+        use std::sync::{Arc, Mutex};
+        use crate::crawl::auto::SelectorTracker;
+
+        let tracker = Arc::new(Mutex::new(SelectorTracker::new()));
+        let resp = SpiderResponse {
+            url: "http://example.com".into(),
+            status: 200,
+            headers: std::collections::HashMap::new(),
+            body: b"<html><body><p>x</p></body></html>".to_vec(),
+            request: SpiderRequest::get("http://example.com"),
+            tracker: Some(tracker),
+            from_cache: false,
+        };
+        // 不应 panic
+        let nodes = resp.css("p");
+        assert_eq!(nodes.iter().count(), 1);
+        // tracker 应记录（SelectorTracker.records 为私有，用 len() 方法）
+        let t = resp.tracker.as_ref().unwrap().lock().unwrap();
+        assert_eq!(t.len(), 1, "应记录 1 个选择器匹配");
+        assert_eq!(t.records().len(), 1);
     }
 }
