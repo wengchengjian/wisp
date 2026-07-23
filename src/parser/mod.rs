@@ -77,8 +77,14 @@ impl Node {
             // 然后用原始片段的标签名作为选择器，深入找到实际的片段元素。
             let wrapped = format!("<table>{}</table>", html);
             let doc = Document::from_html(&wrapped);
-            let selector = CssSelector::parse(&inner_tag)
-                .unwrap_or_else(|_| CssSelector::parse("*").unwrap());
+            // 标签名非法时回退到 root_element，不再静默回退到 *（避免匹配全部元素）
+            let selector = match CssSelector::parse(&inner_tag) {
+                Ok(s) => s,
+                Err(_) => {
+                    let root_id = doc.html.root_element().id();
+                    return Self { doc, node_id: root_id };
+                }
+            };
             let root_id = doc.html.select(&selector)
                 .next()
                 .map(|el| el.id())
@@ -102,7 +108,10 @@ impl Node {
     /// 使用 `element_ref().select()` 实现 scoped 查询，仅搜索当前节点的子孙元素。
     /// 对文档根节点（`from_html` 创建），等价于搜索整个文档。
     pub fn select(&self, css: &str) -> NodeList {
-        let selector = CssSelector::parse(css).unwrap_or_else(|_| CssSelector::parse("*").unwrap());
+        // 非法选择器返回空（与 select_one 返回 None 一致），不再静默回退到 *
+        let Ok(selector) = CssSelector::parse(css) else {
+            return NodeList { nodes: Vec::new() };
+        };
         let nodes: Vec<Node> = match self.element_ref() {
             Some(el) => el.select(&selector)
                 .map(|child| Node::from_element_ref(self.doc.clone(), child))
@@ -630,5 +639,22 @@ mod tests {
         assert_eq!(xpath_to_css("//div[@class]"), Some("div[class]".to_string()));
         assert_eq!(xpath_to_css("//*[@id='main']"), Some("#main".to_string()));
         assert_eq!(xpath_to_css("//li"), Some("li".to_string()));
+    }
+
+    #[test]
+    fn select_invalid_selector_returns_empty_not_all() {
+        let doc = Node::from_html(r#"<html><body><p>a</p><p>b</p></body></html>"#);
+        // 非法选择器（未闭合括号）
+        let nodes = doc.select("p[onclick=alert(");
+        assert!(nodes.iter().count() == 0,
+            "非法选择器应返回空，实际返回 {} 个（静默回退到 * 会返回 2 个 <p>）",
+            nodes.iter().count());
+    }
+
+    #[test]
+    fn select_valid_selector_still_works() {
+        let doc = Node::from_html(r#"<html><body><p>a</p><p>b</p></body></html>"#);
+        let nodes = doc.select("p");
+        assert_eq!(nodes.iter().count(), 2);
     }
 }
