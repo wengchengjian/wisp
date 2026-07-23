@@ -31,7 +31,7 @@ pub use auto::{SelectorTracker, ModeRuleEngine};
 pub use request_cache::RequestCache;
 pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
 pub use runner::{Engine, EngineBuilder};
-pub use engine::record_status;
+pub use engine::{record_status, fetch_page, fetch_page_inner};
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;

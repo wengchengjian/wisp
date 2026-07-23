@@ -63,7 +63,7 @@ pub(crate) struct EngineShared {
     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<SpiderRequest>>>,
     pub domain_sems: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）
-    pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
+    pub proxy_clients: Arc<dashmap::DashMap<String, Arc<Client>>>,
     pub cache_store: Option<Arc<crate::storage::Store>>,
     pub request_cache: Option<super::request_cache::RequestCache>,
     pub control: Arc<control::EngineControl>,
@@ -627,14 +627,14 @@ pub(crate) async fn save_checkpoint(
 
 // === fetch_page（模式分发）===
 
-pub(crate) async fn fetch_page(
+pub async fn fetch_page(
     client: &Client,
     req: &SpiderRequest,
     proxy_url: Option<&str>,
     mode: FetchMode,
     config: &http::Config,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
-    proxy_clients: &Mutex<HashMap<String, Arc<Client>>>,
+    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
 ) -> Result<SpiderResponse> {
     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
     if let Some(override_mode) = req.fetch_mode_override {
@@ -658,13 +658,13 @@ pub(crate) async fn fetch_page(
 }
 
 /// 内部实际抓取（根据模式分发）。
-pub(crate) async fn fetch_page_inner(
+pub async fn fetch_page_inner(
     client: &Client,
     req: &SpiderRequest,
     proxy_url: Option<&str>,
     mode: FetchMode,
     config: &http::Config,
-    proxy_clients: &Mutex<HashMap<String, Arc<Client>>>,
+    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
 ) -> Result<SpiderResponse> {
     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
         let mut builder = match mode {
@@ -691,15 +691,18 @@ pub(crate) async fn fetch_page_inner(
     // Http 模式
     // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手
     let proxy_client: Option<Arc<Client>> = if let Some(proxy) = proxy_url {
-        let mut cache = proxy_clients.lock().await;
-        if !cache.contains_key(proxy) {
+        if let Some(c) = proxy_clients.get(proxy) {
+            Some(c.clone())
+        } else {
+            // 慢路径：构建新 client（可能失败，错误向上传播）
             let new_client = Client::builder()
                 .timeout(client.config_ref().timeout)
                 .proxy(proxy)
                 .build()?;
-            cache.insert(proxy.to_string(), Arc::new(new_client));
+            let arc = Arc::new(new_client);
+            // 并发安全：若另一 task 已插入，用已存在的；否则用新建的
+            Some(proxy_clients.entry(proxy.to_string()).or_insert(arc).clone())
         }
-        Some(cache.get(proxy).unwrap().clone())
     } else {
         None
     };
@@ -796,7 +799,7 @@ mod tests {
                 follow_tx,
                 follow_rx: Arc::new(Mutex::new(follow_rx)),
                 domain_sems: Arc::new(DashMap::new()),
-                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
+                proxy_clients: Arc::new(dashmap::DashMap::new()),
                 cache_store: None,
                 request_cache: None,
                 control: Arc::new(control::EngineControl::new()),

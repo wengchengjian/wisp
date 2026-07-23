@@ -1,6 +1,5 @@
 //! Engine 运行时：Engine 结构体 + EngineBuilder + run_inner 流驱动。
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -222,7 +221,7 @@ impl Engine {
                 follow_tx,
                 follow_rx: Arc::new(Mutex::new(follow_rx)),
                 domain_sems: Arc::new(dashmap::DashMap::new()),
-                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
+                proxy_clients: Arc::new(dashmap::DashMap::new()),
                 cache_store: self.cache_store.clone(),
                 request_cache: self.request_cache.clone(),
                 control: self.control.clone(),
