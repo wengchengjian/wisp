@@ -155,7 +155,7 @@ impl SpiderResponse {
     pub fn css(&self, sel: &str) -> NodeList {
         let result = self.parse().map(|doc| doc.select(sel)).unwrap_or_else(|_| NodeList::new(vec![]));
         if let Some(ref t) = self.tracker {
-            t.lock().unwrap().record(sel, result.len());
+            t.lock().unwrap_or_else(|e| e.into_inner()).record(sel, result.len());
         }
         result
     }
@@ -164,7 +164,7 @@ impl SpiderResponse {
     pub fn xpath_auto(&self, expr: &str) -> NodeList {
         let result = self.parse().map(|doc| doc.xpath(expr)).unwrap_or_else(|_| NodeList::new(vec![]));
         if let Some(ref t) = self.tracker {
-            t.lock().unwrap().record(expr, result.len());
+            t.lock().unwrap_or_else(|e| e.into_inner()).record(expr, result.len());
         }
         result
     }
@@ -479,5 +479,29 @@ mod tests {
         // 相对链接仍正常解析
         assert!(resolve_href("https://example.com/a/", "b").is_some());
         assert_eq!(resolve_href("https://example.com/a/", "b"), Some("https://example.com/a/b".into()));
+    }
+
+    #[test]
+    fn spider_response_css_with_tracker_does_not_panic() {
+        use std::sync::{Arc, Mutex};
+        use crate::crawl::auto::SelectorTracker;
+
+        let tracker = Arc::new(Mutex::new(SelectorTracker::new()));
+        let resp = SpiderResponse {
+            url: "http://example.com".into(),
+            status: 200,
+            headers: std::collections::HashMap::new(),
+            body: b"<html><body><p>x</p></body></html>".to_vec(),
+            request: SpiderRequest::get("http://example.com"),
+            tracker: Some(tracker),
+            from_cache: false,
+        };
+        // 不应 panic
+        let nodes = resp.css("p");
+        assert_eq!(nodes.iter().count(), 1);
+        // tracker 应记录（SelectorTracker.records 为私有，用 len() 方法）
+        let t = resp.tracker.as_ref().unwrap().lock().unwrap();
+        assert_eq!(t.len(), 1, "应记录 1 个选择器匹配");
+        assert_eq!(t.records().len(), 1);
     }
 }

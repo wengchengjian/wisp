@@ -437,7 +437,7 @@ async fn auto_upgrade_check(
     let rule_engine = &ctx.rule_engine;
     let auto_exclude = &ctx.auto_excludes;
     let tracker = tracker.as_ref()?;
-    let needs = tracker.lock().unwrap().needs_upgrade(auto_exclude);
+    let needs = tracker.lock().unwrap_or_else(|e| e.into_inner()).needs_upgrade(auto_exclude);
 
     if needs {
         {
