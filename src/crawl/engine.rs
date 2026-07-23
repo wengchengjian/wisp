@@ -460,6 +460,7 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
                         continue;
                     }
                     stats.errors.fetch_add(1, Ordering::SeqCst);
+                    spider.on_error(req, &format!("blocked after {} retries (status={})", max_retries, resp.status)).await;
                     return (None, Some(format!(
                         "blocked after {} retries (status={}, total attempts={})",
                         max_retries, resp.status, attempt
