@@ -36,19 +36,25 @@ impl RequestCache {
         }
     }
 
-    /// Get a cached response for the given URL.
-    pub async fn get(&self, url: &str) -> Option<CachedEntry> {
-        self.inner.get(url).await
+    /// 构造缓存键：`"{method} {url}"`，区分不同 HTTP 方法的响应。
+    /// 与 dev_mode 的 SQLite 缓存（按 `(url, method)` 存储）语义保持一致。
+    fn cache_key(method: &str, url: &str) -> String {
+        format!("{} {}", method, url)
+    }
+
+    /// Get a cached response for the given (method, url).
+    pub async fn get(&self, method: &str, url: &str) -> Option<CachedEntry> {
+        self.inner.get(&Self::cache_key(method, url)).await
     }
 
     /// Store a response in the cache.
-    pub async fn put(&self, url: &str, entry: CachedEntry) {
-        self.inner.insert(url.to_string(), entry).await;
+    pub async fn put(&self, method: &str, url: &str, entry: CachedEntry) {
+        self.inner.insert(Self::cache_key(method, url), entry).await;
     }
 
-    /// Invalidate a specific URL entry.
-    pub async fn invalidate(&self, url: &str) {
-        self.inner.invalidate(url).await;
+    /// Invalidate a specific (method, url) entry.
+    pub async fn invalidate(&self, method: &str, url: &str) {
+        self.inner.invalidate(&Self::cache_key(method, url)).await;
     }
 
     /// Current number of entries in the cache.
@@ -69,9 +75,9 @@ mod tests {
             headers: HashMap::from([("content-type".to_string(), "text/html".to_string())]),
             body: b"<html>hello</html>".to_vec(),
         };
-        cache.put("https://example.com", entry.clone()).await;
+        cache.put("GET", "https://example.com", entry.clone()).await;
 
-        let got = cache.get("https://example.com").await;
+        let got = cache.get("GET", "https://example.com").await;
         assert!(got.is_some());
         let got = got.unwrap();
         assert_eq!(got.status, 200);
@@ -81,18 +87,18 @@ mod tests {
     #[tokio::test]
     async fn test_cache_miss() {
         let cache = RequestCache::new(100, Duration::from_secs(60));
-        assert!(cache.get("https://nonexistent.com").await.is_none());
+        assert!(cache.get("GET", "https://nonexistent.com").await.is_none());
     }
 
     #[tokio::test]
     async fn test_cache_invalidate() {
         let cache = RequestCache::new(100, Duration::from_secs(60));
         let entry = CachedEntry { status: 200, headers: HashMap::new(), body: vec![] };
-        cache.put("https://example.com/page", entry).await;
-        assert!(cache.get("https://example.com/page").await.is_some());
+        cache.put("GET", "https://example.com/page", entry).await;
+        assert!(cache.get("GET", "https://example.com/page").await.is_some());
 
-        cache.invalidate("https://example.com/page").await;
-        assert!(cache.get("https://example.com/page").await.is_none());
+        cache.invalidate("GET", "https://example.com/page").await;
+        assert!(cache.get("GET", "https://example.com/page").await.is_none());
     }
 
     #[tokio::test]
@@ -101,10 +107,31 @@ mod tests {
         assert_eq!(cache.entry_count(), 0);
 
         let entry = CachedEntry { status: 200, headers: HashMap::new(), body: vec![] };
-        cache.put("https://a.com", entry.clone()).await;
-        cache.put("https://b.com", entry).await;
+        cache.put("GET", "https://a.com", entry.clone()).await;
+        cache.put("GET", "https://b.com", entry).await;
         // moka entry_count is eventually consistent; verify via get instead
-        assert!(cache.get("https://a.com").await.is_some());
-        assert!(cache.get("https://b.com").await.is_some());
+        assert!(cache.get("GET", "https://a.com").await.is_some());
+        assert!(cache.get("GET", "https://b.com").await.is_some());
+    }
+
+    /// Task 8: POST 与 GET 同 URL 不应共享缓存。
+    #[tokio::test]
+    async fn cache_key_includes_method() {
+        let cache = RequestCache::new(100, Duration::from_secs(60));
+        let get_entry = CachedEntry {
+            status: 200,
+            headers: HashMap::new(),
+            body: b"GET-RESPONSE".to_vec(),
+        };
+        // 存 GET 响应
+        cache.put("GET", "https://example.com/api", get_entry).await;
+
+        // GET 命中
+        let got = cache.get("GET", "https://example.com/api").await;
+        assert!(got.is_some(), "GET 应命中");
+
+        // POST 不应命中 GET 的缓存
+        let post = cache.get("POST", "https://example.com/api").await;
+        assert!(post.is_none(), "POST 不应命中 GET 缓存，实际 {:?}", post);
     }
 }

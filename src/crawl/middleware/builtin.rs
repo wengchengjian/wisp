@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use super::{Middleware, MwAction, ErrorAction, CrawlContext, ItemPipeline};
-use crate::crawl::{SpiderRequest, SpiderResponse};
+use crate::crawl::{SpiderRequest, SpiderResponse, Method};
 use crate::crawl::auto::{self, ModeRuleEngine};
 use crate::crawl::runtime::request_cache::{RequestCache, CachedEntry};
 use crate::crawl::runtime::robots::RobotsCache;
@@ -279,7 +279,14 @@ impl Middleware for CacheMiddleware {
     fn priority(&self) -> u32 { 3 }
 
     async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
-        if let Some(entry) = self.cache.get(&req.url).await {
+        // 键含 method，避免 POST/GET 同 URL 串味（与 engine.rs 保持一致）
+        let method_str = match req.method {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Delete => "DELETE",
+        };
+        if let Some(entry) = self.cache.get(method_str, &req.url).await {
             let resp = SpiderResponse {
                 url: req.url.clone(),
                 status: entry.status,
@@ -296,7 +303,14 @@ impl Middleware for CacheMiddleware {
 
     async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
         if resp.status >= 200 && resp.status < 400 && !resp.from_cache {
-            self.cache.put(&resp.url, CachedEntry {
+            // 写入时用请求方法（resp.request.method）作为键的一部分
+            let method_str = match resp.request.method {
+                Method::Get => "GET",
+                Method::Post => "POST",
+                Method::Put => "PUT",
+                Method::Delete => "DELETE",
+            };
+            self.cache.put(method_str, &resp.url, CachedEntry {
                 status: resp.status,
                 headers: resp.headers.clone(),
                 body: resp.body.clone(),

@@ -138,9 +138,17 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         }
     }
 
-    // 2. 内存缓存检查 (RequestCache)
+    // 1.85. 提前计算 method_str（RequestCache 与 dev_mode SQLite 缓存查询都需要）
+    let method_str = match req.method {
+        Method::Get => "GET",
+        Method::Post => "POST",
+        Method::Put => "PUT",
+        Method::Delete => "DELETE",
+    };
+
+    // 2. 内存缓存检查 (RequestCache) — 键含 method，避免 POST/GET 同 URL 串味
     if let Some(ref rc) = ctx.request_cache {
-        if let Some(entry) = rc.get(&req.url).await {
+        if let Some(entry) = rc.get(method_str, &req.url).await {
             let resp = SpiderResponse {
                 url: req.url.clone(),
                 status: entry.status,
@@ -158,12 +166,6 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
     }
 
     // 3. 开发模式 SQLite 缓存检查
-    let method_str = match req.method {
-        Method::Get => "GET",
-        Method::Post => "POST",
-        Method::Put => "PUT",
-        Method::Delete => "DELETE",
-    };
     let cached_resp: Option<crate::storage::CachedResponse> = if ctx.dev_mode {
         ctx.cache_store.as_ref().and_then(|s| {
             s.load_cached_response(&req.url, method_str).ok().flatten()
@@ -241,7 +243,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
         // 7.5. 写入 RequestCache
         if let Some(ref rc) = ctx.request_cache {
             if let Some(ref resp) = final_resp {
-                rc.put(&req.url, super::request_cache::CachedEntry {
+                rc.put(method_str, &req.url, super::request_cache::CachedEntry {
                     status: resp.status,
                     headers: resp.headers.clone(),
                     body: resp.body.clone(),
