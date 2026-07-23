@@ -82,6 +82,11 @@ impl AutoscaledPool {
         self.current.load(Ordering::SeqCst)
     }
 
+    /// 获取最大并发数上限（主循环用作 buffer_unordered 的 ceiling）。
+    pub fn max_concurrency(&self) -> usize {
+        self.max_concurrency
+    }
+
     /// 后台 autoscaler task：定期采样系统指标，调整 desired concurrency。
     ///
     /// 应在 `run_inner` 中 spawn 此 task，爬取结束后 abort。

@@ -34,6 +34,8 @@ pub struct Engine {
     pub(crate) checkpoint_interval: usize,
     /// per-Engine 控制状态（替代原全局 static，解决 I4）。
     pub(crate) control: Arc<control::EngineControl>,
+    /// 自适应并发池（可选）。启用后 run_inner 动态调整并发数。
+    pub(crate) autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
 }
 
 /// Engine 构造器（Builder 模式）。
@@ -48,6 +50,7 @@ pub struct EngineBuilder {
     dev_mode: bool,
     checkpoint_store: Option<Arc<crate::storage::Store>>,
     checkpoint_interval: usize,
+    autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
 }
 
 impl Engine {
@@ -67,6 +70,7 @@ impl Engine {
             dev_mode: false,
             checkpoint_store: None,
             checkpoint_interval: 100,
+            autoscale: None,
         }
     }
 
@@ -367,6 +371,27 @@ impl EngineBuilder {
         self.checkpoint_store = Some(s); self.checkpoint_interval = interval; self
     }
 
+    /// 启用自适应并发池。min 为初始/下限，max 为上限。
+    /// 启用后 run_inner 会启动后台 autoscaler，根据饱和度动态调整并发数。
+    pub fn autoscale(mut self, min: usize, max: usize) -> Self {
+        self.autoscale = Some(crate::crawl::runtime::autoscale::AutoscaledPool::new(
+            min, max,
+            crate::crawl::runtime::autoscale::AutoscaleConfig::default(),
+        ));
+        self
+    }
+
+    /// 同 autoscale(min, max) 但可自定义配置。
+    pub fn autoscale_with_config(
+        mut self,
+        min: usize,
+        max: usize,
+        config: crate::crawl::runtime::autoscale::AutoscaleConfig,
+    ) -> Self {
+        self.autoscale = Some(crate::crawl::runtime::autoscale::AutoscaledPool::new(min, max, config));
+        self
+    }
+
     pub fn build(self) -> Result<Engine> {
         let mut builder = Client::builder()
             .timeout(std::time::Duration::from_secs(30));
@@ -386,6 +411,7 @@ impl EngineBuilder {
             checkpoint_store: self.checkpoint_store,
             checkpoint_interval: self.checkpoint_interval,
             control: Arc::new(control::EngineControl::new()),
+            autoscale: self.autoscale,
         })
     }
 }
