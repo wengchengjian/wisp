@@ -14,6 +14,15 @@ pub struct RobotsRules {
     pub request_rate: Option<f64>,
 }
 
+impl RobotsRules {
+    /// 规则是否为空（disallowed 空 + 无 crawl_delay + 无 request_rate）。
+    /// 用于判断 fetch_robots 是否成功获取到有效规则，
+    /// 区分"无规则"与"获取失败返回的默认空规则"——失败时返回的空规则不应被缓存。
+    pub fn is_empty_rules(&self) -> bool {
+        self.disallowed.is_empty() && self.crawl_delay.is_none() && self.request_rate.is_none()
+    }
+}
+
 /// Cache of robots.txt rules per domain.
 pub struct RobotsCache {
     cache: HashMap<String, RobotsRules>,
@@ -40,11 +49,20 @@ impl RobotsCache {
     pub async fn rules_for(&mut self, client: &Client, url: &str) -> RobotsRules {
         let Ok(parsed) = url::Url::parse(url) else { return RobotsRules::default(); };
         let Some(host) = parsed.host_str() else { return RobotsRules::default(); };
-        let domain = format!("{}://{}", parsed.scheme(), host);
+        // 保留端口：http://example.com:8080 与 http://example.com 是不同 origin，
+        // robots.txt 必须从对应 host:port 获取，否则非默认端口会错误地从 80/443 拉取。
+        let domain = match parsed.port() {
+            Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+            None => format!("{}://{}", parsed.scheme(), host),
+        };
 
         if !self.cache.contains_key(&domain) {
             let rules = self.fetch_robots(client, &domain).await;
-            self.cache.insert(domain.clone(), rules);
+            // 仅在成功获取到有效规则时缓存；fetch 失败返回的空规则不缓存，
+            // 避免网络瞬态失败后被永久缓存为"允许全部"。
+            if !rules.is_empty_rules() {
+                self.cache.insert(domain.clone(), rules);
+            }
         }
 
         self.cache.get(&domain).cloned().unwrap_or_default()
@@ -186,5 +204,36 @@ mod tests {
         assert!(rules.disallowed.is_empty());
         assert!(rules.crawl_delay.is_none());
         assert!(rules.request_rate.is_none());
+    }
+
+    #[test]
+    fn test_is_empty_rules() {
+        // 默认规则视为空（fetch 失败的返回值）
+        assert!(RobotsRules::default().is_empty_rules());
+
+        // 仅有 disallowed 不算空
+        let mut r = RobotsRules::default();
+        r.disallowed.push("/x".to_string());
+        assert!(!r.is_empty_rules());
+
+        // 仅有 crawl_delay 不算空
+        let mut r = RobotsRules::default();
+        r.crawl_delay = Some(1.0);
+        assert!(!r.is_empty_rules());
+
+        // 仅有 request_rate 不算空
+        let mut r = RobotsRules::default();
+        r.request_rate = Some(0.5);
+        assert!(!r.is_empty_rules());
+    }
+
+    #[test]
+    fn test_domain_key_preserves_port() {
+        // 验证 url::Url::port() 在非默认端口下返回 Some，
+        // 用以锁定 rules_for 构造 domain key 时包含端口的依赖假设。
+        let parsed = url::Url::parse("http://example.com:8080/x").unwrap();
+        assert_eq!(parsed.port(), Some(8080));
+        let parsed_default = url::Url::parse("http://example.com/x").unwrap();
+        assert_eq!(parsed_default.port(), None);
     }
 }
