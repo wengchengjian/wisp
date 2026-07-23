@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use dashmap::DashMap;
 
 /// 单个 Spider 的运行时统计。引擎为每个 Spider 持有一个实例。
 pub struct SpiderStats {
@@ -17,7 +17,7 @@ pub struct SpiderStats {
     pub cache_hits: AtomicUsize,
     /// 在飞请求数。使用 Arc 以便 InFlightGuard 克隆。
     pub in_flight: Arc<AtomicUsize>,
-    pub status_codes: Mutex<HashMap<u16, usize>>,
+    pub status_codes: DashMap<u16, AtomicUsize>,
     pub start: Instant,
 }
 
@@ -32,7 +32,7 @@ impl SpiderStats {
             offsite: AtomicUsize::new(0),
             cache_hits: AtomicUsize::new(0),
             in_flight: Arc::new(AtomicUsize::new(0)),
-            status_codes: Mutex::new(HashMap::new()),
+            status_codes: DashMap::new(),
             start: Instant::now(),
         }
     }
@@ -42,6 +42,14 @@ impl SpiderStats {
     pub fn errors(&self) -> usize { self.errors.load(Ordering::SeqCst) }
     pub fn in_flight(&self) -> usize { self.in_flight.load(Ordering::SeqCst) }
     pub fn elapsed(&self) -> Duration { self.start.elapsed() }
+
+    /// 无锁快照状态码计数为 HashMap<u16, usize>。
+    pub fn status_codes_snapshot(&self) -> HashMap<u16, usize> {
+        self.status_codes
+            .iter()
+            .map(|r| (*r.key(), r.value().load(Ordering::SeqCst)))
+            .collect()
+    }
 }
 
 impl Default for SpiderStats {

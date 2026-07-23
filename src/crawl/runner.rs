@@ -387,7 +387,7 @@ impl Engine {
             }
         }
 
-        let status_codes = ctx.state.stats.status_codes.lock().await.clone();
+        let status_codes = ctx.state.stats.status_codes_snapshot();
         Ok(engine::snapshot_stats_for(&ctx.state.stats, status_codes, ctx.state.start))
     }
 }

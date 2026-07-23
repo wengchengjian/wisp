@@ -163,7 +163,7 @@ async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_s
                 from_cache: true,
             };
             stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-            record_status(stats, resp.status).await;
+            record_status(stats, resp.status);
             return CacheResult::Hit(Box::new(resp));
         }
     }
@@ -182,7 +182,7 @@ async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_s
                     from_cache: true,
                 };
                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-                record_status(stats, resp.status).await;
+                record_status(stats, resp.status);
                 return CacheResult::Hit(Box::new(resp));
             }
         }
@@ -298,7 +298,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
             middleware::MwAction::Respond(cached_resp) => {
                 // 中间件短路（如缓存命中），跳过网络请求直接处理响应
                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-                record_status(stats, cached_resp.status).await;
+                record_status(stats, cached_resp.status);
                 return process_response(ctx, cached_resp, &req).await;
             }
             _ => {}
@@ -414,7 +414,7 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, 
 
     // PageScraped 事件
     if let Some(ref tx) = ctx.state.tx {
-        let status_codes_snapshot = stats.status_codes.lock().await.clone();
+        let status_codes_snapshot = stats.status_codes_snapshot();
         let _ = tx.send(CrawlEvent::PageScraped {
             url: page_url,
             stats: snapshot_stats_for(stats, status_codes_snapshot, ctx.state.start),
@@ -442,7 +442,7 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
         let proxy = req.proxy.clone();
         match fetch_page(&ctx.config.client, req, proxy.as_deref(), fetch_mode, fetcher_config, rule_engine, &ctx.shared.proxy_clients).await {
             Ok(resp) => {
-                record_status(stats, resp.status).await;
+                record_status(stats, resp.status);
                 if spider.is_blocked(&resp) {
                     stats.blocked.fetch_add(1, Ordering::SeqCst);
                     // attempt 从 1 起；attempt <= max_retries 表示还能重试，
@@ -545,9 +545,13 @@ pub(crate) fn build_crawl_context(ctx: &EngineContext) -> middleware::CrawlConte
     }
 }
 
-async fn record_status(stats: &Arc<SpiderStats>, status: u16) {
-    let mut m = stats.status_codes.lock().await;
-    *m.entry(status).or_insert(0) += 1;
+/// 同步记录状态码计数（DashMap entry 原子累加，无 await）。
+pub fn record_status(stats: &Arc<SpiderStats>, status: u16) {
+    stats
+        .status_codes
+        .entry(status)
+        .and_modify(|c| { c.fetch_add(1, Ordering::Relaxed); })
+        .or_insert(AtomicUsize::new(1));
 }
 
 async fn apply_delay(ctx: &EngineContext, url: &str, spider: &Arc<dyn Spider>, obey_robots: bool) {

@@ -31,6 +31,7 @@ pub use auto::{SelectorTracker, ModeRuleEngine};
 pub use request_cache::RequestCache;
 pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
 pub use runner::{Engine, EngineBuilder};
+pub use engine::record_status;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -46,7 +47,7 @@ use crate::error::{WispError, Result};
 use crate::http::{self, Client};
 use crate::parser::{Node, NodeList};
 use crate::fetcher::FetchMode;
-use self::stats::SpiderStats;
+pub use self::stats::SpiderStats;
 
 /// HTTP method for spider requests.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
