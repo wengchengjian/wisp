@@ -175,7 +175,13 @@ fn resolve_href(base: &str, href: &str) -> Option<String> {
         return Some(href.to_string());
     }
     let base_url = url::Url::parse(base).ok()?;
-    base_url.join(href).ok().map(|u| u.to_string())
+    let joined = base_url.join(href).ok()?;
+    // 仅接受 http/https 结果（过滤 javascript: mailto: data: 等被 join 构造的非法 URL）
+    if joined.scheme() == "http" || joined.scheme() == "https" {
+        Some(joined.to_string())
+    } else {
+        None
+    }
 }
 
 /// The core Spider trait users implement to define a crawler.
@@ -456,5 +462,22 @@ mod tests {
         let mut count = 0;
         while items_stream.next().await.is_some() { count += 1; }
         assert!(count >= 1, "items() 应产出至少 1 个 item");
+    }
+
+    #[test]
+    fn resolve_href_rejects_non_http_schemes() {
+        // 绝对 URL：仅 http/https 通过
+        assert!(resolve_href("https://example.com", "https://other.com/p").is_some());
+        assert!(resolve_href("https://example.com", "http://other.com/p").is_some());
+        // 非 http scheme 应拒绝
+        assert!(resolve_href("https://example.com", "javascript:void(0)").is_none(),
+            "javascript: scheme 应被拒绝");
+        assert!(resolve_href("https://example.com", "mailto:a@b.com").is_none(),
+            "mailto: scheme 应被拒绝");
+        assert!(resolve_href("https://example.com", "data:text/html,xxx").is_none(),
+            "data: scheme 应被拒绝");
+        // 相对链接仍正常解析
+        assert!(resolve_href("https://example.com/a/", "b").is_some());
+        assert_eq!(resolve_href("https://example.com/a/", "b"), Some("https://example.com/a/b".into()));
     }
 }
