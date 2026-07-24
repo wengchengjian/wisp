@@ -13,7 +13,7 @@
 //!     .delay(Duration::from_millis(500))
 //!     .obey_robots(false)
 //!     .on("default", |resp| async move {
-//!         let doc = resp.parse().unwrap();
+//!         let doc = resp.parse();
 //!         let items = doc.select(".quote").iter().map(|q| {
 //!             serde_json::json!({ "text": q.select_one(".text").map(|n| n.text()) })
 //!         }).collect();
@@ -60,14 +60,14 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use serde_json::Value;
 
-use super::{Spider, SpiderRequest, SpiderResponse};
+use super::{Spider, Request, Response};
 
-/// 异步 handler 签名：接收 SpiderResponse，返回 (items, follows)。
+/// 异步 handler 签名：接收 Response，返回 (items, follows)。
 ///
 /// 用 `Arc<dyn Fn(...) -> BoxFuture>` 让闭包可 Clone + 异步 + Send + Sync。
 /// 每个 handler 捕获不同状态都满足同一签名。
 pub type Handler = Arc<
-    dyn Fn(SpiderResponse) -> BoxFuture<'static, (Vec<Value>, Vec<SpiderRequest>)>
+    dyn Fn(Response) -> BoxFuture<'static, (Vec<Value>, Vec<Request>)>
         + Send + Sync
 >;
 
@@ -85,7 +85,7 @@ pub struct SpiderBuilder {
     fetch_client_config: crate::fetcher::FetchClientConfig,
     fetch_mode: crate::fetcher::FetchMode,
     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
-    is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
+    is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
     middlewares: Vec<Arc<dyn super::middleware::Middleware>>,
     pipelines: Vec<Arc<dyn super::middleware::ItemPipeline>>,
@@ -171,7 +171,7 @@ impl SpiderBuilder {
     /// 自定义阻塞检测逻辑。
     pub fn is_blocked<F>(mut self, f: F) -> Self
     where
-        F: Fn(&SpiderResponse) -> bool + Send + Sync + 'static,
+        F: Fn(&Response) -> bool + Send + Sync + 'static,
     {
         self.is_blocked_fn = Some(Box::new(f));
         self
@@ -186,8 +186,8 @@ impl SpiderBuilder {
     /// `"default"`）才能 `build()`。
     pub fn on<F, Fut>(mut self, label: &str, handler: F) -> Self
     where
-        F: Fn(SpiderResponse) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = (Vec<Value>, Vec<SpiderRequest>)> + Send + 'static,
+        F: Fn(Response) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = (Vec<Value>, Vec<Request>)> + Send + 'static,
     {
         let boxed: Handler = Arc::new(move |resp| Box::pin(handler(resp)));
         self.handlers.insert(label.to_string(), boxed);
@@ -215,11 +215,11 @@ impl SpiderBuilder {
                 async move {
                     let text = resp.text().unwrap_or_default();
                     let re = regex::Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap();
-                    let follows: Vec<SpiderRequest> = re
+                    let follows: Vec<Request> = re
                         .captures_iter(&text)
                         .filter_map(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
                         .filter(|u| !u.is_empty())
-                        .map(|url| SpiderRequest::get(&url).with_callback(&label))
+                        .map(|url| Request::get(&url).with_callback(&label))
                         .collect();
                     (vec![], follows)
                 }
@@ -284,7 +284,7 @@ pub struct ClosureSpider {
     fetch_client_config: crate::fetcher::FetchClientConfig,
     fetch_mode: crate::fetcher::FetchMode,
     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
-    is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
+    is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
     middlewares: Vec<Arc<dyn super::middleware::Middleware>>,
     pipelines: Vec<Arc<dyn super::middleware::ItemPipeline>>,
@@ -309,7 +309,7 @@ impl Spider for ClosureSpider {
     /// 2. callback 为其他 label → 对应 handler（若有）
     /// 3. label 无匹配 → 回退到 "default" handler
     /// 4. 都无 → 返回空
-    async fn handle(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let label = resp.request.callback.as_deref().unwrap_or("default");
         match self.handlers.get(label) {
             Some(h) => h(resp).await,
@@ -327,11 +327,11 @@ impl Spider for ClosureSpider {
 
     /// parse 兜底：ClosureSpider 不再使用 parse 闭包，统一走 `handle()` 路由。
     /// 此实现仅满足 Spider trait 默认契约，返回空结果。
-    async fn parse(&self, _response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, _response: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
 
-    fn is_blocked(&self, resp: &SpiderResponse) -> bool {
+    fn is_blocked(&self, resp: &Response) -> bool {
         if let Some(ref f) = self.is_blocked_fn {
             f(resp)
         } else {
@@ -399,18 +399,21 @@ mod tests {
         let spider = SpiderBuilder::new("test")
             .start_urls(vec!["https://example.com/"])
             .on("default", |resp| async move {
-                let doc = resp.parse().unwrap();
+                let doc = resp.parse();
                 let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
                 (vec![json!({"title": title})], vec![])
             })
             .build();
 
-        let resp = SpiderResponse {
+        let resp = Response {
             url: "https://example.com/".into(),
             status: 200,
             headers: Default::default(),
             body: b"<html><body><h1>Hello</h1></body></html>".to_vec(),
-            request: SpiderRequest::get("https://example.com/"),
+            request: Request::get("https://example.com/"),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
 
@@ -425,18 +428,21 @@ mod tests {
         let spider = SpiderBuilder::new("async-test")
             .start_urls(vec!["https://example.com/"])
             .on("default", |resp| async move {
-                let doc = resp.parse().unwrap();
+                let doc = resp.parse();
                 let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
                 (vec![json!({"text": text})], vec![])
             })
             .build();
 
-        let resp = SpiderResponse {
+        let resp = Response {
             url: "https://example.com/".into(),
             status: 200,
             headers: Default::default(),
             body: b"<html><body><p>World</p></body></html>".to_vec(),
-            request: SpiderRequest::get("https://example.com/"),
+            request: Request::get("https://example.com/"),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
 
@@ -452,17 +458,20 @@ mod tests {
             .is_blocked(|resp| resp.body.windows(7).any(|w| w == b"blocked"))
             .build();
 
-        let resp = SpiderResponse {
+        let resp = Response {
             url: "http://x.com".into(),
             status: 200,
             headers: Default::default(),
             body: b"you are blocked".to_vec(),
-            request: SpiderRequest::get("http://x.com"),
+            request: Request::get("http://x.com"),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
         assert!(spider.is_blocked(&resp));
 
-        let ok_resp = SpiderResponse {
+        let ok_resp = Response {
             body: b"welcome".to_vec(),
             ..resp
         };
@@ -487,36 +496,45 @@ mod tests {
             .build();
 
         // 1. callback=None → default handler
-        let resp_default = SpiderResponse {
+        let resp_default = Response {
             url: "https://example.com/".into(),
             status: 200,
             headers: Default::default(),
             body: b"<html></html>".to_vec(),
-            request: SpiderRequest::get("https://example.com/"),
+            request: Request::get("https://example.com/"),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
         let (items, _) = spider.handle(resp_default).await;
         assert_eq!(items[0]["handler"], "default");
 
         // 2. callback="detail" → detail handler
-        let resp_detail = SpiderResponse {
+        let resp_detail = Response {
             url: "https://example.com/detail/1".into(),
             status: 200,
             headers: Default::default(),
             body: b"<html></html>".to_vec(),
-            request: SpiderRequest::get("https://example.com/detail/1").with_callback("detail"),
+            request: Request::get("https://example.com/detail/1").with_callback("detail"),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
         let (items, _) = spider.handle(resp_detail).await;
         assert_eq!(items[0]["handler"], "detail");
 
         // 3. callback="content" → content handler
-        let resp_content = SpiderResponse {
+        let resp_content = Response {
             url: "https://example.com/content/1".into(),
             status: 200,
             headers: Default::default(),
             body: b"<html><h1>Title</h1></html>".to_vec(),
-            request: SpiderRequest::get("https://example.com/content/1").with_callback("content"),
+            request: Request::get("https://example.com/content/1").with_callback("content"),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
         let (items, _) = spider.handle(resp_content).await;
@@ -524,12 +542,15 @@ mod tests {
         assert_eq!(items[0]["title"], "Title");
 
         // 4. callback="unknown" → 回退到 default handler
-        let resp_unknown = SpiderResponse {
+        let resp_unknown = Response {
             url: "https://example.com/unknown".into(),
             status: 200,
             headers: Default::default(),
             body: b"<html></html>".to_vec(),
-            request: SpiderRequest::get("https://example.com/unknown").with_callback("unknown"),
+            request: Request::get("https://example.com/unknown").with_callback("unknown"),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
         let (items, _) = spider.handle(resp_unknown).await;
@@ -546,12 +567,15 @@ mod tests {
             })
             .build();
 
-        let resp = SpiderResponse {
+        let resp = Response {
             url: "https://example.com/".into(),
             status: 200,
             headers: Default::default(),
             body: b"<html></html>".to_vec(),
-            request: SpiderRequest::get("https://example.com/"),
+            request: Request::get("https://example.com/"),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
         let (items, _) = spider.handle(resp).await;

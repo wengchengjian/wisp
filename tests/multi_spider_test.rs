@@ -13,7 +13,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 use wisp::crawl::{
-    Engine, MaxPages, Spider, SpiderRequest, SpiderResponse,
+    Engine, MaxPages, Spider, Request, Response,
     StopCondition, StopContext,
 };
 
@@ -59,7 +59,7 @@ async fn test_multiple_runs_independent_stats() {
     impl Spider for SpiderA {
         fn name(&self) -> &str { "spider-a" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }
@@ -71,7 +71,7 @@ async fn test_multiple_runs_independent_stats() {
     impl Spider for SpiderB {
         fn name(&self) -> &str { "spider-b" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }
@@ -108,9 +108,9 @@ async fn test_until_stops_one_spider_without_affecting_other() {
     impl Spider for StoppingSpider {
         fn name(&self) -> &str { "stopping" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             // follow 一个 URL，验证 until 会阻止它被处理
-            (vec![], vec![SpiderRequest::get(&format!("{}/2", self.url))])
+            (vec![], vec![Request::get(&format!("{}/2", self.url))])
         }
         fn obey_robots(&self) -> bool { false }
         fn until(&self) -> Arc<dyn StopCondition> {
@@ -123,7 +123,7 @@ async fn test_until_stops_one_spider_without_affecting_other() {
     impl Spider for NormalSpider {
         fn name(&self) -> &str { "normal" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }

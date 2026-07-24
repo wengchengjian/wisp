@@ -19,7 +19,7 @@ impl CronExpr {
     /// Examples: "0 * * * *" (every hour), "*/30 * * * *" (every 30 min)
     pub fn parse(expr: &str) -> Result<Self> {
         let inner: Cron = expr.parse()
-            .map_err(|e| WispError::CdpError(format!("cron parse '{}': {}", expr, e)))?;
+            .map_err(|e| WispError::ParseError(format!("cron parse '{}': {}", expr, e)))?;
         Ok(Self { inner, expr: expr.to_string() })
     }
 

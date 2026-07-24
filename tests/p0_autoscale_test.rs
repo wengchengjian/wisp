@@ -51,7 +51,7 @@ impl Spider for FailSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["http://127.0.0.1:1/a".into(), "http://127.0.0.1:1/b".into()]
     }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) { (vec![], vec![]) }
+    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) { (vec![], vec![]) }
     fn obey_robots(&self) -> bool { false }
     fn max_retries(&self) -> u32 { 0 }
 }

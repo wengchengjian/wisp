@@ -165,7 +165,7 @@ impl Engine {
 
         let sched = Arc::new(scheduler::Scheduler::new());
         let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
+        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
 
         // checkpoint 恢复（单 Spider）
         let spider_name = spider.name().to_string();
@@ -194,7 +194,7 @@ impl Engine {
 
         if !restored_pending {
             for url in spider.start_urls() {
-                sched.push(SpiderRequest::get(&url)).await;
+                sched.push(Request::get(&url)).await;
             }
         }
 

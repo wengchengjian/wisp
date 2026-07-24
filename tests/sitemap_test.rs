@@ -34,12 +34,15 @@ async fn test_sitemap_parses_loc_urls() {
   <url><loc>https://example.com/page1</loc></url>
   <url><loc>https://example.com/page2</loc></url>
 </urlset>"#;
-    let resp = SpiderResponse {
+    let resp = Response {
         url: "https://example.com/sitemap.xml".into(),
         status: 200,
         headers: Default::default(),
         body: sitemap_xml.as_bytes().to_vec(),
-        request: SpiderRequest::get("https://example.com/sitemap.xml"),
+        request: Request::get("https://example.com/sitemap.xml"),
+        title: None,
+        cookies: Vec::new(),
+        content_type: String::new(),
         from_cache: false,
     };
 

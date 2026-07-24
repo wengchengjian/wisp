@@ -36,54 +36,18 @@ pub use stop::{
 };
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub use self::stats::SpiderStats;
-use crate::error::{Result, WispError};
 use crate::fetcher::FetchMode;
-use crate::parser::{Node, NodeList};
 
-/// 自定义 serde：把 `serde_json::Value` 编码为 `Vec<u8>` JSON 字节，
-/// 绕过 bincode 1.x 不支持 `deserialize_any` 的限制，使 meta 随 checkpoint 往返。
-mod meta_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use serde_json::Value;
+// 统一类型：直接使用 fetcher 的 Request/Response/Method
+pub use crate::fetcher::{Method, Request, Response};
 
-    pub fn serialize<S: Serializer>(v: &Value, s: S) -> Result<S::Ok, S::Error> {
-        let bytes = serde_json::to_vec(v).map_err(serde::ser::Error::custom)?;
-        bytes.serialize(s)
-    }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Value, D::Error> {
-        let bytes = Vec::<u8>::deserialize(d)?;
-        serde_json::from_slice(&bytes).map_err(serde::de::Error::custom)
-    }
-}
-
-/// HTTP method for spider requests.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum Method {
-    Get,
-    Post,
-    Put,
-    Delete,
-}
-
-impl Method {
-    /// 返回标准 HTTP 动词字符串（大写）。
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Method::Get => "GET",
-            Method::Post => "POST",
-            Method::Put => "PUT",
-            Method::Delete => "DELETE",
-        }
-    }
-}
 
 /// 请求钩子的决策结果。
 #[derive(Debug, Clone, PartialEq)]
@@ -98,151 +62,7 @@ pub enum RequestAction {
     Abort,
 }
 
-/// A request to be processed by the spider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpiderRequest {
-    pub url: String,
-    pub method: Method,
-    pub headers: HashMap<String, String>,
-    pub body: Option<String>,
-    // P1-7：用 `#[serde(with = "meta_serde")]` 使 meta 随 bincode checkpoint 往返。
-    // bincode 1.x 不支持 `serde_json::Value` 的 `deserialize_any`，
-    // 故通过 `meta_serde` 把 Value 编码为 `Vec<u8>` JSON 字节，bincode 可处理。
-    #[serde(with = "meta_serde")]
-    pub meta: Value,
-    pub callback: Option<String>,
-    pub priority: i32,
-    /// 深度：起始 URL 为 0，每 follow 一次 +1。
-    #[serde(default)]
-    pub depth: u32,
-    /// 代理 URL（由 ProxyInjectionMiddleware 设置，引擎读取并应用）。
-    #[serde(skip)]
-    pub proxy: Option<String>,
-    /// 抓取模式覆盖（由 StealthUpgradeMiddleware 等设置，引擎优先使用此模式）。
-    #[serde(skip)]
-    pub fetch_mode_override: Option<FetchMode>,
-}
 
-impl SpiderRequest {
-    pub fn get(url: &str) -> Self {
-        Self {
-            url: url.to_string(),
-            method: Method::Get,
-            headers: HashMap::new(),
-            body: None,
-            meta: Value::Null,
-            callback: None,
-            priority: 0,
-            depth: 0,
-            proxy: None,
-            fetch_mode_override: None,
-        }
-    }
-    pub fn post(url: &str, body: Option<String>) -> Self {
-        Self {
-            url: url.to_string(),
-            method: Method::Post,
-            headers: HashMap::new(),
-            body,
-            meta: Value::Null,
-            callback: None,
-            priority: 0,
-            depth: 0,
-            proxy: None,
-            fetch_mode_override: None,
-        }
-    }
-    pub fn with_meta(mut self, meta: Value) -> Self {
-        self.meta = meta;
-        self
-    }
-    pub fn with_priority(mut self, p: i32) -> Self {
-        self.priority = p;
-        self
-    }
-    pub fn with_callback(mut self, cb: &str) -> Self {
-        self.callback = Some(cb.to_string());
-        self
-    }
-    pub fn with_depth(mut self, d: u32) -> Self {
-        self.depth = d;
-        self
-    }
-}
-
-/// Response received by the spider.
-#[derive(Debug, Clone)]
-pub struct SpiderResponse {
-    pub url: String,
-    pub status: u16,
-    pub headers: HashMap<String, String>,
-    pub body: Vec<u8>,
-    pub request: SpiderRequest,
-    /// 是否来自缓存（缓存命中不算 pages_crawled）。
-    #[doc(hidden)]
-    pub from_cache: bool,
-}
-
-impl SpiderResponse {
-    pub fn text(&self) -> Result<String> {
-        let content_type = self
-            .headers
-            .get("content-type")
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        Ok(crate::http::encoding::decode(&self.body, content_type))
-    }
-    pub fn parse(&self) -> Result<Node> {
-        let text = self.text()?;
-        Ok(Node::from_html(&text))
-    }
-    pub fn json(&self) -> Result<Value> {
-        serde_json::from_slice(&self.body).map_err(|e| WispError::CdpError(format!("json: {e}")))
-    }
-
-    /// 从当前响应 URL 解析相对链接，创建 GET 请求（depth 自动 +1）。
-    pub fn follow(&self, href: &str) -> Option<SpiderRequest> {
-        let absolute = resolve_href(&self.url, href)?;
-        Some(SpiderRequest::get(&absolute).with_depth(self.request.depth + 1))
-    }
-    pub fn follow_with(&self, href: &str, callback: &str) -> Option<SpiderRequest> {
-        let absolute = resolve_href(&self.url, href)?;
-        Some(
-            SpiderRequest::get(&absolute)
-                .with_callback(callback)
-                .with_depth(self.request.depth + 1),
-        )
-    }
-    pub fn follow_meta(&self, href: &str, meta: Value) -> Option<SpiderRequest> {
-        let absolute = resolve_href(&self.url, href)?;
-        Some(
-            SpiderRequest::get(&absolute)
-                .with_meta(meta)
-                .with_depth(self.request.depth + 1),
-        )
-    }
-
-    /// CSS 查询。
-    pub fn css(&self, sel: &str) -> NodeList {
-        self.parse()
-            .map(|doc| doc.select(sel))
-            .unwrap_or_else(|_| NodeList::new(vec![]))
-    }
-}
-
-fn resolve_href(base: &str, href: &str) -> Option<String> {
-    if href.starts_with("http://") || href.starts_with("https://") {
-        return Some(href.to_string());
-    }
-    let base_url = url::Url::parse(base).ok()?;
-    let joined = base_url.join(href).ok()?;
-    // 仅接受 http/https 结果（过滤 javascript: mailto: data: 等被 join 构造的非法 URL）
-    if joined.scheme() == "http" || joined.scheme() == "https" {
-        Some(joined.to_string())
-    } else {
-        None
-    }
-}
 
 /// The core Spider trait users implement to define a crawler.
 #[async_trait]
@@ -250,17 +70,10 @@ pub trait Spider: Send + Sync + 'static {
     // Required
     fn name(&self) -> &str;
     fn start_urls(&self) -> Vec<String>;
-    async fn parse(&self, response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>);
+    async fn parse(&self, response: Response) -> (Vec<Value>, Vec<Request>);
 
     /// 请求分发入口。Engine 调用此方法（不直接调 parse）。
-    ///
-    /// 默认实现：直接调 `parse()`，保持向后兼容。
-    /// 用户可重写此方法实现 callback 路由（参考 ClosureSpider）。
-    ///
-    /// # 路由约定
-    /// - `resp.request.callback` 为 `None` 或 `"default"`：入口请求
-    /// - 其他字符串：用户自定义 label（通过 `resp.follow_with(url, "detail")` 指定）
-    async fn handle(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         self.parse(resp).await
     }
 
@@ -282,11 +95,11 @@ pub trait Spider: Send + Sync + 'static {
     }
     async fn on_start(&self) {}
     async fn on_close(&self) {}
-    async fn on_error(&self, _req: &SpiderRequest, _err: &str) {}
+    async fn on_error(&self, _req: &Request, _err: &str) {}
     async fn on_item(&self, item: Value) -> Option<Value> {
         Some(item)
     }
-    fn is_blocked(&self, resp: &SpiderResponse) -> bool {
+    fn is_blocked(&self, resp: &Response) -> bool {
         BLOCKED_STATUS_CODES.contains(&resp.status)
     }
     fn fetch_mode(&self) -> FetchMode {
@@ -300,7 +113,7 @@ pub trait Spider: Send + Sync + 'static {
         u32::MAX
     }
     /// 每个请求执行前的异步钩子。默认返回 Proceed。
-    async fn on_before_request(&self, _req: &SpiderRequest) -> RequestAction {
+    async fn on_before_request(&self, _req: &Request) -> RequestAction {
         RequestAction::Proceed
     }
 
@@ -389,6 +202,7 @@ impl CrawlStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::resolve_href;
     use futures::StreamExt;
     use std::collections::HashMap;
 
@@ -419,24 +233,17 @@ mod tests {
             fn start_urls(&self) -> Vec<String> {
                 vec![]
             }
-            async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+            async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
                 (vec![], vec![])
             }
         }
         let spider = DummySpider;
-        let blocked_resp = SpiderResponse {
-            url: "http://example.com".into(),
-            status: 403,
-            headers: HashMap::new(),
-            body: vec![],
-            request: SpiderRequest::get("http://example.com"),
-            from_cache: false,
-        };
+        let blocked_resp = Response::from_http(
+            403, "http://example.com".into(), HashMap::new(), vec![],
+            "text/html".into(), Request::get("http://example.com"),
+        );
         assert!(spider.is_blocked(&blocked_resp));
-        let ok_resp = SpiderResponse {
-            status: 200,
-            ..blocked_resp
-        };
+        let ok_resp = Response { status: 200, ..blocked_resp };
         assert!(!spider.is_blocked(&ok_resp));
     }
 
@@ -531,8 +338,8 @@ mod tests {
             fn start_urls(&self) -> Vec<String> {
                 vec![self.start_url.clone()]
             }
-            async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-                let node = resp.parse().unwrap();
+            async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+                let node = resp.parse();
                 let text = node.select("p").text().join("");
                 (vec![serde_json::json!({"text": text})], vec![])
             }
@@ -540,7 +347,6 @@ mod tests {
                 false
             }
         }
-        // Task 3：迁移到 Engine::infra().build() + run_stream(spider)
         let engine = Engine::infra().max_pages(1).build().unwrap();
         let mut stream = engine.run_stream(CountSpider { start_url: base }).events();
         let mut items = 0;
@@ -574,14 +380,13 @@ mod tests {
             fn start_urls(&self) -> Vec<String> {
                 vec![self.start_url.clone()]
             }
-            async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+            async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
                 (vec![serde_json::json!({"v": 1})], vec![])
             }
             fn obey_robots(&self) -> bool {
                 false
             }
         }
-        // Task 3：迁移到 Engine::infra().build() + run_stream(spider)
         let engine = Engine::infra().max_pages(1).build().unwrap();
         let mut items_stream = engine.run_stream(OneSpider { start_url: base }).items();
         let mut count = 0;
@@ -593,10 +398,8 @@ mod tests {
 
     #[test]
     fn resolve_href_rejects_non_http_schemes() {
-        // 绝对 URL：仅 http/https 通过
         assert!(resolve_href("https://example.com", "https://other.com/p").is_some());
         assert!(resolve_href("https://example.com", "http://other.com/p").is_some());
-        // 非 http scheme 应拒绝
         assert!(
             resolve_href("https://example.com", "javascript:void(0)").is_none(),
             "javascript: scheme 应被拒绝"
@@ -609,7 +412,6 @@ mod tests {
             resolve_href("https://example.com", "data:text/html,xxx").is_none(),
             "data: scheme 应被拒绝"
         );
-        // 相对链接仍正常解析
         assert!(resolve_href("https://example.com/a/", "b").is_some());
         assert_eq!(
             resolve_href("https://example.com/a/", "b"),
@@ -618,15 +420,13 @@ mod tests {
     }
 
     #[test]
-    fn spider_response_css_works() {
-        let resp = SpiderResponse {
-            url: "http://example.com".into(),
-            status: 200,
-            headers: std::collections::HashMap::new(),
-            body: b"<html><body><p>x</p></body></html>".to_vec(),
-            request: SpiderRequest::get("http://example.com"),
-            from_cache: false,
-        };
+    fn response_css_works() {
+        let resp = Response::from_http(
+            200, "http://example.com".into(), HashMap::new(),
+            b"<html><body><p>x</p></body></html>".to_vec(),
+            "text/html; charset=utf-8".into(),
+            Request::get("http://example.com"),
+        );
         let nodes = resp.css("p");
         assert_eq!(nodes.iter().count(), 1);
     }

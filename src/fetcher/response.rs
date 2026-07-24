@@ -2,6 +2,7 @@
 //!
 //! 所有 Fetcher 模式（Http / Dynamic / Stealth）返回同一个 `Response`，
 //! 用户无需关心底层实现即可使用 `.css()` / `.json()` 等 API。
+//! Spider 引擎也复用同一套 Request/Response，避免类型重复。
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
@@ -9,6 +10,25 @@ use serde_json::Value;
 
 use crate::error::{WispError, Result};
 use crate::parser::{Node, NodeList};
+use crate::utils::resolve_href;
+use super::FetchMode;
+
+/// 自定义 serde：把 `serde_json::Value` 编码为 `Vec<u8>` JSON 字节，
+/// 绕过 bincode 1.x 不支持 `deserialize_any` 的限制，使 meta 随 checkpoint 往返。
+pub(crate) mod meta_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
+
+    pub fn serialize<S: Serializer>(v: &Value, s: S) -> Result<S::Ok, S::Error> {
+        let bytes = serde_json::to_vec(v).map_err(serde::ser::Error::custom)?;
+        bytes.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Value, D::Error> {
+        let bytes = Vec::<u8>::deserialize(d)?;
+        serde_json::from_slice(&bytes).map_err(serde::de::Error::custom)
+    }
+}
 
 /// HTTP 方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,7 +39,19 @@ pub enum Method {
     Delete,
 }
 
-/// 统一请求类型。
+impl Method {
+    /// 返回标准 HTTP 动词字符串（大写）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Delete => "DELETE",
+        }
+    }
+}
+
+/// 统一请求类型（Fetcher + Spider 共用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub url: String,
@@ -27,12 +59,21 @@ pub struct Request {
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
     /// 用户自定义元数据（Spider 场景传递深度、回调等）
-    #[serde(skip)]
+    #[serde(with = "meta_serde")]
     pub meta: Value,
     /// Spider 回调名称
     pub callback: Option<String>,
     /// 优先级（Spider 调度用）
     pub priority: i32,
+    /// 深度：起始 URL 为 0，每 follow 一次 +1。
+    #[serde(default)]
+    pub depth: u32,
+    /// 代理 URL（由 ProxyInjectionMiddleware 设置，引擎读取并应用）。
+    #[serde(skip)]
+    pub proxy: Option<String>,
+    /// 抓取模式覆盖（由 StealthUpgradeMiddleware 等设置，引擎优先使用此模式）。
+    #[serde(skip)]
+    pub fetch_mode_override: Option<FetchMode>,
 }
 
 impl Default for Request {
@@ -45,6 +86,9 @@ impl Default for Request {
             meta: Value::Null,
             callback: None,
             priority: 0,
+            depth: 0,
+            proxy: None,
+            fetch_mode_override: None,
         }
     }
 }
@@ -60,6 +104,9 @@ impl Request {
             meta: Value::Null,
             callback: None,
             priority: 0,
+            depth: 0,
+            proxy: None,
+            fetch_mode_override: None,
         }
     }
 
@@ -73,6 +120,9 @@ impl Request {
             meta: Value::Null,
             callback: None,
             priority: 0,
+            depth: 0,
+            proxy: None,
+            fetch_mode_override: None,
         }
     }
 
@@ -97,6 +147,18 @@ impl Request {
     /// 设置回调名称。
     pub fn with_callback(mut self, cb: &str) -> Self {
         self.callback = Some(cb.to_string());
+        self
+    }
+
+    /// 设置深度。
+    pub fn with_depth(mut self, d: u32) -> Self {
+        self.depth = d;
+        self
+    }
+
+    /// 设置代理 URL。
+    pub fn with_proxy(mut self, proxy: &str) -> Self {
+        self.proxy = Some(proxy.to_string());
         self
     }
 }
@@ -133,9 +195,12 @@ pub struct Response {
     /// 浏览器模式下的 cookies
     pub cookies: Vec<String>,
     /// 发起此响应的请求（用于 follow()）
-    pub request: Option<Request>,
+    pub request: Request,
     /// Content-Type 头（用于编码检测）
-    pub(crate) content_type: String,
+    pub content_type: String,
+    /// 是否来自缓存（缓存命中不算 pages_crawled）。
+    #[doc(hidden)]
+    pub from_cache: bool,
 }
 
 impl Response {
@@ -146,7 +211,7 @@ impl Response {
         headers: HashMap<String, String>,
         body: Vec<u8>,
         content_type: String,
-        request: Option<Request>,
+        request: Request,
     ) -> Self {
         Self {
             status,
@@ -157,6 +222,7 @@ impl Response {
             cookies: Vec::new(),
             request,
             content_type,
+            from_cache: false,
         }
     }
 
@@ -167,7 +233,7 @@ impl Response {
         html: String,
         title: String,
         cookies: Vec<String>,
-        request: Option<Request>,
+        request: Request,
     ) -> Self {
         Self {
             status,
@@ -178,6 +244,7 @@ impl Response {
             cookies,
             request,
             content_type: "text/html; charset=utf-8".to_string(),
+            from_cache: false,
         }
     }
 
@@ -192,7 +259,7 @@ impl Response {
     pub fn json(&self) -> Result<Value> {
         let text = self.text()?;
         serde_json::from_str(&text)
-            .map_err(|e| WispError::CdpError(format!("JSON parse: {e}")))
+            .map_err(|e| WispError::JsonError(format!("JSON parse: {e}")))
     }
 
     /// 状态码是否为 2xx。
@@ -208,6 +275,9 @@ impl Response {
     // === 解析（核心统一点）===
 
     /// 解析 HTML 为文档节点。
+    ///
+    /// 注意：每次调用都会重新解析 HTML。若需多次查询，建议先 `let doc = resp.parse();`
+    /// 再对 `doc` 执行多次 `select()`，避免重复解析。
     pub fn parse(&self) -> Node {
         let text = self.text().unwrap_or_default();
         Node::from_html(&text)
@@ -230,33 +300,26 @@ impl Response {
 
     // === 导航 ===
 
-    /// 从当前响应 URL 解析相对链接，创建 GET 请求。
+    /// 从当前响应 URL 解析相对链接，创建 GET 请求（depth 自动 +1）。
     pub fn follow(&self, href: &str) -> Option<Request> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(Request::get(&absolute))
+        Some(Request::get(&absolute).with_depth(self.request.depth + 1))
     }
 
-    /// 创建带 callback 的跟随请求。
+    /// 创建带 callback 的跟随请求（depth 自动 +1）。
     pub fn follow_with(&self, href: &str, callback: &str) -> Option<Request> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(Request::get(&absolute).with_callback(callback))
+        Some(Request::get(&absolute).with_callback(callback).with_depth(self.request.depth + 1))
     }
 
-    /// 创建带 meta 的跟随请求。
+    /// 创建带 meta 的跟随请求（depth 自动 +1）。
     pub fn follow_meta(&self, href: &str, meta: Value) -> Option<Request> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(Request::get(&absolute).with_meta(meta))
+        Some(Request::get(&absolute).with_meta(meta).with_depth(self.request.depth + 1))
     }
 }
 
-/// 将 href 解析为绝对 URL。
-fn resolve_href(base: &str, href: &str) -> Option<String> {
-    if href.starts_with("http://") || href.starts_with("https://") {
-        return Some(href.to_string());
-    }
-    let base_url = url::Url::parse(base).ok()?;
-    base_url.join(href).ok().map(|u| u.to_string())
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -269,7 +332,7 @@ mod tests {
             HashMap::new(),
             html.as_bytes().to_vec(),
             "text/html; charset=utf-8".to_string(),
-            Some(Request::get("https://example.com/page")),
+            Request::get("https://example.com/page"),
         )
     }
 
@@ -309,7 +372,7 @@ mod tests {
             HashMap::new(),
             br#"{"key": "value"}"#.to_vec(),
             "application/json".to_string(),
-            None,
+            Request::get("https://api.example.com/"),
         );
         let json = resp.json().unwrap();
         assert_eq!(json["key"], "value");
@@ -354,7 +417,7 @@ mod tests {
             "<html><body>Hi</body></html>".to_string(),
             "My Page".to_string(),
             vec!["sid=abc".to_string()],
-            None,
+            Request::get("https://example.com/"),
         );
         assert_eq!(resp.title(), Some("My Page"));
         assert_eq!(resp.cookies, vec!["sid=abc"]);

@@ -90,7 +90,7 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
         .and_then(|v| v.as_u64())
         .unwrap_or(100) as usize;
 
-    use crate::crawl::{Spider, SpiderRequest, SpiderResponse, MaxPages, StopCondition};
+    use crate::crawl::{Spider, Request, Response, MaxPages, StopCondition};
     use async_trait::async_trait;
 
     struct SimpleSpider {
@@ -103,7 +103,7 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
     impl Spider for SimpleSpider {
         fn name(&self) -> &str { "mcp_simple" }
         fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
-        async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
             let text = resp.text().unwrap_or_default();
             let doc = Node::from_html(&text);
             let nodes = doc.select(&self.css);

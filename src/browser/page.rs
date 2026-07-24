@@ -296,12 +296,12 @@ impl Page {
     pub async fn pdf(&self, path: &str) -> Result<()> {
         let result = self.cmd("Page.printToPDF", json!({"printBackground": true})).await?;
         let data = result.get("data").and_then(|d| d.as_str())
-            .ok_or_else(|| WispError::CdpError("no PDF data".into()))?;
+            .ok_or_else(|| WispError::BrowserError("no PDF data".into()))?;
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD.decode(data)
-            .map_err(|e| WispError::CdpError(format!("decode PDF: {e}")))?;
+            .map_err(|e| WispError::BrowserError(format!("decode PDF: {e}")))?;
         tokio::fs::write(path, &bytes).await
-            .map_err(|e| WispError::CdpError(format!("write PDF: {e}")))?;
+            .map_err(|e| WispError::BrowserError(format!("write PDF: {e}")))?;
         Ok(())
     }
 
@@ -448,14 +448,14 @@ async fn wait_for_load(page: &Page) -> Result<()> {
 pub async fn do_screenshot(page: &Page, path: &str) -> Result<()> {
     let bytes = do_screenshot_bytes(page).await?;
     tokio::fs::write(path, &bytes).await
-        .map_err(|e| WispError::CdpError(format!("write: {e}")))?;
+        .map_err(|e| WispError::BrowserError(format!("write: {e}")))?;
     Ok(())
 }
 
 pub async fn do_screenshot_bytes(page: &Page) -> Result<Vec<u8>> {
     let result = page.cmd("Page.captureScreenshot", json!({"format": "png"})).await?;
     let data = result.get("data").and_then(|d| d.as_str())
-        .ok_or_else(|| WispError::CdpError("no screenshot data".into()))?;
+        .ok_or_else(|| WispError::BrowserError("no screenshot data".into()))?;
     base64::engine::general_purpose::STANDARD.decode(data)
-        .map_err(|e| WispError::CdpError(format!("decode: {e}")))
+        .map_err(|e| WispError::BrowserError(format!("decode: {e}")))
 }

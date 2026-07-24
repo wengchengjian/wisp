@@ -30,7 +30,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::crawl::{SpiderRequest, SpiderResponse};
+use crate::crawl::{Request, Response};
 use crate::fetcher::FetchMode;
 
 // === 中间件动作 ===
@@ -47,9 +47,9 @@ pub enum MwAction {
     /// 终止整个爬取，附带原因
     Abort(String),
     /// 用修改后的请求重新获取（用于 Cookie 挑战、JS 重定向等需要"检测→修改→重发"的场景）
-    Refetch(SpiderRequest),
+    Refetch(Request),
     /// 短路：直接返回响应，跳过实际网络请求（用于缓存命中）
-    Respond(SpiderResponse),
+    Respond(Response),
 }
 
 impl PartialEq for MwAction {
@@ -120,17 +120,17 @@ pub trait Middleware: Send + Sync {
     async fn init(&self, _ctx: &CrawlContext) {}
 
     /// 请求发出前拦截（可修改 headers/proxy/body）。
-    async fn process_request(&self, _req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, _req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         MwAction::Continue
     }
 
     /// 响应返回后拦截（可修改/替换响应）。
-    async fn process_response(&self, _resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+    async fn process_response(&self, _resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         MwAction::Continue
     }
 
     /// 错误处理（可决定重试或放弃）。
-    async fn process_error(&self, _req: &SpiderRequest, _err: &str, _ctx: &CrawlContext) -> ErrorAction {
+    async fn process_error(&self, _req: &Request, _err: &str, _ctx: &CrawlContext) -> ErrorAction {
         ErrorAction::Propagate
     }
 }
@@ -191,7 +191,7 @@ impl MiddlewareChain {
     /// 执行请求中间件链。返回 MwAction::Skip/Abort 时中断。
     pub(crate) async fn run_request_middlewares(
         &self,
-        req: &mut SpiderRequest,
+        req: &mut Request,
         ctx: &CrawlContext,
     ) -> MwAction {
         for mw in &self.middlewares {
@@ -206,7 +206,7 @@ impl MiddlewareChain {
     /// 执行响应中间件链。
     pub(crate) async fn run_response_middlewares(
         &self,
-        resp: &mut SpiderResponse,
+        resp: &mut Response,
         ctx: &CrawlContext,
     ) -> MwAction {
         for mw in &self.middlewares {
@@ -221,7 +221,7 @@ impl MiddlewareChain {
     /// 执行错误中间件链。任一返回 Retry 则重试。
     pub(crate) async fn run_error_middlewares(
         &self,
-        req: &SpiderRequest,
+        req: &Request,
         err: &str,
         ctx: &CrawlContext,
     ) -> ErrorAction {

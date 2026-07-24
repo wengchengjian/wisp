@@ -6,13 +6,13 @@
 
 use std::collections::HashSet;
 use serde::{Serialize, Deserialize};
-use crate::crawl::{SpiderRequest, CrawlStats};
+use crate::crawl::{Request, CrawlStats};
 
 /// Serializable crawl state for checkpoint persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrawlState {
     pub spider_name: String,
-    pub pending_urls: Vec<SpiderRequest>,
+    pub pending_urls: Vec<Request>,
     pub seen_urls: HashSet<String>,
     pub items_scraped: usize,
     pub pages_crawled: usize,
@@ -38,7 +38,7 @@ impl CrawlState {
     }
 
     /// 从 CrawlStats 构造（snapshot 用）。
-    pub fn from_stats(spider_name: String, stats: &CrawlStats, pending: Vec<SpiderRequest>) -> Self {
+    pub fn from_stats(spider_name: String, stats: &CrawlStats, pending: Vec<Request>) -> Self {
         Self {
             spider_name,
             pending_urls: pending,

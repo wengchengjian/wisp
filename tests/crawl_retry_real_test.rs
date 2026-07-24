@@ -1,7 +1,7 @@
 //! 真实环境测试：重试机制。cargo test --test crawl_retry_real_test -- --ignored 运行。
 
 use async_trait::async_trait;
-use wisp::crawl::{Spider, SpiderRequest, SpiderResponse, Engine};
+use wisp::crawl::{Spider, Request, Response, Engine};
 use serde_json::Value;
 
 struct RetrySpider;
@@ -15,7 +15,7 @@ impl Spider for RetrySpider {
     fn max_retries(&self) -> u32 { 2 }
     fn download_delay(&self) -> std::time::Duration { std::time::Duration::from_millis(100) }
     fn obey_robots(&self) -> bool { false }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
 }
@@ -43,7 +43,7 @@ async fn test_retry_on_500_then_success() {
         fn start_urls(&self) -> Vec<String> { vec!["https://httpbin.org/status/200".to_string()] }
         fn max_retries(&self) -> u32 { 2 }
         fn obey_robots(&self) -> bool { false }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) { (vec![], vec![]) }
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) { (vec![], vec![]) }
     }
     let engine = Engine::infra().max_pages(1).build().unwrap();
     let (stats, _items) = engine.run(OkSpider).await.unwrap();

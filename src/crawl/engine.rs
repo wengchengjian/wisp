@@ -14,13 +14,12 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::stats::SpiderStats;
 use super::{
     auto, control, middleware, robots, scheduler, CrawlEvent, CrawlState, CrawlStats, Method,
-    Spider, SpiderRequest, SpiderResponse,
+    Spider, Request, Response,
 };
 use crate::error::Result;
 use crate::fetcher::FetchMode;
@@ -56,8 +55,8 @@ pub(crate) struct EngineConfig {
 pub(crate) struct EngineShared {
     pub sched: Arc<scheduler::Scheduler>,
     pub robots_cache: Arc<Mutex<robots::RobotsCache>>,
-    pub follow_tx: tokio::sync::mpsc::UnboundedSender<SpiderRequest>,
-    pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<SpiderRequest>>>,
+    pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
+    pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Request>>>,
     pub domain_sems: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）
     pub proxy_clients: Arc<DashMap<String, Arc<Client>>>,
@@ -82,226 +81,47 @@ pub(crate) struct EngineState {
 
 // === 核心函数：处理单个请求 ===
 
-/// 请求过滤结果。
-enum FilterAction {
-    /// 继续处理
-    Proceed,
-    /// 跳过此请求
-    Skip,
-    /// 中止整个爬取
-    Abort,
-    /// 延迟后继续
-    Delay(Duration),
-}
-
-/// 缓存检查结果。
-enum CacheResult {
-    /// 缓存命中，直接处理此响应
-    Hit(Box<SpiderResponse>),
-    /// 未命中，继续网络请求
-    Miss,
-}
-
-/// Stage 1: 请求过滤检查（域名/深度/控制状态/异步钩子）。
-///
-/// 返回 FilterAction::Proceed 表示继续；其他表示终止此请求的处理。
-async fn check_request_filters(ctx: &EngineContext, req: &SpiderRequest) -> FilterAction {
-    let stats = &ctx.state.stats;
-    let allowed = &ctx.config.allowed;
-
-    // 1. 域名过滤
-    if !allowed.is_empty() {
-        if let Ok(parsed) = url::Url::parse(&req.url) {
-            if let Some(host) = parsed.host_str() {
-                if !allowed.contains(host) {
-                    stats.offsite.fetch_add(1, Ordering::SeqCst);
-                    return FilterAction::Skip;
-                }
-            }
-        }
-    }
-
-    // 1.5. 深度检查
-    if req.depth > ctx.config.max_depth {
-        return FilterAction::Skip;
-    }
-
-    // 1.6. per-Engine 控制状态检查
+/// Stage 1: 控制状态检查 + Spider 钩子（基础设施级，不可中间件化）。
+async fn check_control_and_hook(ctx: &EngineContext, req: &Request) -> bool {
+    // per-Engine 控制状态检查
     if ctx.shared.control.is_cancelled(&req.url).await {
-        return FilterAction::Skip;
+        return false;
     }
     if !ctx.shared.control.wait_if_paused(&req.url).await {
-        return FilterAction::Skip;
+        return false;
     }
     if ctx.shared.control.is_shutdown() {
-        return FilterAction::Skip;
+        return false;
     }
-
-    // 1.7. 异步钩子检查
+    // Spider 异步钩子
     match ctx.state.spider.on_before_request(req).await {
-        super::RequestAction::Proceed => FilterAction::Proceed,
-        super::RequestAction::Skip => FilterAction::Skip,
-        super::RequestAction::Delay(d) => FilterAction::Delay(d),
-        super::RequestAction::Abort => FilterAction::Abort,
+        super::RequestAction::Proceed => true,
+        super::RequestAction::Skip => false,
+        super::RequestAction::Delay(d) => {
+            tokio::time::sleep(d).await;
+            true
+        }
+        super::RequestAction::Abort => {
+            ctx.state.abort_flag.store(true, Ordering::SeqCst);
+            false
+        }
     }
 }
 
-/// Stage 3: 缓存检查（RequestCache 内存缓存 + dev_mode SQLite 缓存）。
-///
-/// 返回 CacheResult::Hit(resp) 表示命中缓存，直接处理响应；
-/// 返回 CacheResult::Miss 表示未命中，继续网络请求。
-async fn check_request_caches(
-    ctx: &EngineContext,
-    req: &SpiderRequest,
-    method_str: &str,
-) -> CacheResult {
-    let stats = &ctx.state.stats;
-
-    // 内存缓存检查 (RequestCache)
-    if let Some(ref rc) = ctx.shared.request_cache {
-        if let Some(entry) = rc.get(method_str, &req.url).await {
-            let resp = SpiderResponse {
-                url: req.url.clone(),
-                status: entry.status,
-                headers: entry.headers,
-                body: entry.body,
-                request: req.clone(),
-                from_cache: true,
-            };
-            stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-            record_status(stats, resp.status);
-            return CacheResult::Hit(Box::new(resp));
-        }
-    }
-
-    // 开发模式 SQLite 缓存检查
-    if ctx.config.dev_mode {
-        if let Some(ref store) = ctx.shared.cache_store {
-            if let Some(cached) = store
-                .load_cached_response(&req.url, method_str)
-                .ok()
-                .flatten()
-            {
-                let resp = SpiderResponse {
-                    url: req.url.clone(),
-                    status: cached.status,
-                    headers: cached.headers,
-                    body: cached.body,
-                    request: req.clone(),
-                    from_cache: true,
-                };
-                stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-                record_status(stats, resp.status);
-                return CacheResult::Hit(Box::new(resp));
-            }
-        }
-    }
-
-    CacheResult::Miss
-}
-
-/// Stage 4: robots 检查 → 域名信号量 → 延迟 → fetch_dispatch → 缓存写入。
-///
-/// 返回 (Option<SpiderResponse>, Option<String>) — 成功返回 resp，失败返回 error。
-async fn acquire_and_fetch(
-    ctx: &EngineContext,
-    req: &SpiderRequest,
-    method_str: &str,
-) -> (Option<SpiderResponse>, Option<String>) {
-    let obey_robots = ctx.config.obey_robots;
-    let max_concurrent = ctx.config.max_concurrent;
-
-    // robots 检查
-    if obey_robots {
-        let allowed_flag = {
-            let mut rc = ctx.shared.robots_cache.lock().await;
-            rc.is_allowed(ctx.config.client.http(), &req.url).await
-        };
-        if !allowed_flag {
-            return (None, None);
-        }
-    }
-
-    // 域名信号量
-    let domain = url::Url::parse(&req.url)
-        .ok()
-        .and_then(|u| u.host_str().map(|s| s.to_string()))
-        .unwrap_or_default();
-    let sem = {
-        ctx.shared
-            .domain_sems
-            .entry(domain)
-            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
-            .clone()
-    };
-    let Ok(_permit) = sem.acquire_owned().await else {
-        tracing::warn!("domain semaphore closed, skipping: {}", req.url);
-        return (None, None);
-    };
-
-    // 延迟
-    apply_delay(ctx, &req.url, &ctx.state.spider, obey_robots).await;
-
-    // 带重试的抓取
-    let (resp, err) = fetch_dispatch(ctx, req).await;
-
-    // 开发模式缓存保存
-    if ctx.config.dev_mode {
-        if let Some(ref store) = ctx.shared.cache_store {
-            if let Some(ref resp) = resp {
-                let cached = crate::storage::CachedResponse {
-                    status: resp.status,
-                    headers: resp.headers.clone(),
-                    body: resp.body.clone(),
-                    cached_at: chrono::Utc::now().timestamp(),
-                };
-                let _ = store.save_cached_response(&req.url, method_str, &cached);
-            }
-        }
-    }
-
-    // 写入 RequestCache
-    if let Some(ref rc) = ctx.shared.request_cache {
-        if let Some(ref resp) = resp {
-            rc.put(
-                method_str,
-                &req.url,
-                super::request_cache::CachedEntry {
-                    status: resp.status,
-                    headers: resp.headers.clone(),
-                    body: resp.body.clone(),
-                },
-            )
-            .await;
-        }
-    }
-
-    (resp, err)
-}
-
-/// 处理单个请求的完整流程（编排层）。
+/// 处理单个请求的完整流程（纯管道编排）。
 ///
 /// Stages:
-/// 1. check_request_filters — 域名/深度/控制/钩子
-/// 2. 中间件请求拦截（可能短路）
-/// 3. check_request_caches — RequestCache + dev_mode 缓存
-/// 4. acquire_and_fetch — robots + 信号量 + 延迟 + fetch_dispatch + 缓存写入
-/// 5. process_response — handle + items + events（已存在）
-pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
-    // 1. 过滤检查
-    match check_request_filters(ctx, &req).await {
-        FilterAction::Proceed => {}
-        FilterAction::Skip => return,
-        FilterAction::Abort => {
-            ctx.state.abort_flag.store(true, Ordering::SeqCst);
-            return;
-        }
-        FilterAction::Delay(d) => {
-            tokio::time::sleep(d).await;
-        }
+/// 1. 控制状态 + Spider 钩子（基础设施）
+/// 2. 中间件请求链（域名/深度/robots/缓存/延迟/UA/代理 全部在此）
+/// 3. 域名信号量（并发控制）+ fetch
+/// 4. process_response（中间件响应链 + handle + items + events）
+pub(crate) async fn process_request(ctx: &EngineContext, req: Request) {
+    // 1. 控制状态 + Spider 钩子
+    if !check_control_and_hook(ctx, &req).await {
+        return;
     }
 
-    // 2. 中间件请求拦截
+    // 2. 中间件请求链（所有策略过滤在此发生）
     let mut req = req;
     let stats = &ctx.state.stats;
     if !ctx.shared.middleware_chain.is_empty() {
@@ -318,33 +138,20 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
                 return;
             }
             middleware::MwAction::Respond(cached_resp) => {
-                // 中间件短路（如缓存命中），跳过网络请求直接处理响应
                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
                 record_status(stats, cached_resp.status);
                 return process_response(ctx, cached_resp).await;
             }
-            // Continue / Modified / Refetch：继续正常请求流程
             middleware::MwAction::Continue
             | middleware::MwAction::Modified
             | middleware::MwAction::Refetch(_) => {}
         }
     }
 
-    // 提前计算 method_str（缓存查询与写入都需要）
-    let method_str = req.method.as_str();
+    // 3. 域名信号量（并发控制）+ 抓取
+    let (final_resp, last_error) = acquire_and_fetch(ctx, &req).await;
 
-    // 3. 缓存检查
-    match check_request_caches(ctx, &req, method_str).await {
-        CacheResult::Hit(resp) => {
-            return process_response(ctx, *resp).await;
-        }
-        CacheResult::Miss => {}
-    }
-
-    // 4. robots + 信号量 + 延迟 + 抓取 + 缓存写入
-    let (final_resp, last_error) = acquire_and_fetch(ctx, &req, method_str).await;
-
-    // 5. 处理结果
+    // 4. 处理结果
     if let Some(resp) = final_resp {
         process_response(ctx, resp).await;
     } else if let Some(err) = last_error {
@@ -365,7 +172,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
 /// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
 pub(crate) async fn process_response(
     ctx: &EngineContext,
-    resp: SpiderResponse,
+    resp: Response,
 ) {
     let spider = &ctx.state.spider;
     let stats = &ctx.state.stats;
@@ -465,114 +272,89 @@ pub(crate) async fn process_response(
 
 // === 抓取分发 ===
 
-/// 抓取分发：fetch → blocked 检测 → transport 级重试 fallback。
+/// 域名信号量（并发控制）+ 单次抓取。
 ///
-/// 注意：blocked 重试和 error 重试已分别由 BlockedRetryMiddleware / RetryMiddleware
-/// 通过 Refetch / ErrorAction::Retry 承担。此函数保留为无中间件时的 fallback。
+/// robots/延迟/缓存均已移至中间件，此函数仅保留不可中间件化的并发控制。
+async fn acquire_and_fetch(
+    ctx: &EngineContext,
+    req: &Request,
+) -> (Option<Response>, Option<String>) {
+    // 域名信号量（基础设施：per-domain 并发控制）
+    let domain = url::Url::parse(&req.url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let sem = {
+        ctx.shared
+            .domain_sems
+            .entry(domain)
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(ctx.config.max_concurrent)))
+            .clone()
+    };
+    let Ok(_permit) = sem.acquire_owned().await else {
+        tracing::warn!("domain semaphore closed, skipping: {}", req.url);
+        return (None, None);
+    };
+
+    fetch_dispatch(ctx, req).await
+}
+
+/// 抓取分发：单次 fetch，无内联重试。
+///
+/// 重试逻辑完全由中间件承担（即插即用）：
+/// - blocked 重试：`BlockedRetryMiddleware` 通过 `MwAction::Refetch` 在 `process_response` 中处理
+/// - 网络错误重试：`RetryMiddleware` 通过 `ErrorAction::Retry` 在 `process_error` 中处理
+/// - 中间件链由上层配置模式（如 auto）统一注入，Engine 仅提供基础设施。
 async fn fetch_dispatch(
     ctx: &EngineContext,
-    req: &SpiderRequest,
-) -> (Option<SpiderResponse>, Option<String>) {
-    let spider = &ctx.state.spider;
+    req: &Request,
+) -> (Option<Response>, Option<String>) {
     let stats = &ctx.state.stats;
-    let fetch_mode = ctx.config.fetch_mode;
-    let rule_engine = &ctx.shared.rule_engine;
-    let max_retries = spider.max_retries();
-    let mut attempt: u32 = 0;
-
-    loop {
-        attempt += 1;
-        let proxy = req.proxy.clone();
-        match fetch_page(
-            &ctx.config.client,
-            req,
-            proxy.as_deref(),
-            fetch_mode,
-            rule_engine,
-            &ctx.shared.proxy_clients,
-        )
-        .await
-        {
-            Ok(resp) => {
-                record_status(stats, resp.status);
-                if spider.is_blocked(&resp) {
-                    stats.blocked.fetch_add(1, Ordering::SeqCst);
-                    // attempt 从 1 起；attempt <= max_retries 表示还能重试，
-                    // 故 max_retries=3 时实际尝试 4 次（attempt 1..=4）。
-                    if attempt <= max_retries {
-                        stats.retries.fetch_add(1, Ordering::SeqCst);
-                        let delay = spider.download_delay();
-                        if delay > Duration::ZERO {
-                            tokio::time::sleep(delay).await;
-                        }
-                        tracing::warn!(
-                            "blocked (status={}, attempt={}/{}), retrying: {}",
-                            resp.status,
-                            attempt,
-                            max_retries,
-                            req.url
-                        );
-                        continue;
-                    }
-                    stats.errors.fetch_add(1, Ordering::SeqCst);
-                    spider
-                        .on_error(
-                            req,
-                            &format!(
-                                "blocked after {} retries (status={})",
-                                max_retries, resp.status
-                            ),
-                        )
-                        .await;
-                    return (
-                        None,
-                        Some(format!(
-                            "blocked after {} retries (status={}, total attempts={})",
-                            max_retries, resp.status, attempt
-                        )),
-                    );
-                }
-                return (Some(resp), None);
+    let proxy = req.proxy.clone();
+    match fetch_page(
+        &ctx.config.client,
+        req,
+        proxy.as_deref(),
+        ctx.config.fetch_mode,
+        &ctx.shared.rule_engine,
+        &ctx.shared.proxy_clients,
+    )
+    .await
+    {
+        Ok(resp) => {
+            record_status(stats, resp.status);
+            if ctx.state.spider.is_blocked(&resp) {
+                stats.blocked.fetch_add(1, Ordering::SeqCst);
             }
-            Err(e) => {
-                // 中间件链：错误处理（可决定重试或放弃）
-                if !ctx.shared.middleware_chain.is_empty() {
-                    let crawl_ctx = build_crawl_context(ctx);
-                    if let middleware::ErrorAction::Retry = ctx
-                        .shared
-                        .middleware_chain
-                        .run_error_middlewares(req, &e.to_string(), &crawl_ctx)
-                        .await
-                    {
+            (Some(resp), None)
+        }
+        Err(e) => {
+            // 中间件错误处理（即插即用）
+            if !ctx.shared.middleware_chain.is_empty() {
+                let crawl_ctx = build_crawl_context(ctx);
+                if let middleware::ErrorAction::Retry = ctx
+                    .shared
+                    .middleware_chain
+                    .run_error_middlewares(req, &e.to_string(), &crawl_ctx)
+                    .await
+                {
+                    // 中间件决定重试 — 引擎提供 max_retries 硬上限防止无限循环
+                    let attempt = req.meta.get("_retry").and_then(|v| v.as_u64()).unwrap_or(0);
+                    if attempt < ctx.state.spider.max_retries() as u64 {
                         stats.retries.fetch_add(1, Ordering::SeqCst);
-                        continue;
+                        // 重新派发：通过 follow_tx 将请求重新入队（带 _retry 计数）
+                        let mut retry_req = req.clone();
+                        retry_req.meta["_retry"] = serde_json::json!(attempt + 1);
+                        let _ = ctx.shared.follow_tx.send(retry_req);
+                        ctx.shared.work_notify.notify_one();
+                        return (None, None);
                     }
                 }
-                if attempt <= max_retries {
-                    stats.retries.fetch_add(1, Ordering::SeqCst);
-                    let delay = spider.download_delay();
-                    if delay > Duration::ZERO {
-                        tokio::time::sleep(delay).await;
-                    }
-                    tracing::warn!(
-                        "fetch error (attempt={}/{}): {} - {}",
-                        attempt,
-                        max_retries,
-                        e,
-                        req.url
-                    );
-                    continue;
-                }
-                stats.errors.fetch_add(1, Ordering::SeqCst);
-                spider.on_error(req, &e.to_string()).await;
-                return (
-                    None,
-                    Some(format!(
-                        "fetch failed after {} retries (total attempts={}): {}",
-                        max_retries, attempt, e
-                    )),
-                );
             }
+            // 重试耗尽或无中间件
+            stats.errors.fetch_add(1, Ordering::SeqCst);
+            ctx.state.spider.on_error(req, &e.to_string()).await;
+            (None, Some(format!("fetch failed: {} - {}", e, req.url)))
         }
     }
 }
@@ -604,24 +386,6 @@ pub fn record_status(stats: &Arc<SpiderStats>, status: u16) {
         .or_insert(AtomicUsize::new(1));
 }
 
-async fn apply_delay(ctx: &EngineContext, url: &str, spider: &Arc<dyn Spider>, obey_robots: bool) {
-    let mut delay = spider.download_delay();
-    if obey_robots {
-        let robots_delay = {
-            let mut rc = ctx.shared.robots_cache.lock().await;
-            rc.crawl_delay(ctx.config.client.http(), url).await
-        };
-        if let Some(secs) = robots_delay {
-            let robots_dur = Duration::from_secs_f64(secs);
-            if robots_dur > delay {
-                delay = robots_dur;
-            }
-        }
-    }
-    if delay > Duration::ZERO {
-        tokio::time::sleep(delay).await;
-    }
-}
 
 /// 从单个 SpiderStats 构造 CrawlStats 快照。
 pub(crate) fn snapshot_stats_for(
@@ -682,12 +446,12 @@ pub(crate) async fn save_checkpoint(
 #[doc(hidden)]
 pub async fn fetch_page(
     fetch_client: &crate::fetcher::FetchClient,
-    req: &SpiderRequest,
+    req: &Request,
     proxy_url: Option<&str>,
     mode: FetchMode,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
     proxy_clients: &DashMap<String, Arc<Client>>,
-) -> Result<SpiderResponse> {
+) -> Result<Response> {
     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
     if let Some(override_mode) = req.fetch_mode_override {
         return fetch_page_inner(fetch_client, req, proxy_url, override_mode, proxy_clients)
@@ -721,11 +485,11 @@ pub async fn fetch_page(
 #[doc(hidden)]
 pub async fn fetch_page_inner(
     fetch_client: &crate::fetcher::FetchClient,
-    req: &SpiderRequest,
+    req: &Request,
     proxy_url: Option<&str>,
     mode: FetchMode,
     proxy_clients: &DashMap<String, Arc<Client>>,
-) -> Result<SpiderResponse> {
+) -> Result<Response> {
     // 浏览器模式：通过 BrowserPool 复用实例（RAII 自动归还，无泄漏）
     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
         let solve_cf = mode == FetchMode::Stealth;
@@ -743,12 +507,15 @@ pub async fn fetch_page_inner(
             ..Default::default()
         };
         let resp = fetch_client.fetch_browser(&fetch_req, solve_cf).await?;
-        return Ok(SpiderResponse {
+        return Ok(Response {
             url: resp.url.clone(),
             status: resp.status,
             headers: resp.headers.clone(),
             body: resp.body.clone(),
+            title: resp.title.clone(),
+            cookies: resp.cookies.clone(),
             request: req.clone(),
+            content_type: String::new(),
             from_cache: false,
         });
     }
@@ -802,12 +569,15 @@ pub async fn fetch_page_inner(
         Method::Delete => use_client.delete(&req.url, &extra_headers).await?,
     };
 
-    Ok(SpiderResponse {
+    Ok(Response {
         url: resp.url.clone(),
         status: resp.status,
         headers: resp.headers.clone(),
         body: resp.body.clone(),
+        title: None,
+        cookies: Vec::new(),
         request: req.clone(),
+        content_type: resp.headers.get("content-type").cloned().unwrap_or_default(),
         from_cache: false,
     })
 }
@@ -841,7 +611,7 @@ mod tests {
         fn start_urls(&self) -> Vec<String> {
             vec![]
         }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![], vec![])
         }
     }
@@ -850,7 +620,7 @@ mod tests {
     /// 返回上下文与对应 stats 的 Arc 克隆，便于测试断言计数器。
     fn make_ctx() -> (EngineContext, Arc<SpiderStats>) {
         let stats = Arc::new(SpiderStats::new());
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
+        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
         let ctx = EngineContext {
             config: EngineConfig {
                 client: Arc::new(
@@ -895,14 +665,17 @@ mod tests {
         (ctx, stats)
     }
 
-    /// 构造最小 SpiderResponse，仅 from_cache 字段可变。
-    fn make_resp(from_cache: bool) -> SpiderResponse {
-        SpiderResponse {
+    /// 构造最小 Response，仅 from_cache 字段可变。
+    fn make_resp(from_cache: bool) -> Response {
+        Response {
             url: "http://example.com/page".into(),
             status: 200,
             headers: HashMap::new(),
             body: vec![],
-            request: SpiderRequest::get("http://example.com/page"),
+            title: None,
+            cookies: Vec::new(),
+            request: Request::get("http://example.com/page"),
+            content_type: String::new(),
             from_cache,
         }
     }
@@ -943,10 +716,10 @@ mod tests {
         let sched = scheduler::Scheduler::new();
         // push 两个 URL：进入 heap 与 seen 集合
         sched
-            .push(SpiderRequest::get("https://example.com/a"))
+            .push(Request::get("https://example.com/a"))
             .await;
         sched
-            .push(SpiderRequest::get("https://example.com/b"))
+            .push(Request::get("https://example.com/b"))
             .await;
 
         let stats = Arc::new(SpiderStats::new());

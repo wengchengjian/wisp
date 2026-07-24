@@ -1,25 +1,28 @@
 //! callback label 路由测试。
 //!
 //! 验证 ClosureSpider 的 `handle()` 方法根据 `resp.request.callback` 字段
-//! 路由到对应 handler 的逻辑。不依赖真实 HTTP 请求，直接构造 SpiderResponse。
+//! 路由到对应 handler 的逻辑。不依赖真实 HTTP 请求，直接构造 Response。
 
-use wisp::crawl::{Spider, SpiderBuilder, SpiderRequest, SpiderResponse};
+use wisp::crawl::{Spider, SpiderBuilder, Request, Response};
 use wisp::crawl::stop::MaxPages;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-/// 构造测试用 SpiderResponse。
-fn make_resp(url: &str, body: &str, callback: Option<&str>) -> SpiderResponse {
-    let mut req = SpiderRequest::get(url);
+/// 构造测试用 Response。
+fn make_resp(url: &str, body: &str, callback: Option<&str>) -> Response {
+    let mut req = Request::get(url);
     if let Some(cb) = callback {
         req = req.with_callback(cb);
     }
-    SpiderResponse {
+    Response {
         url: url.to_string(),
         status: 200,
         headers: HashMap::new(),
         body: body.as_bytes().to_vec(),
         request: req,
+        title: None,
+        cookies: Vec::new(),
+        content_type: String::new(),
         from_cache: false,
     }
 }
@@ -190,7 +193,7 @@ async fn test_spider_trait_default_handle_calls_parse() {
     impl Spider for PlainSpider {
         fn name(&self) -> &str { "plain" }
         fn start_urls(&self) -> Vec<String> { vec![] }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![json!({"default_handle": true})], vec![])
         }
     }

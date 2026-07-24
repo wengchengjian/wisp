@@ -15,7 +15,7 @@ fn html_response(html: &str) -> Response {
         Default::default(),
         html.as_bytes().to_vec(),
         "text/html; charset=utf-8".to_string(),
-        Some(Request::get("https://quotes.toscrape.com/")),
+        Request::get("https://quotes.toscrape.com/"),
     )
 }
 
@@ -83,7 +83,7 @@ fn test_unified_response_json() {
         Default::default(),
         br#"{"quotes": [{"text": "hello", "author": "world"}]}"#.to_vec(),
         "application/json".to_string(),
-        None,
+        Request::get("https://api.example.com/data"),
     );
 
     let json = resp.json().unwrap();

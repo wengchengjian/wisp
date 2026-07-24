@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use wisp::crawl::engine::fetch_page_inner;
-use wisp::crawl::SpiderRequest;
+use wisp::crawl::Request;
 use wisp::fetcher::{FetchClient, FetchClientConfig, FetchMode};
 
 #[tokio::test]
@@ -10,7 +10,7 @@ async fn proxy_clients_caches_client_per_proxy_url() {
     // proxy_clients 暴露为 DashMap，验证相同 proxy 两次 fetch 只产生一个缓存条目
     let fetch_client = FetchClient::new(FetchClientConfig::default()).unwrap();
     let proxy_clients = Arc::new(dashmap::DashMap::new());
-    let req = SpiderRequest::get("http://127.0.0.1:1/unreachable");
+    let req = Request::get("http://127.0.0.1:1/unreachable");
 
     // 两次 fetch 同一 proxy（连接会失败，但 Client 应被缓存）
     for _ in 0..2 {

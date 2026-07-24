@@ -8,7 +8,7 @@
 use std::time::Duration;
 use wisp::http::Client;
 use wisp::parser::Node;
-use wisp::crawl::{Engine, SpiderBuilder, SpiderResponse, SpiderRequest};
+use wisp::crawl::{Engine, SpiderBuilder, Response, Request};
 use wisp::proxy::RotationStrategy;
 use wreq_util::Profile;
 use serde_json::Value;
@@ -56,7 +56,7 @@ async fn test_quotes_full_crawl_10_pages() {
         .delay_ms(200)
         .obey_robots(false)
         .on("default", |resp| async move {
-            let doc = resp.parse().unwrap();
+            let doc = resp.parse();
             let items: Vec<Value> = doc.select(".quote").iter().map(|q| {
                 serde_json::json!({
                     "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
@@ -66,11 +66,10 @@ async fn test_quotes_full_crawl_10_pages() {
             }).collect();
 
             // 跟踪分页
-            let follows: Vec<SpiderRequest> = doc.select_one(".next a")
+            let follows: Vec<Request> = doc.select_one(".next a")
                 .and_then(|a| a.attr("href"))
                 .and_then(|href| resp.follow(&href))
-                .map(|r| vec![r])
-                .unwrap_or_default();
+                .into_iter().collect();
 
             (items, follows)
         })
@@ -193,13 +192,16 @@ async fn test_response_follow_pagination() {
     let fetch_resp = resp.unwrap();
     let doc = fetch_resp.parse().unwrap();
 
-    // 构造 SpiderResponse 来测试 follow()
-    let spider_resp = SpiderResponse {
+    // 构造 Response 来测试 follow()
+    let spider_resp = Response {
         url: "https://quotes.toscrape.com/".into(),
         status: 200,
         headers: Default::default(),
         body: fetch_resp.body.clone(),
-        request: SpiderRequest::get("https://quotes.toscrape.com/"),
+        request: Request::get("https://quotes.toscrape.com/"),
+        title: None,
+        cookies: Vec::new(),
+        content_type: String::new(),
         from_cache: false,
     };
 
@@ -259,7 +261,7 @@ async fn test_spider_builder_engine_integration() {
         .obey_robots(false)
         .max_retries(2)
         .on("default", |resp| async move {
-            let doc = resp.parse().unwrap();
+            let doc = resp.parse();
             let items: Vec<Value> = doc.select("article.product_pod").iter().map(|book| {
                 serde_json::json!({
                     "title": book.select_one("h3 a").and_then(|a| a.attr("title")).unwrap_or_default(),
@@ -268,11 +270,10 @@ async fn test_spider_builder_engine_integration() {
             }).collect();
 
             // 跟踪下一页
-            let follows: Vec<SpiderRequest> = doc.select_one("li.next a")
+            let follows: Vec<Request> = doc.select_one("li.next a")
                 .and_then(|a| a.attr("href"))
                 .and_then(|href| resp.follow(&href))
-                .map(|r| vec![r])
-                .unwrap_or_default();
+                .into_iter().collect();
 
             (items, follows)
         })

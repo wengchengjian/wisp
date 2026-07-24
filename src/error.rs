@@ -43,6 +43,15 @@ pub enum WispError {
 
     #[error("Parse error: {0}")]
     ParseError(String),
+
+    #[error("HTTP error: {0}")]
+    HttpError(String),
+
+    #[error("JSON error: {0}")]
+    JsonError(String),
+
+    #[error("Browser error: {0}")]
+    BrowserError(String),
 }
 
 pub type Result<T> = std::result::Result<T, WispError>;

@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use wisp::crawl::{Engine, Spider, SpiderRequest, SpiderResponse};
+use wisp::crawl::{Engine, Spider, Request, Response};
 use wisp::storage::Store;
 
 struct CacheSpider;
@@ -21,7 +21,7 @@ impl Spider for CacheSpider {
     fn obey_robots(&self) -> bool {
         false
     }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let text = resp.text().unwrap_or_default();
         assert!(text.contains("httpbin.org"), "响应应来自 httpbin");
         (vec![], vec![])

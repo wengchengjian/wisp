@@ -3,7 +3,7 @@
 use std::time::Duration;
 use serde_json::{json, Value};
 use wisp::crawl::{
-    Spider, SpiderBuilder, Engine, SpiderRequest, SpiderResponse,
+    Spider, SpiderBuilder, Engine, Request, Response,
 };
 use wisp::crawl::CrawlEvent;
 use wisp::parser::Node;
@@ -46,21 +46,24 @@ async fn test_spider_builder_parse_with_follow() {
     let spider = SpiderBuilder::new("follow-test")
         .start_urls(vec!["https://example.com/"])
         .on("default", |resp| async move {
-            let doc = resp.parse().unwrap();
+            let doc = resp.parse();
             let items: Vec<Value> = doc.select("h1").text().into_iter()
                 .map(|t| json!({"title": t}))
                 .collect();
-            let follows = vec![SpiderRequest::get("https://example.com/page2")];
+            let follows = vec![Request::get("https://example.com/page2")];
             (items, follows)
         })
         .build();
 
-    let resp = SpiderResponse {
+    let resp = Response {
         url: "https://example.com/".into(),
         status: 200,
         headers: Default::default(),
         body: b"<html><body><h1>Home</h1></body></html>".to_vec(),
-        request: SpiderRequest::get("https://example.com/"),
+        request: Request::get("https://example.com/"),
+        title: None,
+        cookies: Vec::new(),
+        content_type: String::new(),
         from_cache: false,
     };
 
@@ -70,16 +73,19 @@ async fn test_spider_builder_parse_with_follow() {
     assert_eq!(follows.len(), 1);
 }
 
-// === SpiderResponse.follow() tests ===
+// === Response.follow() tests ===
 
 #[test]
 fn test_response_follow_absolute_url() {
-    let resp = SpiderResponse {
+    let resp = Response {
         url: "https://example.com/page1".into(),
         status: 200,
         headers: Default::default(),
         body: vec![],
-        request: SpiderRequest::get("https://example.com/page1"),
+        request: Request::get("https://example.com/page1"),
+        title: None,
+        cookies: Vec::new(),
+        content_type: String::new(),
         from_cache: false,
     };
     let req = resp.follow("https://other.com/page2").unwrap();
@@ -88,12 +94,15 @@ fn test_response_follow_absolute_url() {
 
 #[test]
 fn test_response_follow_relative_path() {
-    let resp = SpiderResponse {
+    let resp = Response {
         url: "https://example.com/dir/page1".into(),
         status: 200,
         headers: Default::default(),
         body: vec![],
-        request: SpiderRequest::get("https://example.com/dir/page1"),
+        request: Request::get("https://example.com/dir/page1"),
+        title: None,
+        cookies: Vec::new(),
+        content_type: String::new(),
         from_cache: false,
     };
     let req = resp.follow("/page2").unwrap();
@@ -102,12 +111,15 @@ fn test_response_follow_relative_path() {
 
 #[test]
 fn test_response_follow_with_callback() {
-    let resp = SpiderResponse {
+    let resp = Response {
         url: "https://example.com/".into(),
         status: 200,
         headers: Default::default(),
         body: vec![],
-        request: SpiderRequest::get("https://example.com/"),
+        request: Request::get("https://example.com/"),
+        title: None,
+        cookies: Vec::new(),
+        content_type: String::new(),
         from_cache: false,
     };
     let req = resp.follow_with("/detail", "parse_detail").unwrap();
@@ -147,7 +159,7 @@ async fn test_engine_builder_local_server() {
         .start_urls(vec![base_url])
         .obey_robots(false)
         .on("default", |resp| async move {
-            let doc = resp.parse().unwrap();
+            let doc = resp.parse();
             let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
             (vec![json!({"title": title})], vec![])
         })
@@ -228,7 +240,7 @@ async fn test_stream_with_builder() {
         .start_urls(vec![base_url])
         .obey_robots(false)
         .on("default", |resp| async move {
-            let doc = resp.parse().unwrap();
+            let doc = resp.parse();
             let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
             (vec![json!({"text": text})], vec![])
         })

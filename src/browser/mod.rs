@@ -20,6 +20,7 @@ use tokio::process::Child;
 
 use crate::config::LaunchOptions;
 use crate::error::{WispError, Result};
+use crate::utils::rand_suffix;
 
 
 pub struct Browser {
@@ -137,9 +138,4 @@ impl Drop for Browser {
     }
 }
 
-/// Generate a short random suffix for unique temp dirs.
-fn rand_suffix() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
-    format!("{:x}", nanos)
-}
+

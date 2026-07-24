@@ -1,6 +1,6 @@
 //! Verify checkpoint save/load round-trip.
 
-use wisp::crawl::{CrawlState, SpiderRequest, CrawlStats};
+use wisp::crawl::{CrawlState, Request, CrawlStats};
 use wisp::storage::Store;
 use std::collections::HashSet;
 
@@ -15,7 +15,7 @@ fn test_checkpoint_save_load_roundtrip() {
         duration: std::time::Duration::from_millis(5678),
         ..Default::default()
     };
-    let pending = vec![SpiderRequest::get("https://example.com/pending")];
+    let pending = vec![Request::get("https://example.com/pending")];
     let state = CrawlState::from_stats("test-spider".to_string(), &stats, pending);
 
     let blob = bincode::serialize(&state).unwrap();
@@ -79,7 +79,7 @@ async fn checkpoint_restore_preserves_seen_urls() {
     let store = Store::open_in_memory().unwrap();
     // 模拟 save_checkpoint 写入：构造含 seen_urls 的 CrawlState
     let mut state = CrawlState::new("test_spider".into());
-    state.pending_urls = vec![SpiderRequest::get("https://example.com/pending")];
+    state.pending_urls = vec![Request::get("https://example.com/pending")];
     state.seen_urls = HashSet::from([
         "https://example.com/already-crawled".to_string(),
     ]);

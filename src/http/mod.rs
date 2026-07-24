@@ -130,7 +130,7 @@ impl ClientBuilder {
         }
         if let Some(ref proxy_url) = self.config.proxy {
             let proxy = wreq::Proxy::all(proxy_url)
-                .map_err(|e| WispError::CdpError(format!("proxy error: {e}")))?;
+                .map_err(|e| WispError::HttpError(format!("proxy error: {e}")))?;
             builder = builder.proxy(proxy);
         }
         // 应用 TLS 指纹模拟（wreq 文档说明会覆盖现有 TLS/HTTP2 配置）
@@ -142,7 +142,7 @@ impl ClientBuilder {
 
         let http_client = builder
             .build()
-            .map_err(|e| WispError::CdpError(format!("client build error: {e}")))?;
+            .map_err(|e| WispError::HttpError(format!("client build error: {e}")))?;
 
         Ok(Client {
             http: http_client,
@@ -181,7 +181,7 @@ impl Client {
             .headers(self.build_headers_with(extra_headers))
             .send()
             .await
-            .map_err(|e| WispError::CdpError(format!("GET {url}: {e}")))?;
+            .map_err(|e| WispError::HttpError(format!("GET {url}: {e}")))?;
         self.build_response(resp).await
     }
 
@@ -202,7 +202,7 @@ impl Client {
         }
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
-                .map_err(|e| WispError::CdpError(format!("JSON serialize: {e}")))?;
+                .map_err(|e| WispError::JsonError(format!("JSON serialize: {e}")))?;
             req = req
                 .header(wreq::header::CONTENT_TYPE, "application/json")
                 .body(json_str);
@@ -210,7 +210,7 @@ impl Client {
         let resp = req
             .send()
             .await
-            .map_err(|e| WispError::CdpError(format!("POST {url}: {e}")))?;
+            .map_err(|e| WispError::HttpError(format!("POST {url}: {e}")))?;
         self.build_response(resp).await
     }
 
@@ -231,7 +231,7 @@ impl Client {
         }
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
-                .map_err(|e| WispError::CdpError(format!("JSON serialize: {e}")))?;
+                .map_err(|e| WispError::JsonError(format!("JSON serialize: {e}")))?;
             req = req
                 .header(wreq::header::CONTENT_TYPE, "application/json")
                 .body(json_str);
@@ -239,7 +239,7 @@ impl Client {
         let resp = req
             .send()
             .await
-            .map_err(|e| WispError::CdpError(format!("PUT {url}: {e}")))?;
+            .map_err(|e| WispError::HttpError(format!("PUT {url}: {e}")))?;
         self.build_response(resp).await
     }
 
@@ -251,7 +251,7 @@ impl Client {
             .headers(self.build_headers_with(extra_headers))
             .send()
             .await
-            .map_err(|e| WispError::CdpError(format!("DELETE {url}: {e}")))?;
+            .map_err(|e| WispError::HttpError(format!("DELETE {url}: {e}")))?;
         self.build_response(resp).await
     }
 
@@ -299,7 +299,7 @@ impl Client {
         let body = resp
             .bytes()
             .await
-            .map_err(|e| WispError::CdpError(format!("read body: {e}")))?
+            .map_err(|e| WispError::HttpError(format!("read body: {e}")))?
             .to_vec();
 
         Ok(Response {
@@ -331,7 +331,7 @@ impl Response {
     /// Parse body as JSON.
     pub fn json(&self) -> Result<Value> {
         let text = self.text()?;
-        serde_json::from_str(&text).map_err(|e| WispError::CdpError(format!("JSON parse: {e}")))
+        serde_json::from_str(&text).map_err(|e| WispError::JsonError(format!("JSON parse: {e}")))
     }
 
     /// Parse body as HTML into a Node.

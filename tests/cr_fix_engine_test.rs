@@ -53,7 +53,7 @@ async fn test_stopped_spider_url_not_silently_dropped() {
     impl Spider for StoppedSpider {
         fn name(&self) -> &str { "stopped" }
         fn start_urls(&self) -> Vec<String> { vec!["http://127.0.0.1:1/never-fetched".into()] }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![], vec![])
         }
         fn obey_robots(&self) -> bool { false }
@@ -87,13 +87,13 @@ async fn test_fetch_retry_count_semantics() {
             // 端口 1 不可达，连接被拒绝，触发 error 分支重试。
             vec!["http://127.0.0.1:1/unreachable".into()]
         }
-        async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![], vec![])
         }
         fn obey_robots(&self) -> bool { false }
         fn max_retries(&self) -> u32 { 3 }
         fn download_delay(&self) -> std::time::Duration { std::time::Duration::ZERO }
-        async fn on_error(&self, _req: &SpiderRequest, _err: &str) {
+        async fn on_error(&self, _req: &Request, _err: &str) {
             self.count.fetch_add(1, Ordering::SeqCst);
         }
     }

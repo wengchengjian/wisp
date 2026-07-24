@@ -142,7 +142,7 @@ impl FetchClient {
                 .get("content-type")
                 .cloned()
                 .unwrap_or_default(),
-            Some(req.clone()),
+            req.clone(),
         ))
     }
 
@@ -150,7 +150,7 @@ impl FetchClient {
     /// `solve_cf=true` 时执行 CF 挑战解决 + 人类行为模拟。
     pub async fn fetch_browser(&self, req: &Request, solve_cf: bool) -> Result<Response> {
         let pool = self.browser_pool.as_ref().ok_or_else(|| {
-            WispError::CdpError("browser pool not configured (max_concurrent_pages=0)".into())
+            WispError::BrowserError("browser pool not configured (max_concurrent_pages=0)".into())
         })?;
         // acquire 返回带 page 的 handle（permit 限制并发数）
         let mut handle = pool.acquire().await?;
@@ -297,7 +297,7 @@ impl FetchClient {
             html,
             title,
             cookies,
-            Some(req.clone()),
+            req.clone(),
         ))
     }
 

@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use crate::error::{WispError, Result};
+use crate::utils::{status_text, url_to_filename};
 
 /// Output format enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +21,7 @@ pub enum OutputFormat {
 pub fn html_to_markdown(html: &str) -> Result<String> {
     let converter = htmd::HtmlToMarkdown::new();
     converter.convert(html)
-        .map_err(|e| WispError::CdpError(format!("html2markdown: {e}")))
+        .map_err(|e| WispError::ParseError(format!("html2markdown: {e}")))
 }
 
 /// Build a WARC/1.1 response record.
@@ -55,21 +56,7 @@ pub fn to_warc_record(url: &str, status: u16, headers: &HashMap<String, String>,
     )
 }
 
-fn status_text(code: u16) -> &'static str {
-    match code {
-        200 => "OK",
-        301 => "Moved Permanently",
-        302 => "Found",
-        304 => "Not Modified",
-        400 => "Bad Request",
-        403 => "Forbidden",
-        404 => "Not Found",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        _ => "Unknown",
-    }
-}
+
 
 /// Streaming WARC writer (appends records to a file).
 pub struct WarcWriter {
@@ -119,23 +106,7 @@ impl MarkdownWriter {
     }
 }
 
-fn url_to_filename(url: &str, counter: usize) -> String {
-    let parsed = url::Url::parse(url);
-    let base = parsed.as_ref()
-        .map(|u| {
-            let host = u.host_str().unwrap_or("page");
-            let path = u.path().trim_matches('/').replace('/', "_");
-            if path.is_empty() {
-                format!("{}_index", host)
-            } else {
-                format!("{}_{}", host, path)
-            }
-        })
-        .unwrap_or_else(|_| format!("page_{}", counter));
-    // Truncate if too long
-    let truncated: String = base.chars().take(100).collect();
-    format!("{}.md", truncated)
-}
+
 
 #[cfg(test)]
 mod tests {

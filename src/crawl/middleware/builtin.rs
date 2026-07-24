@@ -10,7 +10,7 @@ use super::{CrawlContext, ErrorAction, Middleware, MwAction};
 use crate::crawl::auto::{self, ModeRuleEngine};
 use crate::crawl::runtime::request_cache::{CachedEntry, RequestCache};
 use crate::crawl::runtime::robots::RobotsCache;
-use crate::crawl::{SpiderRequest, SpiderResponse};
+use crate::crawl::{Request, Response};
 use crate::fetcher::FetchMode;
 use crate::http::Client;
 
@@ -52,7 +52,7 @@ impl Middleware for UaRotationMiddleware {
         20
     }
 
-    async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         if self.agents.is_empty() {
             return MwAction::Continue;
         }
@@ -89,7 +89,7 @@ impl Middleware for RetryMiddleware {
 
     async fn process_error(
         &self,
-        req: &SpiderRequest,
+        req: &Request,
         _err: &str,
         _ctx: &CrawlContext,
     ) -> ErrorAction {
@@ -124,7 +124,7 @@ impl Middleware for ProxyInjectionMiddleware {
         30
     }
 
-    async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         if let Some(proxy) = self.pool.next() {
             req.proxy = Some(proxy);
             MwAction::Modified
@@ -151,7 +151,7 @@ impl Middleware for HeadersMiddleware {
         10
     }
 
-    async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         if self.headers.is_empty() {
             return MwAction::Continue;
         }
@@ -191,7 +191,7 @@ impl Middleware for CookieChallengeMiddleware {
         50
     }
 
-    async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+    async fn process_response(&self, resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         if resp.status != 403 || resp.body.len() >= 200 {
             return MwAction::Continue;
         }
@@ -251,7 +251,7 @@ impl Middleware for DomainFilterMiddleware {
         0
     }
 
-    async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         if self.allowed.is_empty() {
             return MwAction::Continue;
         }
@@ -283,7 +283,7 @@ impl Middleware for DepthLimitMiddleware {
         5
     }
 
-    async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         if req.depth > self.max_depth {
             MwAction::Skip
         } else {
@@ -318,16 +318,19 @@ impl Middleware for CacheMiddleware {
         3
     }
 
-    async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         // 键含 method，避免 POST/GET 同 URL 串味（与 engine.rs 保持一致）
         let method_str = req.method.as_str();
         if let Some(entry) = self.cache.get(method_str, &req.url).await {
-            let resp = SpiderResponse {
+            let resp = Response {
                 url: req.url.clone(),
                 status: entry.status,
                 headers: entry.headers,
                 body: entry.body,
+                title: None,
+                cookies: Vec::new(),
                 request: req.clone(),
+                content_type: String::new(),
                 from_cache: true,
             };
             return MwAction::Respond(resp);
@@ -335,7 +338,7 @@ impl Middleware for CacheMiddleware {
         MwAction::Continue
     }
 
-    async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+    async fn process_response(&self, resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         if resp.status >= 200 && resp.status < 400 && !resp.from_cache {
             // 写入时用请求方法（resp.request.method）作为键的一部分
             let method_str = resp.request.method.as_str();
@@ -376,7 +379,7 @@ impl Middleware for RobotsMiddleware {
         8
     }
 
-    async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         let allowed = {
             let mut rc = self.robots_cache.lock().await;
             rc.is_allowed(&self.client, &req.url).await
@@ -413,7 +416,7 @@ impl Middleware for DelayMiddleware {
         15
     }
 
-    async fn process_request(&self, _req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+    async fn process_request(&self, _req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }
@@ -440,7 +443,7 @@ impl Middleware for StealthUpgradeMiddleware {
         45
     }
 
-    async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+    async fn process_response(&self, resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         if resp.request.fetch_mode_override == Some(FetchMode::Stealth) {
             return MwAction::Continue;
         }
@@ -549,7 +552,7 @@ impl Middleware for DynamicUpgradeMiddleware {
         40
     }
 
-    async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+    async fn process_response(&self, resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         // 已有 override 不重复升级
         if resp.request.fetch_mode_override.is_some() {
             return MwAction::Continue;
@@ -603,7 +606,7 @@ impl Middleware for BlockedRetryMiddleware {
         80
     }
 
-    async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+    async fn process_response(&self, resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         use crate::crawl::BLOCKED_STATUS_CODES;
         if BLOCKED_STATUS_CODES.contains(&resp.status) {
             let count = resp
@@ -635,8 +638,8 @@ mod tests {
     use serde_json::Value;
     use std::collections::HashMap;
 
-    fn make_req() -> SpiderRequest {
-        SpiderRequest {
+    fn make_req() -> Request {
+        Request {
             url: "http://example.com".into(),
             method: crate::crawl::Method::Get,
             headers: HashMap::new(),
@@ -728,12 +731,15 @@ mod tests {
         let mut req = make_req();
         assert_eq!(mw.process_request(&mut req, &ctx).await, MwAction::Continue);
 
-        let mut resp = SpiderResponse {
+        let mut resp = Response {
             url: "http://example.com".into(),
             status: 200,
             headers: HashMap::new(),
             body: b"hello".to_vec(),
             request: req.clone(),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         };
         mw.process_response(&mut resp, &ctx).await;
@@ -787,13 +793,16 @@ mod tests {
 
     // === DynamicUpgradeMiddleware 测试 ===
 
-    fn make_resp(status: u16, body: &[u8]) -> SpiderResponse {
-        SpiderResponse {
+    fn make_resp(status: u16, body: &[u8]) -> Response {
+        Response {
             url: "http://example.com".into(),
             status,
             headers: HashMap::new(),
             body: body.to_vec(),
             request: make_req(),
+            title: None,
+            cookies: Vec::new(),
+            content_type: String::new(),
             from_cache: false,
         }
     }

@@ -1,7 +1,7 @@
 //! P1-2: Scheduler seen/heap 分离，并发不死锁。
 
 use wisp::crawl::scheduler::{Scheduler, DedupStrategy};
-use wisp::crawl::SpiderRequest;
+use wisp::crawl::Request;
 
 #[tokio::test]
 async fn scheduler_concurrent_push_pop_dedup_correct() {
@@ -14,7 +14,7 @@ async fn scheduler_concurrent_push_pop_dedup_correct() {
                 for i in 0..100 {
                     // tid*100+i，偶数为重复（0,2,4.. 跨线程共享同一组 URL）
                     let url = format!("https://example.com/{}", if tid % 2 == 0 { i } else { 1000 + tid * 100 + i });
-                    s.push(SpiderRequest::get(&url)).await;
+                    s.push(Request::get(&url)).await;
                 }
             })
         })
@@ -35,9 +35,9 @@ async fn scheduler_concurrent_push_pop_dedup_correct() {
 #[tokio::test]
 async fn scheduler_fingerprint_strategy_seen_split_works() {
     let sched = Scheduler::with_strategy(DedupStrategy::Fingerprint);
-    sched.push(SpiderRequest::get("https://example.com/a")).await;
+    sched.push(Request::get("https://example.com/a")).await;
     // 重复 push 同 URL 应被去重
-    sched.push(SpiderRequest::get("https://example.com/a")).await;
+    sched.push(Request::get("https://example.com/a")).await;
     assert_eq!(sched.len().await, 1);
     let seen = sched.seen_urls().await;
     assert_eq!(seen.len(), 1, "Fingerprint 模式 seen 应含 1 个 hash");

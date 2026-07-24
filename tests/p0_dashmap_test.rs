@@ -22,7 +22,7 @@ impl Spider for MultiDomainSpider {
             "http://127.0.0.1:1/domain-a/page2".into(),
         ]
     }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         self.counter.fetch_add(1, Ordering::SeqCst);
         (vec![], vec![])
     }

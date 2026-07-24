@@ -5,7 +5,7 @@
 //!
 //! CR-10: 默认使用精确 URL 去重（HashSet<String>），可选 Fingerprint 模式省内存。
 
-use crate::crawl::SpiderRequest;
+use crate::crawl::Request;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BinaryHeap, HashSet};
@@ -24,7 +24,7 @@ pub enum DedupStrategy {
 }
 
 struct PrioritizedRequest {
-    req: SpiderRequest,
+    req: Request,
     seq: u64,
 }
 
@@ -82,7 +82,7 @@ impl Scheduler {
     }
 
     /// Push a request (deduplicates by URL).
-    pub async fn push(&self, req: SpiderRequest) {
+    pub async fn push(&self, req: Request) {
         // seen 去重（DashSet 无锁，不阻塞 pop）
         let is_new = match self.strategy {
             DedupStrategy::Exact => self.seen_exact.insert(req.url.clone()),
@@ -97,13 +97,13 @@ impl Scheduler {
     }
 
     /// Pop the highest-priority request.
-    pub async fn pop(&self) -> Option<SpiderRequest> {
+    pub async fn pop(&self) -> Option<Request> {
         let mut g = self.heap.lock().await;
         g.heap.pop().map(|p| p.req)
     }
 
     /// Snapshot the pending URLs (for checkpoint).
-    pub async fn pending_urls(&self) -> Vec<SpiderRequest> {
+    pub async fn pending_urls(&self) -> Vec<Request> {
         let g = self.heap.lock().await;
         // Note: BinaryHeap is max-heap, iteration order is unspecified.
         // We sort by priority to give a deterministic checkpoint.
@@ -133,7 +133,7 @@ impl Scheduler {
     }
 
     /// Replace inner state (for checkpoint restore).
-    pub async fn restore(&self, pending: Vec<SpiderRequest>, seen: HashSet<String>) {
+    pub async fn restore(&self, pending: Vec<Request>, seen: HashSet<String>) {
         // 清 seen（DashSet）
         self.seen_exact.clear();
         self.seen_fp.clear();
@@ -209,10 +209,10 @@ mod tests {
         let sched = Scheduler::with_strategy(DedupStrategy::Fingerprint);
         // push 两个 URL：进入 heap 与 seen_fp
         sched
-            .push(SpiderRequest::get("https://example.com/a"))
+            .push(Request::get("https://example.com/a"))
             .await;
         sched
-            .push(SpiderRequest::get("https://example.com/b"))
+            .push(Request::get("https://example.com/b"))
             .await;
         // pop 模拟已爬取：heap 清空，但 seen_fp 保留正确指纹
         sched.pop().await;
@@ -230,7 +230,7 @@ mod tests {
         // 再 push 同样的 URL：应被 seen 判定为已爬，不入 heap
         let before = sched.len().await;
         sched
-            .push(SpiderRequest::get("https://example.com/a"))
+            .push(Request::get("https://example.com/a"))
             .await;
         let after = sched.len().await;
         assert_eq!(

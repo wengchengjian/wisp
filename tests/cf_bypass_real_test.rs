@@ -201,7 +201,7 @@ async fn test_engine_with_proxy_pool() {
         .obey_robots(false)
         .middleware(wisp::crawl::middleware::ProxyInjectionMiddleware::new(pool))
         .on("default", |resp| async move {
-            let doc = resp.parse().unwrap();
+            let doc = resp.parse();
             let items: Vec<serde_json::Value> = doc.select(".quote").iter().map(|q| {
                 serde_json::json!({
                     "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),

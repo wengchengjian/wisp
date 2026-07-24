@@ -17,7 +17,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use wisp::crawl::{
-    CrawlEvent, CrawlStats, Engine, JsonlWriter, Spider, SpiderRequest, SpiderResponse,
+    CrawlEvent, CrawlStats, Engine, JsonlWriter, Spider, Request, Response,
 };
 use wisp::http::Client;
 use wisp::storage::Store;
@@ -58,8 +58,8 @@ impl Spider for HttpbinHtmlSpider {
     fn obey_robots(&self) -> bool {
         false
     }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        let node = resp.parse().unwrap();
+    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+        let node = resp.parse();
         let h1_texts: Vec<String> = node.select("h1").text();
         // httpbin.org/html 的 h1 是 "Herman Melville - Moby Dick"
         let combined = h1_texts.join(" ");
@@ -116,8 +116,8 @@ impl Spider for QuotesSpider {
     fn obey_robots(&self) -> bool {
         false
     }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        let node = resp.parse().unwrap();
+    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+        let node = resp.parse();
         let quotes = node.select(".quote");
         let items: Vec<Value> = quotes
             .iter()
@@ -162,8 +162,8 @@ impl Spider for QuotesFollowSpider {
     fn obey_robots(&self) -> bool {
         false
     }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        let node = resp.parse().unwrap();
+    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+        let node = resp.parse();
         let quotes = node.select(".quote");
         let items: Vec<Value> = quotes
             .iter()
@@ -173,12 +173,12 @@ impl Spider for QuotesFollowSpider {
             })
             .collect();
         // 跟随 .next a 分页链接（相对路径，需补全域名）
-        let follows: Vec<SpiderRequest> = node
+        let follows: Vec<Request> = node
             .select_one(".next a")
             .and_then(|a| a.attr("href"))
             .map(|href| {
                 let url = format!("https://quotes.toscrape.com{}", href);
-                vec![SpiderRequest::get(&url)]
+                vec![Request::get(&url)]
             })
             .unwrap_or_default();
         (items, follows)
@@ -223,7 +223,7 @@ impl Spider for DomainFilterSpider {
     fn obey_robots(&self) -> bool {
         false
     }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
 }
@@ -262,7 +262,7 @@ impl Spider for Retry503Spider {
     fn download_delay(&self) -> std::time::Duration {
         std::time::Duration::from_millis(100)
     }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
 }
@@ -307,8 +307,8 @@ impl Spider for StreamQuotesSpider {
     fn obey_robots(&self) -> bool {
         false
     }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-        let node = resp.parse().unwrap();
+    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+        let node = resp.parse();
         let items: Vec<Value> = node
             .select(".quote")
             .iter()
@@ -414,7 +414,7 @@ impl Spider for CacheSpider {
     fn obey_robots(&self) -> bool {
         false
     }
-    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let text = resp.text().unwrap_or_default();
         assert!(text.contains("httpbin.org"), "响应应来自 httpbin");
         (vec![], vec![])

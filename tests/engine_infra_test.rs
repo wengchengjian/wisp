@@ -22,7 +22,7 @@ impl Spider for CountSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![self.url.clone()]
     }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![serde_json::json!({"name": self.name})], vec![])
     }
     fn obey_robots(&self) -> bool {
@@ -122,8 +122,8 @@ async fn test_engine_run_returns_items() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.url.clone()]
         }
-        async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
-            let doc = resp.parse().unwrap();
+        async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+            let doc = resp.parse();
             let items: Vec<Value> = doc
                 .select("p")
                 .iter()

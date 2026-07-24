@@ -1,11 +1,11 @@
-//! P1-7: SpiderRequest.meta 随 bincode checkpoint 持久化。
+//! P1-7: Request.meta 随 bincode checkpoint 持久化。
 
-use wisp::crawl::SpiderRequest;
+use wisp::crawl::Request;
 use serde_json::json;
 
 #[test]
 fn meta_survives_bincode_roundtrip() {
-    let req = SpiderRequest::get("https://example.com/page")
+    let req = Request::get("https://example.com/page")
         .with_meta(json!({
             "source_page": "https://example.com/list",
             "page_index": 42,
@@ -14,7 +14,7 @@ fn meta_survives_bincode_roundtrip() {
         }));
 
     let bytes = bincode::serialize(&req).expect("serialize");
-    let restored: SpiderRequest = bincode::deserialize(&bytes).expect("deserialize");
+    let restored: Request = bincode::deserialize(&bytes).expect("deserialize");
 
     assert_eq!(restored.url, "https://example.com/page");
     assert_eq!(restored.meta, req.meta, "meta 必须往返保持一致");
@@ -26,16 +26,16 @@ fn meta_survives_bincode_roundtrip() {
 
 #[test]
 fn meta_default_null_when_absent() {
-    let req = SpiderRequest::get("https://example.com/x");
+    let req = Request::get("https://example.com/x");
     let bytes = bincode::serialize(&req).expect("serialize");
-    let restored: SpiderRequest = bincode::deserialize(&bytes).expect("deserialize");
+    let restored: Request = bincode::deserialize(&bytes).expect("deserialize");
     assert_eq!(restored.meta, serde_json::Value::Null);
 }
 
 #[test]
 fn meta_edge_cases_empty_collections_and_bools() {
     // 空对象、空数组、布尔值 — 这些是 JSON 边界用例
-    let req = SpiderRequest::get("https://example.com/edge")
+    let req = Request::get("https://example.com/edge")
         .with_meta(json!({
             "empty_obj": {},
             "empty_arr": [],
@@ -46,7 +46,7 @@ fn meta_edge_cases_empty_collections_and_bools() {
         }));
 
     let bytes = bincode::serialize(&req).expect("serialize");
-    let restored: SpiderRequest = bincode::deserialize(&bytes).expect("deserialize");
+    let restored: Request = bincode::deserialize(&bytes).expect("deserialize");
 
     assert_eq!(restored.meta, req.meta, "边界用例 meta 必须往返一致");
     assert!(restored.meta["empty_obj"].is_object(), "空对象应保持对象类型");

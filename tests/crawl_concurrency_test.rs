@@ -1,7 +1,7 @@
 //! Verify Spider Engine respects max_concurrent limit.
 
 use async_trait::async_trait;
-use wisp::crawl::{Spider, SpiderRequest, SpiderResponse, Engine};
+use wisp::crawl::{Spider, Request, Response, Engine};
 use serde_json::Value;
 
 struct ConcurrencySpider;
@@ -13,7 +13,7 @@ impl Spider for ConcurrencySpider {
         // 10 URLs that each take 100ms to respond
         (0..10).map(|i| format!("https://httpbin.org/delay/0.1?i={}", i)).collect()
     }
-    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
     async fn on_start(&self) {}

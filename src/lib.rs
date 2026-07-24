@@ -33,6 +33,7 @@ pub mod error;
 pub mod stealth;
 pub mod proxy;
 pub mod text;
+pub mod utils;
 pub mod parser;
 pub mod http;
 pub mod fetcher;
