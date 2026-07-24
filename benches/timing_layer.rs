@@ -3,8 +3,6 @@
 //! 用 on_new_span（创建时记时间）而非 on_enter，因为 async span 可能多次
 //! enter/exit（每次 poll），但创建到关闭的 wall clock = 该阶段真实耗时（含 I/O 等待）。
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

@@ -1,10 +1,29 @@
 //! Criterion benchmarks for wisp parser + crawl concurrency performance.
 
+use std::sync::OnceLock;
+
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use tokio::runtime::Runtime;
+use tracing_subscriber::prelude::*;
 use wisp::parser::Node;
 
 mod timing_layer;
+use timing_layer::TimingLayer;
+
+static TIMING: OnceLock<TimingLayer> = OnceLock::new();
+
+/// 获取全局 TimingLayer（注册 global subscriber，只设一次）。
+/// process_request 通过 tokio::spawn 在 worker 线程执行，
+/// thread-local subscriber 抓不到，必须用 global。
+fn timing() -> &'static TimingLayer {
+    TIMING.get_or_init(|| {
+        let layer = TimingLayer::new();
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(layer.clone()),
+        );
+        layer
+    })
+}
 
 // ============================ parser benchmarks ============================
 
@@ -138,6 +157,7 @@ fn bench_engine_concurrent_fetch(c: &mut Criterion) {
     let base = rt.block_on(spawn_html_server(BENCH_HTML));
     let urls: Vec<String> = (0..50).map(|i| format!("{}/p{}", base, i)).collect();
 
+    let timing = timing();
     let mut group = c.benchmark_group("engine_concurrent_fetch");
     group.sample_size(20);
     for &concurrent in &[1usize, 4, 16] {
@@ -146,6 +166,7 @@ fn bench_engine_concurrent_fetch(c: &mut Criterion) {
             .max_pages(50)
             .build()
             .unwrap();
+        timing.reset();
         group.bench_with_input(
             BenchmarkId::from_parameter(concurrent),
             &concurrent,
@@ -158,6 +179,8 @@ fn bench_engine_concurrent_fetch(c: &mut Criterion) {
                 })
             },
         );
+        println!("engine_concurrent_fetch/{} - Stage Timing:", concurrent);
+        timing.print_summary();
     }
     group.finish();
 }
