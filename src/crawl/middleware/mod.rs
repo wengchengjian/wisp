@@ -26,9 +26,9 @@ pub mod pipeline;
 pub use builtin::*;
 pub use pipeline::*;
 
-use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::crawl::{Request, Response};
 use crate::fetcher::FetchMode;
@@ -113,7 +113,9 @@ pub trait Middleware: Send + Sync {
     /// - 20-39：请求修改类（Headers/UA/Proxy）
     /// - 40-69：响应挑战类（Cookie/CF）
     /// - 70-99：重试类（BlockedRetry/Retry）
-    fn priority(&self) -> u32 { 100 }
+    fn priority(&self) -> u32 {
+        100
+    }
 
     /// 生命周期初始化：Engine 在爬取开始前调用。
     /// 中间件可读取引擎配置、初始化内部状态（通过内部可变性，如 Mutex/AtomicUsize）。
@@ -169,7 +171,10 @@ pub(crate) struct MiddlewareChain {
 
 impl MiddlewareChain {
     pub fn new() -> Self {
-        Self { middlewares: Vec::new(), pipelines: Vec::new() }
+        Self {
+            middlewares: Vec::new(),
+            pipelines: Vec::new(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -189,6 +194,7 @@ impl MiddlewareChain {
     }
 
     /// 执行请求中间件链。返回 MwAction::Skip/Abort 时中断。
+    #[tracing::instrument(skip(self, req, ctx))]
     pub(crate) async fn run_request_middlewares(
         &self,
         req: &mut Request,
@@ -204,6 +210,7 @@ impl MiddlewareChain {
     }
 
     /// 执行响应中间件链。
+    #[tracing::instrument(skip(self, resp, ctx))]
     pub(crate) async fn run_response_middlewares(
         &self,
         resp: &mut Response,
@@ -262,4 +269,3 @@ impl MiddlewareChain {
         }
     }
 }
-
