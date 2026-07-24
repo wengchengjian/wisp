@@ -118,10 +118,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Mcp { cmd } => match cmd {
             McpCmd::Serve { db } => {
-                let store = if db == ":memory:" {
-                    Arc::new(wisp::Store::open_in_memory()?)
+                let store: Arc<dyn wisp::Store> = if db == ":memory:" {
+                    Arc::new(wisp::SqliteStore::open_in_memory()?)
                 } else {
-                    Arc::new(wisp::Store::open(std::path::Path::new(&db))?)
+                    Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db))?)
                 };
                 wisp::mcp::serve(store).await?;
             }

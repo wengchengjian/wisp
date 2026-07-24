@@ -3,6 +3,13 @@
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+/// `\s+` 正则：合并连续空白为单个空格。
+static RE_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+
+/// `<[^>]*>` 正则：剥离 HTML 标签。
+static RE_HTML_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
 
 /// Text processing helper wrapping a string slice.
 pub struct Text<'a>(pub &'a str);
@@ -14,8 +21,10 @@ impl<'a> Text<'a> {
 
     /// Collapse all whitespace runs into single spaces and trim.
     pub fn clean(&self) -> String {
-        let re = Regex::new(r"\s+").unwrap();
-        re.replace_all(self.0, " ").trim().to_string()
+        RE_WHITESPACE
+            .replace_all(self.0, " ")
+            .trim()
+            .to_string()
     }
 
     /// Extract all matches of a regex pattern.
@@ -48,8 +57,7 @@ impl<'a> Text<'a> {
 
     /// Strip all HTML tags, returning plain text.
     pub fn strip_tags(&self) -> String {
-        let re = Regex::new(r"<[^>]*>").unwrap();
-        re.replace_all(self.0, "").to_string()
+        RE_HTML_TAG.replace_all(self.0, "").to_string()
     }
 }
 

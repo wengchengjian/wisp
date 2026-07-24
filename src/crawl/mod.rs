@@ -14,11 +14,9 @@ pub use observability::events;
 pub use observability::state;
 pub use observability::stats;
 pub use runtime::autoscale;
-pub use runtime::cache;
 pub use runtime::control;
 pub use runtime::items;
 pub use runtime::output;
-pub use runtime::request_cache;
 pub use runtime::robots;
 pub use runtime::session_pool;
 pub use scheduling::scheduler;
@@ -28,7 +26,6 @@ pub use auto::ModeRuleEngine;
 pub use builder::{ClosureSpider, SpiderBuilder};
 pub use engine::{fetch_page, fetch_page_inner, record_status};
 pub use items::{Items, JsonlWriter};
-pub use request_cache::RequestCache;
 pub use runner::{Engine, EngineBuilder};
 pub use state::CrawlState;
 pub use stop::{
@@ -70,12 +67,8 @@ pub trait Spider: Send + Sync + 'static {
     // Required
     fn name(&self) -> &str;
     fn start_urls(&self) -> Vec<String>;
-    async fn parse(&self, response: Response) -> (Vec<Value>, Vec<Request>);
-
-    /// 请求分发入口。Engine 调用此方法（不直接调 parse）。
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
-        self.parse(resp).await
-    }
+    /// 请求分发入口。Engine 调用此方法处理响应，返回 (items, follows)。
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>);
 
     // Optional with defaults
     fn allowed_domains(&self) -> HashSet<String> {
@@ -230,7 +223,7 @@ mod tests {
             fn start_urls(&self) -> Vec<String> {
                 vec![]
             }
-            async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+            async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
                 (vec![], vec![])
             }
         }
@@ -335,7 +328,7 @@ mod tests {
             fn start_urls(&self) -> Vec<String> {
                 vec![self.start_url.clone()]
             }
-            async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+            async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
                 let node = resp.parse();
                 let text = node.select("p").text().join("");
                 (vec![serde_json::json!({"text": text})], vec![])
@@ -377,7 +370,7 @@ mod tests {
             fn start_urls(&self) -> Vec<String> {
                 vec![self.start_url.clone()]
             }
-            async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+            async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
                 (vec![serde_json::json!({"v": 1})], vec![])
             }
             fn obey_robots(&self) -> bool {

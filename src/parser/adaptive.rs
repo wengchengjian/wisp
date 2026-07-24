@@ -264,7 +264,7 @@ pub fn css_adaptive(
     selector: &str,
     key: &str,
     url: &str,
-    store: &Store,
+    store: &dyn Store,
     auto_save: bool,
     tolerance: f64,
 ) -> Option<Node> {

@@ -5,11 +5,8 @@ pub mod autoscale;
 pub mod robots;
 pub mod items;
 pub mod output;
-pub mod request_cache;
-pub mod cache;
 pub mod control;
 
 pub use items::{Items, JsonlWriter};
-pub use request_cache::RequestCache;
 pub use robots::RobotsCache;
 pub use control::EngineControl;

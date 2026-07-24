@@ -17,8 +17,6 @@ pub async fn fetch_page(args: Value) -> Result<Value> {
 
     let mut builder = Client::builder();
     if let Some(emu) = args.get("emulation").and_then(|v| v.as_str()) {
-        // Profile 变体名查证：Firefox128/Safari18 已存在（Stage 3 验证），
-        // 计划假设的 FirefoxLatest/SafariLatest 不存在，改用具体版本号。
         let profile = match emu {
             "firefox" => Profile::Firefox128,
             "safari" => Profile::Safari18,
@@ -103,7 +101,7 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
     impl Spider for SimpleSpider {
         fn name(&self) -> &str { "mcp_simple" }
         fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
-        async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
             let text = resp.text().unwrap_or_default();
             let doc = Node::from_html(&text);
             let nodes = doc.select(&self.css);
@@ -135,7 +133,7 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
 }
 
 /// 自适应抓取：CSS 失败时用 SQLite 快照重定位。
-pub async fn adaptive_scrape(args: Value, store: &Arc<Store>) -> Result<Value> {
+pub async fn adaptive_scrape(args: Value, store: &Arc<dyn Store>) -> Result<Value> {
     let url = args.get("url")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::McpError("missing 'url'".into()))?;
@@ -153,7 +151,7 @@ pub async fn adaptive_scrape(args: Value, store: &Arc<Store>) -> Result<Value> {
 
     use crate::parser::css_adaptive;
     let tolerance = crate::parser::DEFAULT_TOLERANCE;
-    let found = css_adaptive(&doc, selector, key, url, store, true, tolerance);
+    let found = css_adaptive(&doc, selector, key, url, store.as_ref(), true, tolerance);
 
     match found {
         Some(node) => Ok(json!({
@@ -269,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_adaptive_scrape_missing_args() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(crate::storage::SqliteStore::open_in_memory().unwrap());
         let args = json!({});
         let result = adaptive_scrape(args, &store).await;
         assert!(result.is_err());

@@ -54,13 +54,18 @@
 
 use async_trait::async_trait;
 use futures::future::BoxFuture;
+use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use super::{Request, Response, Spider};
+
+/// Sitemap `<loc>` 提取正则：匹配 `<loc>URL</loc>` 中的 URL（允许前后空白）。
+static RE_SITEMAP_LOC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap());
 
 /// 异步 handler 签名：接收 Response，返回 (items, follows)。
 ///
@@ -204,8 +209,7 @@ impl SpiderBuilder {
                 let label = label.clone();
                 async move {
                     let text = resp.text().unwrap_or_default();
-                    let re = regex::Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap();
-                    let follows: Vec<Request> = re
+                    let follows: Vec<Request> = RE_SITEMAP_LOC
                         .captures_iter(&text)
                         .filter_map(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
                         .filter(|u| !u.is_empty())
@@ -329,12 +333,6 @@ impl Spider for ClosureSpider {
                 }
             }
         }
-    }
-
-    /// parse 兜底：ClosureSpider 不再使用 parse 闭包，统一走 `handle()` 路由。
-    /// 此实现仅满足 Spider trait 默认契约，返回空结果。
-    async fn parse(&self, _response: Response) -> (Vec<Value>, Vec<Request>) {
-        (vec![], vec![])
     }
 
     fn is_blocked(&self, resp: &Response) -> bool {

@@ -2,7 +2,7 @@
 //!
 //! Uses CDP Input domain for realistic interactions that bypass behavioral detection.
 
-use rand::Rng;
+use rand::RngExt;
 use serde_json::json;
 use std::time::Duration;
 

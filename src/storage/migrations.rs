@@ -3,7 +3,7 @@
 /// SQL statements to create all tables for schema v1.
 ///
 /// 包含：element_snapshots（自适应定位）、crawl_checkpoints（断点续爬）、
-/// response_cache（开发模式 replay 缓存）。
+/// response_cache（HTTP 响应缓存，带 per-entry TTL）。
 pub const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS element_snapshots (
     url TEXT NOT NULL,
@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS response_cache (
     status INTEGER,
     headers TEXT,            -- JSON
     body BLOB,
-    cached_at INTEGER,
+    content_type TEXT,
+    cached_at INTEGER NOT NULL,
+    ttl_secs INTEGER,        -- NULL = 永不过期
     PRIMARY KEY (url, method)
 );
 "#;

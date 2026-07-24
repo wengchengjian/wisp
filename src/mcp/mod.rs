@@ -96,7 +96,7 @@ pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| vec![
 ]);
 
 /// MCP server 主循环（stdio JSON-RPC 2.0）
-pub async fn serve(store: Arc<Store>) -> Result<()> {
+pub async fn serve(store: Arc<dyn Store>) -> Result<()> {
     // 启动时创建一个长驻共享 Engine，所有 crawl_site 调用复用
     // （共享 HTTP 连接池 / 请求缓存 / 代理池）。Engine 自身的 max_pages 作为全局兜底，
     // 每次 crawl_site 的 per-call 上限由 SimpleSpider 的 until() 终止策略控制。
@@ -189,7 +189,7 @@ fn handle_tools_list() -> Value {
     json!({"tools": tools})
 }
 
-async fn handle_tools_call(request: Value, store: &Arc<Store>, engine: &Engine) -> Result<Value> {
+async fn handle_tools_call(request: Value, store: &Arc<dyn Store>, engine: &Engine) -> Result<Value> {
     let params = request.get("params")
         .ok_or_else(|| WispError::McpError("missing params".into()))?;
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -241,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_tools_call_unknown_tool() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(crate::storage::SqliteStore::open_in_memory().unwrap());
         let engine = Engine::infra()
             .max_pages(100)
             .build()

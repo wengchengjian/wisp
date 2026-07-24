@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+// 注：per-domain 信号量已删除。全局并发由 buffer_unordered(buffer_ceiling) 控制，
+// 动态调整由 autoscale 负责。多域名公平性由用户通过 Request::priority 或 download_delay 管理。
 
 use super::stats::SpiderStats;
 use super::{
@@ -53,7 +55,6 @@ pub(crate) struct EngineShared {
     pub sched: Arc<scheduler::Scheduler>,
     pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Request>>>,
-    pub domain_sems: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）
     pub proxy_clients: Arc<DashMap<String, Arc<Client>>>,
     pub control: Arc<control::EngineControl>,
@@ -145,8 +146,8 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
         }
     }
 
-    // 3. 域名信号量（并发控制）+ 抓取
-    let (final_resp, last_error) = acquire_and_fetch(ctx, &req).await;
+    // 3. 抓取（全局并发由 buffer_unordered 控制，无需 per-domain 信号量）
+    let (final_resp, last_error) = fetch_dispatch(ctx, &req).await;
 
     // 4. 请求阶段收尾：失败时发送错误事件；final_resp 即返回值（与 last_error 互斥）
     if let Some(err) = last_error {
@@ -247,7 +248,9 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
         }
     }
     for f in follows {
-        let _ = ctx.shared.follow_tx.send(f);
+        if ctx.shared.follow_tx.send(f).is_err() {
+            tracing::debug!("follow_tx closed, dropping follow request");
+        }
     }
     // 通知主循环有新工作到来
     ctx.shared.work_notify.notify_one();
@@ -265,34 +268,6 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
 }
 
 // === 抓取分发 ===
-
-/// 域名信号量（并发控制）+ 单次抓取。
-///
-/// robots/延迟/缓存均已移至中间件，此函数仅保留不可中间件化的并发控制。
-#[tracing::instrument(skip(ctx, req))]
-async fn acquire_and_fetch(
-    ctx: &EngineContext,
-    req: &Request,
-) -> (Option<Response>, Option<String>) {
-    // 域名信号量（基础设施：per-domain 并发控制）
-    let domain = url::Url::parse(&req.url)
-        .ok()
-        .and_then(|u| u.host_str().map(|s| s.to_string()))
-        .unwrap_or_default();
-    let sem = {
-        ctx.shared
-            .domain_sems
-            .entry(domain)
-            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(ctx.config.max_concurrent)))
-            .clone()
-    };
-    let Ok(_permit) = sem.acquire_owned().await else {
-        tracing::warn!("domain semaphore closed, skipping: {}", req.url);
-        return (None, None);
-    };
-
-    fetch_dispatch(ctx, req).await
-}
 
 /// 抓取分发：单次 fetch，无内联重试。
 ///
@@ -338,7 +313,9 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
                         // 重新派发：通过 follow_tx 将请求重新入队（带 _retry 计数）
                         let mut retry_req = req.clone();
                         retry_req.meta["_retry"] = serde_json::json!(attempt + 1);
-                        let _ = ctx.shared.follow_tx.send(retry_req);
+                        if ctx.shared.follow_tx.send(retry_req).is_err() {
+                            tracing::debug!("follow_tx closed, dropping retry request");
+                        }
                         ctx.shared.work_notify.notify_one();
                         return (None, None);
                     }
@@ -401,7 +378,7 @@ pub(crate) fn snapshot_stats_for(
 
 /// Checkpoint 保存。
 pub(crate) async fn save_checkpoint(
-    store: &crate::storage::Store,
+    store: &dyn crate::storage::Store,
     spider_name: &str,
     sched: &scheduler::Scheduler,
     stats: &Arc<SpiderStats>,
@@ -492,6 +469,13 @@ pub async fn fetch_page_inner(
             ..Default::default()
         };
         let resp = fetch_client.fetch_browser(&fetch_req, solve_cf).await?;
+        // 从 headers 提取 content_type（与 HTTP 模式一致），供 encoding 解码和缓存恢复使用
+        let content_type = resp
+            .headers
+            .get("content-type")
+            .or_else(|| resp.headers.get("Content-Type"))
+            .cloned()
+            .unwrap_or_default();
         return Ok(Response {
             url: resp.url.clone(),
             status: resp.status,
@@ -500,7 +484,7 @@ pub async fn fetch_page_inner(
             title: resp.title.clone(),
             cookies: resp.cookies.clone(),
             request: req.clone(),
-            content_type: String::new(),
+            content_type,
             from_cache: false,
         });
     }
@@ -586,10 +570,11 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::Store;
     use async_trait::async_trait;
     use std::time::Instant;
 
-    /// 最小 Spider：parse 返回空，不产出 items/follows，避免触碰事件通道。
+    /// 最小 Spider：handle 返回空，不产出 items/follows，避免触碰事件通道。
     struct DummySpider;
 
     #[async_trait]
@@ -600,7 +585,7 @@ mod tests {
         fn start_urls(&self) -> Vec<String> {
             vec![]
         }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![], vec![])
         }
     }
@@ -626,7 +611,6 @@ mod tests {
                 sched: Arc::new(scheduler::Scheduler::new()),
                 follow_tx,
                 follow_rx: Arc::new(Mutex::new(follow_rx)),
-                domain_sems: Arc::new(DashMap::new()),
                 proxy_clients: Arc::new(dashmap::DashMap::new()),
                 control: Arc::new(control::EngineControl::new()),
                 work_notify: Arc::new(tokio::sync::Notify::new()),
@@ -693,7 +677,7 @@ mod tests {
     /// 故反序列化后的 state.seen_urls 必为空，断言失败。
     #[tokio::test]
     async fn save_checkpoint_persists_seen_urls() {
-        let store = crate::storage::Store::open_in_memory().expect("open in-memory store");
+        let store = crate::storage::SqliteStore::open_in_memory().expect("open in-memory store");
         let sched = scheduler::Scheduler::new();
         // push 两个 URL：进入 heap 与 seen 集合
         sched.push(Request::get("https://example.com/a")).await;

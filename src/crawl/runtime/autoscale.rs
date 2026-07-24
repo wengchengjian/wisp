@@ -126,24 +126,26 @@ impl AutoscaledPool {
 
             // 缩容条件：错误率过高 或 饱和度低（空闲，回收资源）
             if error_rate > self.config.error_rate_threshold || saturation < self.config.cpu_threshold_up {
-                let last_down = *self.last_scale_down.lock().unwrap();
+                // unwrap_or_else(into_inner) 忽略中毒：此 Mutex 仅 autoscaler 单 task 访问，
+                // 中毒不会发生；即便发生也取出数据继续，避免 panic 终止 autoscale
+                let last_down = *self.last_scale_down.lock().unwrap_or_else(|e| e.into_inner());
                 if now.duration_since(last_down) >= self.config.scale_down_interval {
                     let new_val = current.saturating_sub(self.config.step_down).max(self.min_concurrency);
                     if new_val < current {
                         self.current.store(new_val, Ordering::SeqCst);
-                        *self.last_scale_down.lock().unwrap() = now;
+                        *self.last_scale_down.lock().unwrap_or_else(|e| e.into_inner()) = now;
                         tracing::debug!("Autoscale down (idle/err): {} -> {}", current, new_val);
                     }
                 }
             }
             // 扩容条件：饱和度高（需求旺盛，加容量）且错误率可控
             else if saturation > self.config.cpu_threshold_down && error_rate < self.config.error_rate_threshold * 0.5 {
-                let last_up = *self.last_scale_up.lock().unwrap();
+                let last_up = *self.last_scale_up.lock().unwrap_or_else(|e| e.into_inner());
                 if now.duration_since(last_up) >= self.config.scale_up_interval {
                     let new_val = (current + self.config.step_up).min(self.max_concurrency);
                     if new_val > current {
                         self.current.store(new_val, Ordering::SeqCst);
-                        *self.last_scale_up.lock().unwrap() = now;
+                        *self.last_scale_up.lock().unwrap_or_else(|e| e.into_inner()) = now;
                         tracing::debug!("Autoscale up (saturated): {} -> {}", current, new_val);
                     }
                 }

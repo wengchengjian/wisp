@@ -16,20 +16,20 @@ use crate::fetcher::{FetchClient, FetchClientConfig};
 ///
 /// Task 3 重构：从"Spider 容器"变为"纯基础设施"。
 /// - 不持有 Spider（删除 `spiders: Vec<Box<dyn Spider>>`）
-/// - 共享：HTTP client / SQLite 缓存 / RequestCache
+/// - 共享：HTTP client / Store（SQLite 缓存 + checkpoint）
 /// - 独立：每次 run 内部 Scheduler/去重/stats（per-Spider 隔离）
-/// - 控制：per-Engine `EngineControl`（替代原全局 static）
+/// - 控制：per-Engine `EngineControl`
 #[derive(Clone)]
 pub struct Engine {
     /// 共享 FetchClient（HTTP 连接池 + BrowserPool，跨 Spider 复用）
     pub(crate) fetch_client: Arc<FetchClient>,
-    pub(crate) request_cache: Option<RequestCache>,
+    pub(crate) cache_store: Option<Arc<dyn crate::storage::Store>>,
     pub(crate) max_concurrent: usize,
     pub(crate) max_pages: usize,
     pub(crate) max_refetch_rounds: usize,
-    pub(crate) checkpoint_store: Option<Arc<crate::storage::Store>>,
+    pub(crate) checkpoint_store: Option<Arc<dyn crate::storage::Store>>,
     pub(crate) checkpoint_interval: usize,
-    /// per-Engine 控制状态（替代原全局 static，解决 I4）。
+    /// per-Engine 控制状态。
     pub(crate) control: Arc<control::EngineControl>,
     /// 自适应并发池（可选）。启用后 run_inner 动态调整并发数。
     pub(crate) autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
@@ -41,8 +41,8 @@ pub struct EngineBuilder {
     max_concurrent: usize,
     max_pages: usize,
     max_refetch_rounds: usize,
-    request_cache: Option<RequestCache>,
-    checkpoint_store: Option<Arc<crate::storage::Store>>,
+    cache_store: Option<Arc<dyn crate::storage::Store>>,
+    checkpoint_store: Option<Arc<dyn crate::storage::Store>>,
     checkpoint_interval: usize,
     autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
 }
@@ -58,7 +58,7 @@ impl Engine {
             max_concurrent: 8,
             max_pages: 1000,
             max_refetch_rounds: 5,
-            request_cache: None,
+            cache_store: None,
             checkpoint_store: None,
             checkpoint_interval: 100,
             autoscale: None,
@@ -70,6 +70,11 @@ impl Engine {
     /// 共享底层资源（HTTP/缓存/代理），Spider 内部独立 Scheduler/去重。
     /// 可多次调用：`engine.run(spider_a).await?; engine.run(spider_b).await?;`
     ///
+    /// # 并发约束
+    /// **不可并发调用**。`run` / `run_stream` 共享同一个 `EngineControl`，
+    /// 并发调用会导致 control 状态（pause/cancel/shutdown）相互覆盖。
+    /// 需要并发爬取多个 Spider 时，请为每个 Spider 创建独立的 Engine 实例。
+    ///
     /// 每次调用会重置 `EngineControl`，清理上次的 pause/cancel/shutdown 状态。
     pub async fn run<S: Spider + 'static>(&self, spider: S) -> Result<(CrawlStats, Vec<Value>)> {
         let spider: Arc<dyn Spider> = Arc::new(spider);
@@ -80,6 +85,10 @@ impl Engine {
     }
 
     /// 流式运行：边爬边产出事件（仅单 Spider 模式）。
+    ///
+    /// # 并发约束
+    /// **不可与 `run` 或其他 `run_stream` 并发调用**。共享同一个 `EngineControl`，
+    /// 并发会导致 control 状态相互覆盖。需要并发时请创建多个 Engine 实例。
     pub fn run_stream<S: Spider + 'static>(&self, spider: S) -> CrawlStream {
         let (tx, rx) = tokio::sync::mpsc::channel::<CrawlEvent>(128);
         let engine = self.clone();
@@ -150,7 +159,7 @@ impl Engine {
         let stats = Arc::new(SpiderStats::new());
         let mut rule_engine = auto::ModeRuleEngine::new();
         for (pattern, mode) in spider.auto_rules() {
-            let _ = rule_engine.add_user_rule(&pattern, mode);
+            rule_engine.add_user_rule(&pattern, mode)?;
         }
         let rule_engine = Arc::new(Mutex::new(rule_engine));
         let fetch_mode = spider.fetch_mode();
@@ -217,7 +226,6 @@ impl Engine {
                 sched: sched.clone(),
                 follow_tx,
                 follow_rx: Arc::new(Mutex::new(follow_rx)),
-                domain_sems: Arc::new(dashmap::DashMap::new()),
                 proxy_clients: Arc::new(dashmap::DashMap::new()),
                 control: self.control.clone(),
                 work_notify: Arc::new(tokio::sync::Notify::new()),
@@ -231,7 +239,7 @@ impl Engine {
                             allowed_domains: spider.allowed_domains(),
                             max_depth,
                             max_retries: spider.max_retries(),
-                            request_cache: self.request_cache.clone(),
+                            cache_store: self.cache_store.clone(),
                             http_client: mw_http_client,
                             robots_cache: mw_robots_cache,
                             rule_engine: rule_engine.clone(),
@@ -400,7 +408,7 @@ impl Engine {
             pages_since_checkpoint += 1;
             if pages_since_checkpoint >= self.checkpoint_interval {
                 if let Some(ref store) = self.checkpoint_store {
-                    engine::save_checkpoint(store, &spider_name, &sched, &ctx.state.stats).await;
+                    engine::save_checkpoint(store.as_ref(), &spider_name, &sched, &ctx.state.stats).await;
                 }
                 pages_since_checkpoint = 0;
             }
@@ -461,11 +469,13 @@ impl EngineBuilder {
         self.max_refetch_rounds = n;
         self
     }
-    pub fn request_cache(mut self, c: RequestCache) -> Self {
-        self.request_cache = Some(c);
+    /// 设置响应缓存存储（注入 CacheMiddleware，永不过期）。
+    /// 想要 TTL 的用户应通过 `Spider::middlewares()` 自定义 `CacheMiddleware`。
+    pub fn cache_store(mut self, store: Arc<dyn crate::storage::Store>) -> Self {
+        self.cache_store = Some(store);
         self
     }
-    pub fn checkpoint(mut self, s: Arc<crate::storage::Store>, interval: usize) -> Self {
+    pub fn checkpoint(mut self, s: Arc<dyn crate::storage::Store>, interval: usize) -> Self {
         self.checkpoint_store = Some(s);
         self.checkpoint_interval = interval;
         self
@@ -499,7 +509,7 @@ impl EngineBuilder {
         let fetch_client = Arc::new(FetchClient::new(self.fetch_client_config)?);
         Ok(Engine {
             fetch_client,
-            request_cache: self.request_cache,
+            cache_store: self.cache_store,
             max_concurrent: self.max_concurrent,
             max_pages: self.max_pages,
             max_refetch_rounds: self.max_refetch_rounds,

@@ -8,11 +8,11 @@ use tokio::sync::Mutex;
 
 use super::{CrawlContext, ErrorAction, Middleware, MwAction};
 use crate::crawl::auto::{self, ModeRuleEngine};
-use crate::crawl::runtime::request_cache::{CachedEntry, RequestCache};
 use crate::crawl::runtime::robots::RobotsCache;
 use crate::crawl::{Request, Response};
 use crate::fetcher::FetchMode;
 use crate::http::Client;
+use crate::storage::{CachedResponse, Store};
 
 // === 请求修改类 ===
 
@@ -289,21 +289,16 @@ impl Middleware for DepthLimitMiddleware {
 
 /// 响应缓存中间件：缓存命中时通过 `MwAction::Respond` 短路，跳过网络请求。
 ///
-/// 响应返回后自动写入缓存。
+/// 响应返回后自动写入缓存。TTL 由 `default_ttl` 决定（写入 `CachedResponse.ttl`）。
 pub struct CacheMiddleware {
-    cache: RequestCache,
+    store: Arc<dyn Store>,
+    default_ttl: Option<Duration>,
 }
 
 impl CacheMiddleware {
-    pub fn new(cache: RequestCache) -> Self {
-        Self { cache }
-    }
-
-    /// 便捷构造：指定最大条目数和 TTL。
-    pub fn with_capacity(max_entries: u64, ttl: Duration) -> Self {
-        Self {
-            cache: RequestCache::new(max_entries, ttl),
-        }
+    /// 构造缓存中间件。`default_ttl` 为 `None` 时缓存永不过期。
+    pub fn new(store: Arc<dyn Store>, default_ttl: Option<Duration>) -> Self {
+        Self { store, default_ttl }
     }
 }
 
@@ -314,40 +309,42 @@ impl Middleware for CacheMiddleware {
     }
 
     async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
-        // 键含 method，避免 POST/GET 同 URL 串味（与 engine.rs 保持一致）
         let method_str = req.method.as_str();
-        if let Some(entry) = self.cache.get(method_str, &req.url).await {
-            let resp = Response {
-                url: req.url.clone(),
-                status: entry.status,
-                headers: entry.headers,
-                body: entry.body,
-                title: None,
-                cookies: Vec::new(),
-                request: req.clone(),
-                content_type: String::new(),
-                from_cache: true,
-            };
-            return MwAction::Respond(resp);
+        match self.store.load_response(method_str, &req.url) {
+            Ok(Some(cached)) => {
+                let resp = Response {
+                    url: req.url.clone(),
+                    status: cached.status,
+                    headers: cached.headers,
+                    body: cached.body,
+                    title: None,
+                    cookies: Vec::new(),
+                    request: req.clone(),
+                    content_type: cached.content_type,
+                    from_cache: true,
+                };
+                return MwAction::Respond(resp);
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("缓存读取失败: {}", e),
         }
         MwAction::Continue
     }
 
     async fn process_response(&self, resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         if resp.status >= 200 && resp.status < 400 && !resp.from_cache {
-            // 写入时用请求方法（resp.request.method）作为键的一部分
             let method_str = resp.request.method.as_str();
-            self.cache
-                .put(
-                    method_str,
-                    &resp.url,
-                    CachedEntry {
-                        status: resp.status,
-                        headers: resp.headers.clone(),
-                        body: resp.body.clone(),
-                    },
-                )
-                .await;
+            let cached = CachedResponse {
+                status: resp.status,
+                headers: resp.headers.clone(),
+                body: resp.body.clone(),
+                content_type: resp.content_type.clone(),
+                cached_at: chrono::Utc::now().timestamp(),
+                ttl: self.default_ttl,
+            };
+            if let Err(e) = self.store.save_response(method_str, &resp.url, &cached) {
+                tracing::warn!("响应缓存写入失败: {}", e);
+            }
         }
         MwAction::Continue
     }
@@ -641,8 +638,8 @@ pub struct DefaultMiddlewareConfig {
     pub max_depth: u32,
     /// 最大重试次数（注入 RetryMiddleware；0 时仅 Propagate）
     pub max_retries: u32,
-    /// 请求缓存（Some 时注入 CacheMiddleware）
-    pub request_cache: Option<RequestCache>,
+    /// 响应缓存存储（Some 时注入 CacheMiddleware，永不过期）
+    pub cache_store: Option<Arc<dyn Store>>,
     /// HTTP 客户端（RobotsMiddleware 拉取 robots.txt 用）
     pub http_client: Arc<Client>,
     /// robots 缓存（跨请求共享 robots 规则，内部 DashMap 无锁读）
@@ -671,8 +668,8 @@ pub fn default_middlewares(cfg: DefaultMiddlewareConfig) -> Vec<Arc<dyn Middlewa
     if !cfg.allowed_domains.is_empty() {
         mws.push(Arc::new(DomainFilterMiddleware::new(cfg.allowed_domains)));
     }
-    if let Some(cache) = cfg.request_cache {
-        mws.push(Arc::new(CacheMiddleware::new(cache)));
+    if let Some(store) = cfg.cache_store.clone() {
+        mws.push(Arc::new(CacheMiddleware::new(store, None)));
     }
     mws.push(Arc::new(DepthLimitMiddleware::new(cfg.max_depth)));
     if cfg.obey_robots {
@@ -809,7 +806,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_middleware() {
-        let mw = CacheMiddleware::with_capacity(100, Duration::from_secs(60));
+        let mw = CacheMiddleware::new(Arc::new(crate::storage::MemoryStore::default()), Some(Duration::from_secs(60)));
         let ctx = make_ctx();
         let mut req = make_req();
         assert_eq!(mw.process_request(&mut req, &ctx).await, MwAction::Continue);
@@ -860,7 +857,7 @@ mod tests {
     #[tokio::test]
     async fn test_priority_ordering() {
         let domain = DomainFilterMiddleware::new(["a.com"]);
-        let cache = CacheMiddleware::with_capacity(10, Duration::from_secs(1));
+        let cache = CacheMiddleware::new(Arc::new(crate::storage::MemoryStore::default()), Some(Duration::from_secs(1)));
         let depth = DepthLimitMiddleware::new(5);
         let headers = HeadersMiddleware::new(vec![]);
         let delay = DelayMiddleware::from_millis(0);
@@ -1017,7 +1014,7 @@ mod tests {
             allowed_domains: ["example.com".to_string()].into_iter().collect(),
             max_depth: 3,
             max_retries: 3,
-            request_cache: None,
+            cache_store: None,
             http_client: http_client.clone(),
             robots_cache: robots_cache.clone(),
             rule_engine: rule_engine.clone(),
@@ -1041,7 +1038,7 @@ mod tests {
             allowed_domains: HashSet::new(),
             max_depth: u32::MAX,
             max_retries: 0,
-            request_cache: None,
+            cache_store: None,
             http_client: http_client.clone(),
             robots_cache: robots_cache.clone(),
             rule_engine: rule_engine.clone(),
@@ -1067,7 +1064,7 @@ mod tests {
                 allowed_domains: HashSet::new(),
                 max_depth: u32::MAX,
                 max_retries: 0,
-                request_cache: None,
+                cache_store: None,
                 http_client: http_client.clone(),
                 robots_cache: robots_cache.clone(),
                 rule_engine: rule_engine.clone(),

@@ -34,6 +34,9 @@ pub struct Config {
     /// DNS-over-HTTPS 服务器 URL（如 "https://1.1.1.1/dns-query"）。
     /// 启用后通过 DoH 解析域名，防止代理场景下 DNS 泄漏。
     pub dns_over_https: Option<String>,
+    /// 响应体最大字节数。超过则返回 `ResponseBodyTooLarge` 错误，防止 OOM。
+    /// 默认 64MB（覆盖大多数 HTML 页面；二进制/大文件场景应显式调高）。
+    pub max_body_size: usize,
 }
 
 impl Default for Config {
@@ -48,6 +51,7 @@ impl Default for Config {
             emulation: Some(Profile::Chrome136),
             header_order: None,
             dns_over_https: None,
+            max_body_size: 64 * 1024 * 1024,
         }
     }
 }
@@ -109,6 +113,12 @@ impl ClientBuilder {
     /// 常用值："https://1.1.1.1/dns-query" (Cloudflare) 或 "https://dns.google/dns-query" (Google)
     pub fn dns_over_https(mut self, url: &str) -> Self {
         self.config.dns_over_https = Some(url.to_string());
+        self
+    }
+
+    /// 设置响应体最大字节数。超过则返回 `ResponseBodyTooLarge` 错误。
+    pub fn max_body_size(mut self, max: usize) -> Self {
+        self.config.max_body_size = max;
         self
     }
 
@@ -181,7 +191,7 @@ impl Client {
             .headers(self.build_headers_with(extra_headers))
             .send()
             .await
-            .map_err(|e| WispError::HttpError(format!("GET {url}: {e}")))?;
+            .map_err(|e| classify_request_error(&e, url, self.config.timeout))?;
         self.build_response(resp).await
     }
 
@@ -210,7 +220,7 @@ impl Client {
         let resp = req
             .send()
             .await
-            .map_err(|e| WispError::HttpError(format!("POST {url}: {e}")))?;
+            .map_err(|e| classify_request_error(&e, url, self.config.timeout))?;
         self.build_response(resp).await
     }
 
@@ -239,7 +249,7 @@ impl Client {
         let resp = req
             .send()
             .await
-            .map_err(|e| WispError::HttpError(format!("PUT {url}: {e}")))?;
+            .map_err(|e| classify_request_error(&e, url, self.config.timeout))?;
         self.build_response(resp).await
     }
 
@@ -251,7 +261,7 @@ impl Client {
             .headers(self.build_headers_with(extra_headers))
             .send()
             .await
-            .map_err(|e| WispError::HttpError(format!("DELETE {url}: {e}")))?;
+            .map_err(|e| classify_request_error(&e, url, self.config.timeout))?;
         self.build_response(resp).await
     }
 
@@ -296,11 +306,23 @@ impl Client {
             .iter()
             .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), s.to_string())))
             .collect();
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| WispError::HttpError(format!("read body: {e}")))?
-            .to_vec();
+
+        // 流式读取 body 并检查大小限制，防止超大响应导致 OOM
+        let max_body_size = self.config.max_body_size;
+        let mut body = Vec::new();
+        let mut stream = resp.bytes_stream();
+        use futures::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| WispError::HttpError(format!("read body chunk: {e}")))?;
+            if body.len() + chunk.len() > max_body_size {
+                return Err(WispError::ResponseBodyTooLarge {
+                    url: url.clone(),
+                    actual: body.len() + chunk.len(),
+                    limit: max_body_size,
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
 
         Ok(Response {
             status,
@@ -343,6 +365,65 @@ impl Response {
     pub fn is_ok(&self) -> bool {
         self.status >= 200 && self.status < 300
     }
+}
+
+/// 将 `wreq::Error` 分类为结构化的 `WispError`，支持按错误类别差异化重试/降级。
+///
+/// 分类顺序（先命中先返回）：
+/// 1. `is_timeout` → `RequestTimedOut`
+/// 2. `is_proxy_connect` → `ProxyFailed`
+/// 3. `is_tls` → `TlsFailed`
+/// 4. `is_connect` → 区分 DNS 失败（`DnsFailed`）与 TCP 连接失败（`ConnectionFailed`）
+/// 5. `is_builder` → `UrlParse`（通常是 URL scheme/解析错误）
+/// 6. 其他 → 退化为 `HttpError`
+///
+/// DNS 判定通过错误消息字符串匹配（wreq 未暴露 DNS 专用判断 API），覆盖常见
+/// GaiError 消息："nodename nor servname"、"name or service not known"、
+/// "no such host"、"name resolution" 等。
+fn classify_request_error(e: &wreq::Error, url: &str, timeout: Duration) -> WispError {
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .unwrap_or_else(|| url.to_string());
+
+    if e.is_timeout() {
+        return WispError::RequestTimedOut {
+            url: url.to_string(),
+            timeout_secs: timeout.as_secs(),
+        };
+    }
+    if e.is_proxy_connect() {
+        return WispError::ProxyFailed {
+            detail: e.to_string(),
+        };
+    }
+    if e.is_tls() {
+        return WispError::TlsFailed {
+            host,
+            detail: e.to_string(),
+        };
+    }
+    if e.is_connect() {
+        let detail = e.to_string();
+        let lower = detail.to_lowercase();
+        const DNS_HINTS: &[&str] = &[
+            "nodename nor servname",
+            "name or service not known",
+            "no such host",
+            "name resolution",
+            "dns",
+            "resolve",
+            "temporary failure in name resolution",
+        ];
+        if DNS_HINTS.iter().any(|h| lower.contains(h)) {
+            return WispError::DnsFailed { host, detail };
+        }
+        return WispError::ConnectionFailed { host, detail };
+    }
+    if e.is_builder() {
+        return WispError::UrlParse(e.to_string());
+    }
+    WispError::HttpError(e.to_string())
 }
 
 #[cfg(test)]

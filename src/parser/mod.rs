@@ -140,7 +140,7 @@ impl Node {
         selector: &str,
         key: &str,
         url: &str,
-        store: &crate::storage::Store,
+        store: &dyn crate::storage::Store,
         auto_save: bool,
         tolerance: f64,
     ) -> Option<Node> {

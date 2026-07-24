@@ -52,10 +52,10 @@ pub use error::{WispError, Result};
 
 pub use parser::{Node, NodeList};
 pub use proxy::RotationStrategy;
-pub use storage::Store;
+pub use storage::{Store, MemoryStore, SqliteStore, CachedResponse, ElementSnapshotRow};
 
 // === 爬虫引擎 ===
-pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider, RequestCache};
+pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider};
 pub use http::UaRotator;
 
 // === 底层类型（FetchClientConfig 公共字段需要） ===

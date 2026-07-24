@@ -1,7 +1,7 @@
 //! Proxy pool management with rotation strategies.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use rand::Rng;
+use rand::RngExt;
 
 /// How to pick the next proxy from the pool.
 #[derive(Debug, Clone, Copy, PartialEq)]
