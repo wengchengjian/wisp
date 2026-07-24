@@ -4,6 +4,8 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use tokio::runtime::Runtime;
 use wisp::parser::Node;
 
+mod timing_layer;
+
 // ============================ parser benchmarks ============================
 
 fn generate_html(size_kb: usize) -> String {
