@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 use std::sync::Arc;
-use crate::error::{WispError, Result};
+use crate::error::{WispError, Result, McpError};
 use crate::storage::Store;
 use crate::parser::Node;
 use crate::http::Client;
@@ -13,7 +13,7 @@ use wreq_util::Profile;
 pub async fn fetch_page(args: Value) -> Result<Value> {
     let url = args.get("url")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'url' argument".into()))?;
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'url' argument".into())))?;
 
     let mut builder = Client::builder();
     if let Some(emu) = args.get("emulation").and_then(|v| v.as_str()) {
@@ -41,10 +41,10 @@ pub async fn fetch_page(args: Value) -> Result<Value> {
 pub async fn extract_css(args: Value) -> Result<Value> {
     let html = args.get("html")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'html' argument".into()))?;
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'html' argument".into())))?;
     let selector = args.get("selector")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'selector' argument".into()))?;
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'selector' argument".into())))?;
     let attr: Option<&str> = args.get("attr").and_then(|v| v.as_str());
 
     let doc = Node::from_html(html);
@@ -71,17 +71,25 @@ pub async fn extract_css(args: Value) -> Result<Value> {
 pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
     let start_urls: Vec<String> = args.get("start_urls")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| WispError::McpError("missing 'start_urls' array".into()))?
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'start_urls' array".into())))?
         .iter()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect();
     if start_urls.is_empty() {
-        return Err(WispError::McpError("start_urls 不能为空".into()));
+        return Err(WispError::Mcp(McpError::General("start_urls 不能为空".into())));
+    }
+    // D-007: scheme 校验，仅允许 http/https，防止 SSRF
+    for url in &start_urls {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(WispError::Mcp(McpError::General(
+                format!("start_urls 仅支持 http/https scheme，拒绝: {url}")
+            )));
+        }
     }
 
     let css_selector = args.get("css_selector")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'css_selector'".into()))?
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'css_selector'".into())))?
         .to_string();
 
     let max_pages = args.get("max_pages")
@@ -137,13 +145,13 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
 pub async fn adaptive_scrape(args: Value, store: &Arc<dyn Store>) -> Result<Value> {
     let url = args.get("url")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'url'".into()))?;
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'url'".into())))?;
     let selector = args.get("selector")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'selector'".into()))?;
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'selector'".into())))?;
     let key = args.get("key")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'key'".into()))?;
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'key'".into())))?;
 
     let client = Client::builder().build()?;
     let resp = client.get(url, &[]).await?;
@@ -172,7 +180,7 @@ pub async fn adaptive_scrape(args: Value, store: &Arc<dyn Store>) -> Result<Valu
 pub async fn stealth_fetch(args: Value) -> Result<Value> {
     let url = args.get("url")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::McpError("missing 'url'".into()))?;
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'url'".into())))?;
     let headless = args.get("headless")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
@@ -183,11 +191,11 @@ pub async fn stealth_fetch(args: Value) -> Result<Value> {
     use crate::{Browser, LaunchOptions};
 
     let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await
-        .map_err(|e| WispError::McpError(format!("browser launch: {e}")))?;
+        .map_err(|e| WispError::Mcp(McpError::General(format!("browser launch: {e}"))))?;
     let mut page = browser.new_page().await
-        .map_err(|e| WispError::McpError(format!("new page: {e}")))?;
+        .map_err(|e| WispError::Mcp(McpError::General(format!("new page: {e}"))))?;
     page.goto(url).await
-        .map_err(|e| WispError::McpError(format!("goto: {e}")))?;
+        .map_err(|e| WispError::Mcp(McpError::General(format!("goto: {e}"))))?;
 
     if human_mode {
         // 人类行为模拟：随机延迟
@@ -195,12 +203,12 @@ pub async fn stealth_fetch(args: Value) -> Result<Value> {
     }
 
     let html = page.evaluate_as_string("document.documentElement.outerHTML").await
-        .map_err(|e| WispError::McpError(format!("get html: {e}")))?;
+        .map_err(|e| WispError::Mcp(McpError::General(format!("get html: {e}"))))?;
     let title = page.evaluate_as_string("document.title").await
         .unwrap_or_default();
 
     browser.close().await
-        .map_err(|e| WispError::McpError(format!("close: {e}")))?;
+        .map_err(|e| WispError::Mcp(McpError::General(format!("close: {e}"))))?;
 
     Ok(json!({
         "url": url,

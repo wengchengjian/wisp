@@ -79,6 +79,11 @@ impl Engine {
     /// 需要并发爬取多个 Spider 时，请为每个 Spider 创建独立的 Engine 实例。
     ///
     /// 每次调用会重置 `EngineControl`，清理上次的 pause/cancel/shutdown 状态。
+    ///
+    /// # Errors
+    ///
+    /// - `NetworkError::Http` — 同一 Engine 实例并发调用 run/run_stream。
+    /// - 其他错误由 Spider 回调或中间件产生。
     pub async fn run<S: Spider + 'static>(&self, spider: S) -> Result<(CrawlStats, Vec<Value>)> {
         let spider: Arc<dyn Spider> = Arc::new(spider);
         let items: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -159,10 +164,10 @@ impl Engine {
         // 运行时并发保护：同一 Engine 实例不允许并发 run。
         // 未来支持并发时移除此 guard，将 EngineControl 改为 per-run 即可。
         if self.running.swap(true, Ordering::SeqCst) {
-            return Err(crate::error::WispError::HttpError(
+            return Err(crate::error::WispError::Network(crate::error::NetworkError::Http(
                 "Engine is already running. Concurrent run/run_stream on the same Engine is not supported. \
                  Create separate Engine instances for concurrent spiders.".into(),
-            ));
+            )));
         }
         // RAII guard：无论正常结束还是 panic，都释放 running 标志
         struct RunGuard(Arc<AtomicBool>);

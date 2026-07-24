@@ -2,9 +2,11 @@
 
 use std::fmt;
 
-/// Parsed proxy configuration.
+/// Parsed proxy configuration (HTTP client 内部使用)。
+///
+/// 区别于 `crate::config::ProxyConfig`（浏览器启动参数）。
 #[derive(Clone)]
-pub struct ProxyConfig {
+pub struct ParsedProxy {
     /// Full proxy URL (e.g., "http://user:pass@host:port")
     pub url: String,
     /// Proxy host
@@ -17,7 +19,7 @@ pub struct ProxyConfig {
     pub password: Option<String>,
 }
 
-impl fmt::Debug for ProxyConfig {
+impl fmt::Debug for ParsedProxy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // 脱敏：URL 和 password 可能包含凭据，不直接输出
         let masked_url = if self.username.is_some() {
@@ -25,7 +27,7 @@ impl fmt::Debug for ProxyConfig {
         } else {
             self.url.clone()
         };
-        f.debug_struct("ProxyConfig")
+        f.debug_struct("ParsedProxy")
             .field("url", &masked_url)
             .field("host", &self.host)
             .field("port", &self.port)
@@ -35,8 +37,8 @@ impl fmt::Debug for ProxyConfig {
     }
 }
 
-impl ProxyConfig {
-    /// Parse a proxy URL string into a ProxyConfig.
+impl ParsedProxy {
+    /// Parse a proxy URL string into a ParsedProxy.
     ///
     /// Supported formats:
     /// - `http://host:port`
@@ -68,9 +70,9 @@ impl ProxyConfig {
     }
 }
 
-/// Convert a list of proxy strings to ProxyConfig list.
-pub fn parse_proxies(proxies: &[String]) -> Vec<ProxyConfig> {
-    proxies.iter().filter_map(|p| ProxyConfig::parse(p)).collect()
+/// Convert a list of proxy strings to ParsedProxy list.
+pub fn parse_proxies(proxies: &[String]) -> Vec<ParsedProxy> {
+    proxies.iter().filter_map(|p| ParsedProxy::parse(p)).collect()
 }
 
 #[cfg(test)]
@@ -79,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_parse_simple() {
-        let cfg = ProxyConfig::parse("http://proxy.example.com:8080").unwrap();
+        let cfg = ParsedProxy::parse("http://proxy.example.com:8080").unwrap();
         assert_eq!(cfg.host, "proxy.example.com");
         assert_eq!(cfg.port, 8080);
         assert!(cfg.username.is_none());
@@ -88,7 +90,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_auth() {
-        let cfg = ProxyConfig::parse("http://user:pass@proxy.example.com:3128").unwrap();
+        let cfg = ParsedProxy::parse("http://user:pass@proxy.example.com:3128").unwrap();
         assert_eq!(cfg.host, "proxy.example.com");
         assert_eq!(cfg.port, 3128);
         assert_eq!(cfg.username, Some("user".to_string()));
@@ -97,13 +99,13 @@ mod tests {
 
     #[test]
     fn test_parse_socks5() {
-        let cfg = ProxyConfig::parse("socks5://127.0.0.1:1080").unwrap();
+        let cfg = ParsedProxy::parse("socks5://127.0.0.1:1080").unwrap();
         assert_eq!(cfg.host, "127.0.0.1");
         assert_eq!(cfg.port, 1080);
     }
 
     #[test]
     fn test_parse_invalid() {
-        assert!(ProxyConfig::parse("not-a-url").is_none());
+        assert!(ParsedProxy::parse("not-a-url").is_none());
     }
 }

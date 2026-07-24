@@ -5,10 +5,11 @@
 //! Spider 引擎也复用同一套 Request/Response，避免类型重复。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 
-use crate::error::{WispError, Result};
+use crate::error::{WispError, Result, ParseError};
 use crate::parser::{Node, NodeList};
 use crate::utils::resolve_href;
 use super::FetchMode;
@@ -180,7 +181,6 @@ impl Request {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone)]
 pub struct Response {
     /// HTTP 状态码
     pub status: u16,
@@ -201,9 +201,73 @@ pub struct Response {
     /// 是否来自缓存（缓存命中不算 pages_crawled）。
     #[doc(hidden)]
     pub from_cache: bool,
+    /// 标记 HTML 是否已被解析过（每个 Response 只允许解析一次）。
+    parsed: AtomicBool,
+}
+
+impl Clone for Response {
+    fn clone(&self) -> Self {
+        Self {
+            status: self.status,
+            url: self.url.clone(),
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+            title: self.title.clone(),
+            cookies: self.cookies.clone(),
+            request: self.request.clone(),
+            content_type: self.content_type.clone(),
+            from_cache: self.from_cache,
+            // 克隆体获得全新的解析标记（未解析状态）
+            parsed: AtomicBool::new(false),
+        }
+    }
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("url", &self.url)
+            .field("headers", &self.headers)
+            .field("body_len", &self.body.len())
+            .field("title", &self.title)
+            .field("cookies", &self.cookies)
+            .field("request", &self.request)
+            .field("content_type", &self.content_type)
+            .field("from_cache", &self.from_cache)
+            .field("parsed", &self.parsed.load(Ordering::Relaxed))
+            .finish()
+    }
 }
 
 impl Response {
+    /// 从所有字段构建（内部使用，如 Engine 组装响应）。
+    #[doc(hidden)]
+    pub fn from_parts(
+        status: u16,
+        url: String,
+        headers: HashMap<String, String>,
+        body: Vec<u8>,
+        title: Option<String>,
+        cookies: Vec<String>,
+        request: Request,
+        content_type: String,
+        from_cache: bool,
+    ) -> Self {
+        Self {
+            status,
+            url,
+            headers,
+            body,
+            title,
+            cookies,
+            request,
+            content_type,
+            from_cache,
+            parsed: AtomicBool::new(false),
+        }
+    }
+
     /// 从 HTTP 响应构建。
     pub fn from_http(
         status: u16,
@@ -223,6 +287,7 @@ impl Response {
             request,
             content_type,
             from_cache: false,
+            parsed: AtomicBool::new(false),
         }
     }
 
@@ -245,6 +310,7 @@ impl Response {
             request,
             content_type: "text/html; charset=utf-8".to_string(),
             from_cache: false,
+            parsed: AtomicBool::new(false),
         }
     }
 
@@ -259,7 +325,7 @@ impl Response {
     pub fn json(&self) -> Result<Value> {
         let text = self.text()?;
         serde_json::from_str(&text)
-            .map_err(|e| WispError::JsonError(format!("JSON parse: {e}")))
+            .map_err(|e| WispError::Parse(ParseError::Json(format!("JSON parse: {e}"))))
     }
 
     /// 状态码是否为 2xx。
@@ -276,10 +342,11 @@ impl Response {
 
     /// 解析 HTML 为文档节点。
     ///
-    /// # Performance
+    /// # Panics
     ///
-    /// **每次调用都会重新解析整个 HTML 文档**（O(n) 复杂度）。
-    /// 若需多次查询，强烈建议先缓存解析结果：
+    /// 每个 `Response` 实例只允许调用一次 `parse()`（含通过 `css()`/`select_one()`/
+    /// `find_by_text()` 等便捷方法的间接调用）。重复调用将 panic。
+    /// 若需多次查询，请在一次 `parse()` 返回的 `Node` 上操作：
     ///
     /// ```rust,no_run
     /// # use wisp::Response;
@@ -289,36 +356,41 @@ impl Response {
     /// let links = doc.select("a.link");
     /// # }
     /// ```
-    ///
-    /// 而非多次调用 `resp.css()`（每次都会重新解析）。
     pub fn parse(&self) -> Node {
+        if self.parsed.swap(true, Ordering::Relaxed) {
+            panic!(
+                "Response::parse() 已被调用过。每个 Response 只允许解析一次，\
+                 请在一次 parse() 返回的 Node 上执行多次查询，\
+                 而非多次调用 css()/select_one()/find_by_text()。"
+            );
+        }
         let text = self.text().unwrap_or_default();
         Node::from_html(&text)
     }
 
-    /// CSS 选择器查询（快捷方式）。
+    /// CSS 选择器查询（便捷方法，内部调用 `parse()`）。
     ///
-    /// # Performance
+    /// # Panics
     ///
-    /// 每次调用都会重新解析 HTML。多次查询时请先 `resp.parse()` 缓存文档节点。
+    /// 若此 Response 已被解析过（含通过其他便捷方法），将 panic。
     pub fn css(&self, selector: &str) -> NodeList {
         self.parse().select(selector)
     }
 
-    /// 按文本内容查找元素。
+    /// 按文本内容查找元素（便捷方法，内部调用 `parse()`）。
     ///
-    /// # Performance
+    /// # Panics
     ///
-    /// 每次调用都会重新解析 HTML。多次查询时请先 `resp.parse()` 缓存文档节点。
+    /// 若此 Response 已被解析过（含通过其他便捷方法），将 panic。
     pub fn find_by_text(&self, text: &str, tag: Option<&str>, exact: bool) -> NodeList {
         self.parse().find_by_text(text, tag, exact)
     }
 
-    /// CSS 选择器查询第一个匹配元素。
+    /// CSS 选择器查询第一个匹配元素（便捷方法，内部调用 `parse()`）。
     ///
-    /// # Performance
+    /// # Panics
     ///
-    /// 每次调用都会重新解析 HTML。多次查询时请先 `resp.parse()` 缓存文档节点。
+    /// 若此 Response 已被解析过（含通过其他便捷方法），将 panic。
     pub fn select_one(&self, selector: &str) -> Option<Node> {
         self.parse().select_one(selector)
     }
@@ -430,7 +502,14 @@ mod tests {
         let resp = make_response("");
         assert!(resp.is_ok());
 
-        let err_resp = Response { status: 404, ..resp };
+        let err_resp = Response::from_http(
+            404,
+            "https://example.com/page".to_string(),
+            HashMap::new(),
+            Vec::new(),
+            "text/html".to_string(),
+            Request::get("https://example.com/page"),
+        );
         assert!(!err_resp.is_ok());
     }
 
@@ -461,5 +540,33 @@ mod tests {
         assert_eq!(req.priority, 5);
         assert_eq!(req.callback, Some("parse_page".to_string()));
         assert_eq!(req.meta["depth"], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Response::parse() 已被调用过")]
+    fn test_response_parse_twice_panics() {
+        let resp = make_response("<h1>Hello</h1><p>World</p>");
+        let _doc = resp.parse();
+        // 第二次解析应 panic
+        let _doc2 = resp.parse();
+    }
+
+    #[test]
+    #[should_panic(expected = "Response::parse() 已被调用过")]
+    fn test_response_css_then_select_one_panics() {
+        let resp = make_response(r#"<div class="a">A</div><p id="b">B</p>"#);
+        let _items = resp.css(".a");
+        // css() 已触发 parse，再调 select_one 应 panic
+        let _node = resp.select_one("#b");
+    }
+
+    #[test]
+    fn test_response_clone_resets_parsed_flag() {
+        let resp = make_response("<h1>Title</h1>");
+        let _doc = resp.parse();
+        // 克隆体应可正常解析
+        let cloned = resp.clone();
+        let doc2 = cloned.parse();
+        assert_eq!(doc2.select("h1").len(), 1);
     }
 }

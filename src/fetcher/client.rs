@@ -11,12 +11,12 @@ use wreq_util::Profile;
 
 use crate::browser::BrowserPool;
 use crate::config::LaunchOptions;
-use crate::error::{Result, WispError};
+use crate::error::{Result, WispError, BrowserError};
 use crate::http::{block::DomainBlocker, Client};
 use crate::stealth::challenge::ChallengeSolver;
 use crate::stealth::human::HumanBehavior;
 
-use super::response::{Method, Request, Response};
+use super::response::{Request, Response};
 
 /// 统一请求客户端配置。
 #[derive(Debug, Clone)]
@@ -117,45 +117,16 @@ impl FetchClient {
         &self.config
     }
 
-    /// HTTP 请求（共享 Client，连接复用）。
+    /// HTTP 请求（共享 Client，连接复用）。直接返回统一 Response，无中间类型转换。
     pub async fn fetch_http(&self, req: &Request) -> Result<Response> {
-        let extra_headers: Vec<(String, String)> = req
-            .headers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let resp = match req.method {
-            Method::Get => self.http.get(&req.url, &extra_headers).await?,
-            Method::Post => {
-                self.http
-                    .post(&req.url, req.body.as_deref(), None, &extra_headers)
-                    .await?
-            }
-            Method::Put => {
-                self.http
-                    .put(&req.url, req.body.as_deref(), None, &extra_headers)
-                    .await?
-            }
-            Method::Delete => self.http.delete(&req.url, &extra_headers).await?,
-        };
-        Ok(Response::from_http(
-            resp.status,
-            resp.url.clone(),
-            resp.headers.clone(),
-            resp.body.clone(),
-            resp.headers
-                .get("content-type")
-                .cloned()
-                .unwrap_or_default(),
-            req.clone(),
-        ))
+        self.http.fetch(req).await
     }
 
     /// 浏览器请求（通过 BrowserPool，单 Browser 多 Page 并发）。
     /// `solve_cf=true` 时执行 CF 挑战解决 + 人类行为模拟。
     pub async fn fetch_browser(&self, req: &Request, solve_cf: bool) -> Result<Response> {
         let pool = self.browser_pool.as_ref().ok_or_else(|| {
-            WispError::BrowserError("browser pool not configured (max_concurrent_pages=0)".into())
+            WispError::Browser(BrowserError::Other("browser pool not configured (max_concurrent_pages=0)".into()))
         })?;
         // acquire 返回带 page 的 handle（permit 限制并发数）
         let mut handle = pool.acquire().await?;
@@ -179,7 +150,7 @@ impl FetchClient {
         // Network.responseReceived 事件，状态码获取链路会彻底失效。
         page.cmd("Network.enable", serde_json::json!({}))
             .await
-            .map_err(|e| WispError::CdpError(format!("Network.enable failed: {e}")))?;
+            .map_err(|e| WispError::Browser(BrowserError::CdpConnection(format!("Network.enable failed: {e}"))))?;
 
         // 在 goto 之前订阅事件流，避免「事件已发出但订阅者尚未注册」的竞态。
         let mut event_rx = page.session.subscribe_events();
@@ -253,9 +224,9 @@ impl FetchClient {
                         .and_then(|s| s.as_u64())
                         .map(|s| s as u16)
                         .ok_or_else(|| {
-                            WispError::CdpError(
+                            WispError::Browser(BrowserError::CdpConnection(
                                 "Network.responseReceived missing response.status".into(),
-                            )
+                            ))
                         });
                 }
                 Ok(Err(RecvError::Lagged(n))) => {
@@ -263,9 +234,9 @@ impl FetchClient {
                     continue;
                 }
                 Ok(Err(RecvError::Closed)) => {
-                    return Err(WispError::CdpError(
+                    return Err(WispError::Browser(BrowserError::CdpConnection(
                         "event broadcaster closed before navigation status captured".into(),
-                    ));
+                    )));
                 }
                 Err(_) => {
                     return Err(WispError::Timeout(

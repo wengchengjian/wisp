@@ -21,7 +21,7 @@ pub enum OutputFormat {
 pub fn html_to_markdown(html: &str) -> Result<String> {
     let converter = htmd::HtmlToMarkdown::new();
     converter.convert(html)
-        .map_err(|e| WispError::ParseError(format!("html2markdown: {e}")))
+        .map_err(|e| WispError::Parse(crate::error::ParseError::Html(format!("html2markdown: {e}"))))
 }
 
 /// Build a WARC/1.1 response record.

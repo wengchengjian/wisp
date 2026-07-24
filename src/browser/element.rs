@@ -1,4 +1,4 @@
-use crate::error::{WispError, Result};
+use crate::error::{WispError, Result, BrowserError};
 use crate::browser::page::Page;
 use crate::browser::page::do_evaluate as evaluate;
 
@@ -9,8 +9,8 @@ pub async fn click(page: &Page, selector: &str) -> Result<()> {
         selector.replace('\'', "\\'")
     );
     evaluate(page, &js).await.map_err(|e| match e {
-        WispError::EvalError(msg) if msg.contains("Element not found") => {
-            WispError::ElementNotFound { selector: selector.to_string() }
+        WispError::Browser(BrowserError::EvalError(msg)) if msg.contains("Element not found") => {
+            WispError::Browser(BrowserError::ElementNotFound { selector: selector.to_string() })
         }
         other => other,
     })?;
@@ -25,8 +25,8 @@ pub async fn fill(page: &Page, selector: &str, value: &str) -> Result<()> {
         serde_json::to_string(value).unwrap()
     );
     evaluate(page, &js).await.map_err(|e| match e {
-        WispError::EvalError(msg) if msg.contains("Element not found") => {
-            WispError::ElementNotFound { selector: selector.to_string() }
+        WispError::Browser(BrowserError::EvalError(msg)) if msg.contains("Element not found") => {
+            WispError::Browser(BrowserError::ElementNotFound { selector: selector.to_string() })
         }
         other => other,
     })?;
@@ -41,7 +41,7 @@ pub async fn wait_for_selector(page: &Page, selector: &str, timeout_ms: u64) -> 
         selector.replace('\'', "\\'")
     );
     evaluate(page, &js).await.map_err(|e| match e {
-        WispError::EvalError(msg) if msg.contains("Timeout") => {
+        WispError::Browser(BrowserError::EvalError(msg)) if msg.contains("Timeout") => {
             WispError::Timeout(format!("wait_for_selector: {selector}"))
         }
         other => other,
@@ -56,8 +56,8 @@ pub async fn text_content(page: &Page, selector: &str) -> Result<String> {
         selector.replace('\'', "\\'")
     );
     let value = evaluate(page, &js).await.map_err(|e| match e {
-        WispError::EvalError(msg) if msg.contains("Element not found") => {
-            WispError::ElementNotFound { selector: selector.to_string() }
+        WispError::Browser(BrowserError::EvalError(msg)) if msg.contains("Element not found") => {
+            WispError::Browser(BrowserError::ElementNotFound { selector: selector.to_string() })
         }
         other => other,
     })?;

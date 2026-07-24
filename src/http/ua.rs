@@ -30,29 +30,39 @@ const MOBILE_UAS: &[&str] = &[
 ];
 
 /// UA rotator - picks a random UA from the pool on each call.
+///
+/// 内置池使用 `&'static str` 避免堆分配（D-016）。
 pub struct UaRotator {
-    pool: Vec<String>,
+    pool: UaPool,
+}
+
+enum UaPool {
+    Static(&'static [&'static str]),
+    Owned(Vec<String>),
 }
 
 impl UaRotator {
     /// Desktop browser UA pool.
     pub fn desktop() -> Self {
-        Self { pool: DESKTOP_UAS.iter().map(|s| s.to_string()).collect() }
+        Self { pool: UaPool::Static(DESKTOP_UAS) }
     }
 
     /// Mobile browser UA pool.
     pub fn mobile() -> Self {
-        Self { pool: MOBILE_UAS.iter().map(|s| s.to_string()).collect() }
+        Self { pool: UaPool::Static(MOBILE_UAS) }
     }
 
     /// Custom UA pool.
     pub fn custom(uas: Vec<String>) -> Self {
-        Self { pool: uas }
+        Self { pool: UaPool::Owned(uas) }
     }
 
     /// Pick a random UA from the pool.
     pub fn next(&self) -> &str {
-        self.pool.choose(&mut rand::rng()).map(|s| s.as_str()).unwrap_or("")
+        match &self.pool {
+            UaPool::Static(pool) => pool.choose(&mut rand::rng()).copied().unwrap_or(""),
+            UaPool::Owned(pool) => pool.choose(&mut rand::rng()).map(|s| s.as_str()).unwrap_or(""),
+        }
     }
 }
 

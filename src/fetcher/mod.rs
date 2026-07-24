@@ -108,6 +108,10 @@ impl Fetcher {
     }
 
     /// GET 请求。
+    ///
+    /// # Errors
+    ///
+    /// 网络请求失败时返回 `WispError::Network`（DNS/TLS/超时/代理等）。
     pub async fn get(&self, url: &str) -> Result<Response> {
         self.fetch(Request::get(url)).await
     }
@@ -244,6 +248,10 @@ impl FetcherBuilder {
     }
 
     /// 构建 Fetcher 实例。
+    ///
+    /// # Errors
+    ///
+    /// HTTP Client 构建失败时返回错误（如无效代理 URL）。
     pub fn build(self) -> Result<Fetcher> {
         Fetcher::new(self.mode, self.config)
     }

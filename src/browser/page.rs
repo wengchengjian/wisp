@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::browser::cdp::CdpSession;
-use crate::error::{WispError, Result};
+use crate::error::{WispError, Result, BrowserError};
 use base64::Engine;
 
 pub struct Page {
@@ -48,12 +48,12 @@ impl Page {
         // Create target
         let result = session.execute("Target.createTarget", json!({"url": "about:blank"})).await?;
         let target_id = result.get("targetId").and_then(|t| t.as_str())
-            .ok_or_else(|| WispError::CdpError("no targetId".into()))?.to_string();
+            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no targetId".into())))?.to_string();
 
         // Attach to target
         let result = session.execute("Target.attachToTarget", json!({"targetId": target_id, "flatten": true})).await?;
         let session_id = result.get("sessionId").and_then(|s| s.as_str())
-            .ok_or_else(|| WispError::CdpError("no sessionId".into()))?.to_string();
+            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no sessionId".into())))?.to_string();
 
         // Page init sequence (matches patchright):
         // Page.enable -> Page.getFrameTree -> Log.enable -> Page.setLifecycleEventsEnabled
@@ -61,7 +61,7 @@ impl Page {
         session.execute_with_session("Page.enable", json!({}), Some(&session_id)).await?;
         let frame_tree = session.execute_with_session("Page.getFrameTree", json!({}), Some(&session_id)).await?;
         let frame_id = frame_tree.get("frameTree").and_then(|ft| ft.get("frame")).and_then(|f| f.get("id")).and_then(|id| id.as_str())
-            .ok_or_else(|| WispError::CdpError("no frame id".into()))?.to_string();
+            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no frame id".into())))?.to_string();
         let _ = session.execute_with_session("Log.enable", json!({}), Some(&session_id)).await;
         session.execute_with_session("Page.setLifecycleEventsEnabled", json!({"enabled": true}), Some(&session_id)).await?;
 
@@ -296,12 +296,12 @@ impl Page {
     pub async fn pdf(&self, path: &str) -> Result<()> {
         let result = self.cmd("Page.printToPDF", json!({"printBackground": true})).await?;
         let data = result.get("data").and_then(|d| d.as_str())
-            .ok_or_else(|| WispError::BrowserError("no PDF data".into()))?;
+            .ok_or_else(|| WispError::Browser(BrowserError::Other("no PDF data".into())))?;
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD.decode(data)
-            .map_err(|e| WispError::BrowserError(format!("decode PDF: {e}")))?;
+            .map_err(|e| WispError::Browser(BrowserError::Other(format!("decode PDF: {e}"))))?;
         tokio::fs::write(path, &bytes).await
-            .map_err(|e| WispError::BrowserError(format!("write PDF: {e}")))?;
+            .map_err(|e| WispError::Browser(BrowserError::Other(format!("write PDF: {e}"))))?;
         Ok(())
     }
 
@@ -381,7 +381,7 @@ pub async fn do_evaluate(page: &Page, expression: &str) -> Result<Value> {
     })).await?;
 
     let context_id = world.get("executionContextId").and_then(|id| id.as_u64())
-        .ok_or_else(|| WispError::CdpError("no executionContextId".into()))?;
+        .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no executionContextId".into())))?;
 
     let result = page.cmd("Runtime.evaluate", json!({
         "expression": expression,
@@ -392,7 +392,7 @@ pub async fn do_evaluate(page: &Page, expression: &str) -> Result<Value> {
 
     if let Some(exception) = result.get("exceptionDetails") {
         let text = exception.get("text").and_then(|t| t.as_str()).unwrap_or("JS error");
-        return Err(WispError::EvalError(text.to_string()));
+        return Err(WispError::Browser(BrowserError::EvalError(text.to_string())));
     }
 
     Ok(result.get("result").and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null))
@@ -448,14 +448,14 @@ async fn wait_for_load(page: &Page) -> Result<()> {
 pub async fn do_screenshot(page: &Page, path: &str) -> Result<()> {
     let bytes = do_screenshot_bytes(page).await?;
     tokio::fs::write(path, &bytes).await
-        .map_err(|e| WispError::BrowserError(format!("write: {e}")))?;
+        .map_err(|e| WispError::Browser(BrowserError::Other(format!("write: {e}"))))?;
     Ok(())
 }
 
 pub async fn do_screenshot_bytes(page: &Page) -> Result<Vec<u8>> {
     let result = page.cmd("Page.captureScreenshot", json!({"format": "png"})).await?;
     let data = result.get("data").and_then(|d| d.as_str())
-        .ok_or_else(|| WispError::BrowserError("no screenshot data".into()))?;
+        .ok_or_else(|| WispError::Browser(BrowserError::Other("no screenshot data".into())))?;
     base64::engine::general_purpose::STANDARD.decode(data)
-        .map_err(|e| WispError::BrowserError(format!("decode: {e}")))
+        .map_err(|e| WispError::Browser(BrowserError::Other(format!("decode: {e}"))))
 }

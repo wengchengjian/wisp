@@ -233,7 +233,10 @@ mod tests {
             "text/html".into(), Request::get("http://example.com"),
         );
         assert!(spider.is_blocked(&blocked_resp));
-        let ok_resp = Response { status: 200, ..blocked_resp };
+        let ok_resp = Response::from_http(
+            200, "http://example.com".into(), HashMap::new(), vec![],
+            "text/html".into(), Request::get("http://example.com"),
+        );
         assert!(!spider.is_blocked(&ok_resp));
     }
 

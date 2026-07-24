@@ -409,17 +409,14 @@ mod tests {
             })
             .build();
 
-        let resp = Response {
-            url: "https://example.com/".into(),
-            status: 200,
-            headers: Default::default(),
-            body: b"<html><body><h1>Hello</h1></body></html>".to_vec(),
-            request: Request::get("https://example.com/"),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            Default::default(),
+            b"<html><body><h1>Hello</h1></body></html>".to_vec(),
+            String::new(),
+            Request::get("https://example.com/"),
+        );
 
         let (items, follows) = spider.handle(resp).await;
         assert_eq!(items.len(), 1);
@@ -438,17 +435,14 @@ mod tests {
             })
             .build();
 
-        let resp = Response {
-            url: "https://example.com/".into(),
-            status: 200,
-            headers: Default::default(),
-            body: b"<html><body><p>World</p></body></html>".to_vec(),
-            request: Request::get("https://example.com/"),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            Default::default(),
+            b"<html><body><p>World</p></body></html>".to_vec(),
+            String::new(),
+            Request::get("https://example.com/"),
+        );
 
         let (items, _) = spider.handle(resp).await;
         assert_eq!(items[0]["text"], "World");
@@ -462,23 +456,24 @@ mod tests {
             .is_blocked(|resp| resp.body.windows(7).any(|w| w == b"blocked"))
             .build();
 
-        let resp = Response {
-            url: "http://x.com".into(),
-            status: 200,
-            headers: Default::default(),
-            body: b"you are blocked".to_vec(),
-            request: Request::get("http://x.com"),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let resp = Response::from_http(
+            200,
+            "http://x.com".into(),
+            Default::default(),
+            b"you are blocked".to_vec(),
+            String::new(),
+            Request::get("http://x.com"),
+        );
         assert!(spider.is_blocked(&resp));
 
-        let ok_resp = Response {
-            body: b"welcome".to_vec(),
-            ..resp
-        };
+        let ok_resp = Response::from_http(
+            200,
+            "http://x.com".into(),
+            Default::default(),
+            b"welcome".to_vec(),
+            String::new(),
+            Request::get("http://x.com"),
+        );
         assert!(!spider.is_blocked(&ok_resp));
     }
 
@@ -500,63 +495,51 @@ mod tests {
             .build();
 
         // 1. callback=None → default handler
-        let resp_default = Response {
-            url: "https://example.com/".into(),
-            status: 200,
-            headers: Default::default(),
-            body: b"<html></html>".to_vec(),
-            request: Request::get("https://example.com/"),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let resp_default = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            Default::default(),
+            b"<html></html>".to_vec(),
+            String::new(),
+            Request::get("https://example.com/"),
+        );
         let (items, _) = spider.handle(resp_default).await;
         assert_eq!(items[0]["handler"], "default");
 
         // 2. callback="detail" → detail handler
-        let resp_detail = Response {
-            url: "https://example.com/detail/1".into(),
-            status: 200,
-            headers: Default::default(),
-            body: b"<html></html>".to_vec(),
-            request: Request::get("https://example.com/detail/1").with_callback("detail"),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let resp_detail = Response::from_http(
+            200,
+            "https://example.com/detail/1".into(),
+            Default::default(),
+            b"<html></html>".to_vec(),
+            String::new(),
+            Request::get("https://example.com/detail/1").with_callback("detail"),
+        );
         let (items, _) = spider.handle(resp_detail).await;
         assert_eq!(items[0]["handler"], "detail");
 
         // 3. callback="content" → content handler
-        let resp_content = Response {
-            url: "https://example.com/content/1".into(),
-            status: 200,
-            headers: Default::default(),
-            body: b"<html><h1>Title</h1></html>".to_vec(),
-            request: Request::get("https://example.com/content/1").with_callback("content"),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let resp_content = Response::from_http(
+            200,
+            "https://example.com/content/1".into(),
+            Default::default(),
+            b"<html><h1>Title</h1></html>".to_vec(),
+            String::new(),
+            Request::get("https://example.com/content/1").with_callback("content"),
+        );
         let (items, _) = spider.handle(resp_content).await;
         assert_eq!(items[0]["handler"], "content");
         assert_eq!(items[0]["title"], "Title");
 
         // 4. callback="unknown" → 回退到 default handler
-        let resp_unknown = Response {
-            url: "https://example.com/unknown".into(),
-            status: 200,
-            headers: Default::default(),
-            body: b"<html></html>".to_vec(),
-            request: Request::get("https://example.com/unknown").with_callback("unknown"),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let resp_unknown = Response::from_http(
+            200,
+            "https://example.com/unknown".into(),
+            Default::default(),
+            b"<html></html>".to_vec(),
+            String::new(),
+            Request::get("https://example.com/unknown").with_callback("unknown"),
+        );
         let (items, _) = spider.handle(resp_unknown).await;
         assert_eq!(items[0]["handler"], "default");
     }
@@ -571,17 +554,14 @@ mod tests {
             })
             .build();
 
-        let resp = Response {
-            url: "https://example.com/".into(),
-            status: 200,
-            headers: Default::default(),
-            body: b"<html></html>".to_vec(),
-            request: Request::get("https://example.com/"),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            Default::default(),
+            b"<html></html>".to_vec(),
+            String::new(),
+            Request::get("https://example.com/"),
+        );
         let (items, _) = spider.handle(resp).await;
         assert_eq!(items[0]["via"], "default");
     }

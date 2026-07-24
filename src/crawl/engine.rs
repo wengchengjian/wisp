@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 
 use super::stats::SpiderStats;
 use super::{
-    auto, control, middleware, scheduler, CrawlEvent, CrawlState, CrawlStats, Method, Request,
+    auto, control, middleware, scheduler, CrawlEvent, CrawlState, CrawlStats, Request,
     Response, Spider,
 };
 use crate::error::Result;
@@ -470,20 +470,20 @@ pub async fn fetch_page_inner(
             .or_else(|| resp.headers.get("Content-Type"))
             .cloned()
             .unwrap_or_default();
-        return Ok(Response {
-            url: resp.url.clone(),
-            status: resp.status,
-            headers: resp.headers.clone(),
-            body: resp.body.clone(),
-            title: resp.title.clone(),
-            cookies: resp.cookies.clone(),
-            request: req.clone(),
+        return Ok(Response::from_parts(
+            resp.status,
+            resp.url.clone(),
+            resp.headers.clone(),
+            resp.body.clone(),
+            resp.title.clone(),
+            resp.cookies.clone(),
+            req.clone(),
             content_type,
-            from_cache: false,
-        });
+            false,
+        ));
     }
 
-    // Http 模式
+    // Http 模式：统一使用 Client::fetch() 直接返回 fetcher::Response，无中间类型转换。
     let base_client = fetch_client.http();
 
     // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手。
@@ -509,44 +509,8 @@ pub async fn fetch_page_inner(
         None => base_client,
     };
 
-    // 收集中间件/请求级 headers（如 UaRotationMiddleware 设置的 User-Agent，
-    // 或 CookieChallengeMiddleware 累积的 Cookie）
-    let extra_headers: Vec<(String, String)> = req
-        .headers
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    let resp = match req.method {
-        Method::Get => use_client.get(&req.url, &extra_headers).await?,
-        Method::Post => {
-            use_client
-                .post(&req.url, req.body.as_deref(), None, &extra_headers)
-                .await?
-        }
-        Method::Put => {
-            use_client
-                .put(&req.url, req.body.as_deref(), None, &extra_headers)
-                .await?
-        }
-        Method::Delete => use_client.delete(&req.url, &extra_headers).await?,
-    };
-
-    Ok(Response {
-        url: resp.url.clone(),
-        status: resp.status,
-        headers: resp.headers.clone(),
-        body: resp.body.clone(),
-        title: None,
-        cookies: Vec::new(),
-        request: req.clone(),
-        content_type: resp
-            .headers
-            .get("content-type")
-            .cloned()
-            .unwrap_or_default(),
-        from_cache: false,
-    })
+    // 直接调用统一 fetch，返回的 Response 已包含 request 字段
+    use_client.fetch(req).await
 }
 
 // === InFlightGuard ===
@@ -626,17 +590,17 @@ mod tests {
 
     /// 构造最小 Response，仅 from_cache 字段可变。
     fn make_resp(from_cache: bool) -> Response {
-        Response {
-            url: "http://example.com/page".into(),
-            status: 200,
-            headers: HashMap::new(),
-            body: vec![],
-            title: None,
-            cookies: Vec::new(),
-            request: Request::get("http://example.com/page"),
-            content_type: String::new(),
+        Response::from_parts(
+            200,
+            "http://example.com/page".into(),
+            HashMap::new(),
+            vec![],
+            None,
+            Vec::new(),
+            Request::get("http://example.com/page"),
+            String::new(),
             from_cache,
-        }
+        )
     }
 
     /// 缓存命中（from_cache=true）时 stats.pages 不应递增。
@@ -666,9 +630,6 @@ mod tests {
     }
 
     /// Task 3：验证 save_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
-    ///
-    /// RED：当前 save_checkpoint 用 `CrawlState::from_stats`，其 seen_urls 硬编码为空，
-    /// 故反序列化后的 state.seen_urls 必为空，断言失败。
     #[tokio::test]
     async fn save_checkpoint_persists_seen_urls() {
         let store = crate::storage::SqliteStore::open_in_memory().expect("open in-memory store");

@@ -16,8 +16,8 @@ use std::time::Duration;
 use wreq::header::HeaderName;
 use wreq_util::Profile;
 
-use crate::error::{Result, WispError};
-use crate::parser::Node;
+use crate::error::{Result, WispError, NetworkError, ParseError};
+use crate::fetcher::{Method as FetchMethod, Request as FetchRequest, Response as FetchResponse};
 
 /// HTTP client configuration.
 #[derive(Debug, Clone)]
@@ -146,7 +146,7 @@ impl ClientBuilder {
         }
         if let Some(ref proxy_url) = self.config.proxy {
             let proxy = wreq::Proxy::all(proxy_url)
-                .map_err(|e| WispError::HttpError(format!("proxy error: {e}")))?;
+                .map_err(|e| WispError::Network(NetworkError::Http(format!("proxy error: {e}"))))?;
             builder = builder.proxy(proxy);
         }
         // 应用 TLS 指纹模拟（wreq 文档说明会覆盖现有 TLS/HTTP2 配置）
@@ -158,7 +158,7 @@ impl ClientBuilder {
 
         let http_client = builder
             .build()
-            .map_err(|e| WispError::HttpError(format!("client build error: {e}")))?;
+            .map_err(|e| WispError::Network(NetworkError::Http(format!("client build error: {e}"))))?;
 
         Ok(Client {
             http: http_client,
@@ -189,97 +189,137 @@ impl Client {
         &self.config
     }
 
-    /// GET request.
-    pub async fn get(&self, url: &str, extra_headers: &[(String, String)]) -> Result<Response> {
-        let resp = self
-            .http
-            .get(url)
-            .headers(self.build_headers_with(extra_headers))
-            .send()
-            .await
-            .map_err(|e| classify_request_error(&e, url, self.config.timeout))?;
-        self.build_response(resp).await
+    /// 统一请求入口：接受 `fetcher::Request`，直接返回 `fetcher::Response`。
+    ///
+    /// 消除 http::Response 中间类型，避免字段克隆转换。
+    pub async fn fetch(&self, req: &FetchRequest) -> Result<FetchResponse> {
+        let extra_headers: Vec<(String, String)> = req
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let wreq_resp = match req.method {
+            FetchMethod::Get => {
+                self.http
+                    .get(&req.url)
+                    .headers(self.build_headers_with(&extra_headers))
+                    .send()
+                    .await
+            }
+            FetchMethod::Post => {
+                let mut builder = self
+                    .http
+                    .post(&req.url)
+                    .headers(self.build_headers_with(&extra_headers));
+                if let Some(ref b) = req.body {
+                    builder = builder.body(b.clone());
+                }
+                builder.send().await
+            }
+            FetchMethod::Put => {
+                let mut builder = self
+                    .http
+                    .put(&req.url)
+                    .headers(self.build_headers_with(&extra_headers));
+                if let Some(ref b) = req.body {
+                    builder = builder.body(b.clone());
+                }
+                builder.send().await
+            }
+            FetchMethod::Delete => {
+                self.http
+                    .delete(&req.url)
+                    .headers(self.build_headers_with(&extra_headers))
+                    .send()
+                    .await
+            }
+        };
+
+        let wreq_resp = wreq_resp.map_err(|e| classify_request_error(&e, &req.url, self.config.timeout))?;
+        self.build_fetch_response(wreq_resp, req.clone()).await
     }
 
-    /// POST request with optional body/json.
+    /// GET request（便捷方法，内部构造 Request）。
+    pub async fn get(&self, url: &str, extra_headers: &[(String, String)]) -> Result<FetchResponse> {
+        let mut req = FetchRequest::get(url);
+        for (k, v) in extra_headers {
+            req.headers.insert(k.clone(), v.clone());
+        }
+        self.fetch(&req).await
+    }
+
+    /// POST request with optional body/json（便捷方法）。
     pub async fn post(
         &self,
         url: &str,
         body: Option<&str>,
         json: Option<&Value>,
         extra_headers: &[(String, String)],
-    ) -> Result<Response> {
-        let mut req = self
-            .http
-            .post(url)
-            .headers(self.build_headers_with(extra_headers));
-        if let Some(b) = body {
-            req = req.body(b.to_string());
+    ) -> Result<FetchResponse> {
+        let mut req = FetchRequest::post(url, body.map(|b| b.to_string()));
+        for (k, v) in extra_headers {
+            req.headers.insert(k.clone(), v.clone());
         }
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
-                .map_err(|e| WispError::JsonError(format!("JSON serialize: {e}")))?;
-            req = req
-                .header(wreq::header::CONTENT_TYPE, "application/json")
-                .body(json_str);
+                .map_err(|e| WispError::Parse(ParseError::Json(format!("JSON serialize: {e}"))))?;
+            req.body = Some(json_str);
+            req.headers.insert("content-type".to_string(), "application/json".to_string());
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| classify_request_error(&e, url, self.config.timeout))?;
-        self.build_response(resp).await
+        self.fetch(&req).await
     }
 
-    /// PUT request.
+    /// PUT request（便捷方法）。
     pub async fn put(
         &self,
         url: &str,
         body: Option<&str>,
         json: Option<&Value>,
         extra_headers: &[(String, String)],
-    ) -> Result<Response> {
-        let mut req = self
-            .http
-            .put(url)
-            .headers(self.build_headers_with(extra_headers));
-        if let Some(b) = body {
-            req = req.body(b.to_string());
+    ) -> Result<FetchResponse> {
+        let mut req = FetchRequest {
+            url: url.to_string(),
+            method: FetchMethod::Put,
+            body: body.map(|b| b.to_string()),
+            ..Default::default()
+        };
+        for (k, v) in extra_headers {
+            req.headers.insert(k.clone(), v.clone());
         }
         if let Some(j) = json {
             let json_str = serde_json::to_string(j)
-                .map_err(|e| WispError::JsonError(format!("JSON serialize: {e}")))?;
-            req = req
-                .header(wreq::header::CONTENT_TYPE, "application/json")
-                .body(json_str);
+                .map_err(|e| WispError::Parse(ParseError::Json(format!("JSON serialize: {e}"))))?;
+            req.body = Some(json_str);
+            req.headers.insert("content-type".to_string(), "application/json".to_string());
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| classify_request_error(&e, url, self.config.timeout))?;
-        self.build_response(resp).await
+        self.fetch(&req).await
     }
 
-    /// DELETE request.
-    pub async fn delete(&self, url: &str, extra_headers: &[(String, String)]) -> Result<Response> {
-        let resp = self
-            .http
-            .delete(url)
-            .headers(self.build_headers_with(extra_headers))
-            .send()
-            .await
-            .map_err(|e| classify_request_error(&e, url, self.config.timeout))?;
-        self.build_response(resp).await
+    /// DELETE request（便捷方法）。
+    pub async fn delete(&self, url: &str, extra_headers: &[(String, String)]) -> Result<FetchResponse> {
+        let mut req = FetchRequest {
+            url: url.to_string(),
+            method: FetchMethod::Delete,
+            ..Default::default()
+        };
+        for (k, v) in extra_headers {
+            req.headers.insert(k.clone(), v.clone());
+        }
+        self.fetch(&req).await
     }
 
     /// 合并 config headers 与 per-request extra headers（extra 覆盖同名 config header）。
     fn build_headers_with(&self, extra_headers: &[(String, String)]) -> wreq::header::HeaderMap {
         let mut map = self.build_headers();
         for (k, v) in extra_headers {
-            if let (Ok(name), Ok(val)) = (
+            match (
                 wreq::header::HeaderName::from_bytes(k.as_bytes()),
                 wreq::header::HeaderValue::from_str(v),
             ) {
-                map.insert(name, val);
+                (Ok(name), Ok(val)) => { map.insert(name, val); }
+                (Err(e), _) => tracing::warn!("跳过无效 header 名 '{}': {}", k, e),
+                (_, Err(e)) => tracing::warn!("跳过无效 header 值 '{}': {}", k, e),
             }
         }
         map
@@ -288,17 +328,20 @@ impl Client {
     fn build_headers(&self) -> wreq::header::HeaderMap {
         let mut map = wreq::header::HeaderMap::new();
         for (k, v) in &self.config.headers {
-            if let (Ok(name), Ok(val)) = (
+            match (
                 wreq::header::HeaderName::from_bytes(k.as_bytes()),
                 wreq::header::HeaderValue::from_str(v),
             ) {
-                map.insert(name, val);
+                (Ok(name), Ok(val)) => { map.insert(name, val); }
+                (Err(e), _) => tracing::warn!("跳过无效 config header 名 '{}': {}", k, e),
+                (_, Err(e)) => tracing::warn!("跳过无效 config header 值 '{}': {}", k, e),
             }
         }
         map
     }
 
-    async fn build_response(&self, resp: wreq::Response) -> Result<Response> {
+    /// 从 wreq 响应构建统一 `fetcher::Response`（流式读取 body + 大小限制）。
+    async fn build_fetch_response(&self, resp: wreq::Response, request: FetchRequest) -> Result<FetchResponse> {
         let status = resp.status().as_u16();
         let url = resp.uri().to_string();
         let content_type = resp
@@ -319,64 +362,28 @@ impl Client {
         let mut stream = resp.bytes_stream();
         use futures::StreamExt;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| WispError::HttpError(format!("read body chunk: {e}")))?;
+            let chunk = chunk.map_err(|e| WispError::Network(NetworkError::Http(format!("read body chunk: {e}"))))?;
             if body.len() + chunk.len() > max_body_size {
-                return Err(WispError::ResponseBodyTooLarge {
+                return Err(WispError::Network(NetworkError::ResponseBodyTooLarge {
                     url: url.clone(),
                     actual: body.len() + chunk.len(),
                     limit: max_body_size,
-                });
+                }));
             }
             body.extend_from_slice(&chunk);
         }
 
-        Ok(Response {
+        Ok(FetchResponse::from_http(
             status,
             url,
             headers,
             body,
             content_type,
-        })
+            request,
+        ))
     }
 }
 
-/// HTTP response with parsing helpers.
-#[derive(Debug, Clone)]
-pub struct Response {
-    pub status: u16,
-    pub url: String,
-    pub headers: HashMap<String, String>,
-    pub body: Vec<u8>,
-    content_type: String,
-}
-
-impl Response {
-    /// 获取 Content-Type 头。
-    pub fn content_type(&self) -> &str {
-        &self.content_type
-    }
-
-    /// Decode body as text with automatic charset detection.
-    pub fn text(&self) -> Result<String> {
-        Ok(encoding::decode(&self.body, &self.content_type))
-    }
-
-    /// Parse body as JSON.
-    pub fn json(&self) -> Result<Value> {
-        let text = self.text()?;
-        serde_json::from_str(&text).map_err(|e| WispError::JsonError(format!("JSON parse: {e}")))
-    }
-
-    /// Parse body as HTML into a Node.
-    pub fn parse(&self) -> Result<Node> {
-        let text = self.text()?;
-        Ok(Node::from_html(&text))
-    }
-
-    pub fn is_ok(&self) -> bool {
-        self.status >= 200 && self.status < 300
-    }
-}
 
 /// 将 `wreq::Error` 分类为结构化的 `WispError`，支持按错误类别差异化重试/降级。
 ///
@@ -398,21 +405,21 @@ fn classify_request_error(e: &wreq::Error, url: &str, timeout: Duration) -> Wisp
         .unwrap_or_else(|| url.to_string());
 
     if e.is_timeout() {
-        return WispError::RequestTimedOut {
+        return WispError::Network(NetworkError::RequestTimedOut {
             url: url.to_string(),
             timeout_secs: timeout.as_secs(),
-        };
+        });
     }
     if e.is_proxy_connect() {
-        return WispError::ProxyFailed {
+        return WispError::Network(NetworkError::ProxyFailed {
             detail: e.to_string(),
-        };
+        });
     }
     if e.is_tls() {
-        return WispError::TlsFailed {
+        return WispError::Network(NetworkError::TlsFailed {
             host,
             detail: e.to_string(),
-        };
+        });
     }
     if e.is_connect() {
         let detail = e.to_string();
@@ -427,14 +434,14 @@ fn classify_request_error(e: &wreq::Error, url: &str, timeout: Duration) -> Wisp
             "temporary failure in name resolution",
         ];
         if DNS_HINTS.iter().any(|h| lower.contains(h)) {
-            return WispError::DnsFailed { host, detail };
+            return WispError::Network(NetworkError::DnsFailed { host, detail });
         }
-        return WispError::ConnectionFailed { host, detail };
+        return WispError::Network(NetworkError::ConnectionFailed { host, detail });
     }
     if e.is_builder() {
-        return WispError::UrlParse(e.to_string());
+        return WispError::Network(NetworkError::UrlParse(e.to_string()));
     }
-    WispError::HttpError(e.to_string())
+    WispError::Network(NetworkError::Http(e.to_string()))
 }
 
 #[cfg(test)]

@@ -76,7 +76,7 @@ impl ModeRuleEngine {
     /// 用户添加规则（优先级最高）。
     pub fn add_user_rule(&mut self, pattern: &str, mode: FetchMode) -> Result<()> {
         let re = Regex::new(pattern).map_err(|e| {
-            WispError::ParseError(format!("invalid auto_rule regex '{}': {}", pattern, e))
+            WispError::Parse(crate::error::ParseError::Html(format!("invalid auto_rule regex '{}': {}", pattern, e)))
         })?;
         self.user_rules.push((re, mode));
         Ok(())

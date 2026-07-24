@@ -191,17 +191,14 @@ async fn test_response_follow_pagination() {
     let doc = fetch_resp.parse().unwrap();
 
     // 构造 Response 来测试 follow()
-    let spider_resp = Response {
-        url: "https://quotes.toscrape.com/".into(),
-        status: 200,
-        headers: Default::default(),
-        body: fetch_resp.body.clone(),
-        request: Request::get("https://quotes.toscrape.com/"),
-        title: None,
-        cookies: Vec::new(),
-        content_type: String::new(),
-        from_cache: false,
-    };
+    let spider_resp = Response::from_http(
+        200,
+        "https://quotes.toscrape.com/".into(),
+        Default::default(),
+        fetch_resp.body.clone(),
+        String::new(),
+        Request::get("https://quotes.toscrape.com/"),
+    );
 
     // 获取下一页链接
     let next_href = doc.select_one(".next a")

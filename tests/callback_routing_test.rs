@@ -14,17 +14,14 @@ fn make_resp(url: &str, body: &str, callback: Option<&str>) -> Response {
     if let Some(cb) = callback {
         req = req.with_callback(cb);
     }
-    Response {
-        url: url.to_string(),
-        status: 200,
-        headers: HashMap::new(),
-        body: body.as_bytes().to_vec(),
-        request: req,
-        title: None,
-        cookies: Vec::new(),
-        content_type: String::new(),
-        from_cache: false,
-    }
+    Response::from_http(
+        200,
+        url.to_string(),
+        HashMap::new(),
+        body.as_bytes().to_vec(),
+        String::new(),
+        req,
+    )
 }
 
 #[tokio::test]

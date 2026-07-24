@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, Mutex};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tungstenite::Message;
 
-use crate::error::{Result, WispError};
+use crate::error::{Result, WispError, BrowserError};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -42,7 +42,7 @@ impl CdpSession {
     pub async fn connect(ws_url: &str) -> Result<Arc<Self>> {
         let (ws, _) = connect_async(ws_url)
             .await
-            .map_err(|e| WispError::CdpError(format!("ws connect: {e}")))?;
+            .map_err(|e| WispError::Browser(BrowserError::CdpConnection(format!("ws connect: {e}"))))?;
 
         let (writer, mut reader) = ws.split();
         let writer = Arc::new(Mutex::new(writer));
@@ -156,19 +156,19 @@ impl CdpSession {
             .await
             .send(Message::Text(text.into()))
             .await
-            .map_err(|e| WispError::CdpError(format!("ws send: {e}")))?;
+            .map_err(|e| WispError::Browser(BrowserError::CdpConnection(format!("ws send: {e}"))))?;
 
         let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
             .await
             .map_err(|_| WispError::Timeout(format!("CDP: {method}")))?
-            .map_err(|_| WispError::CdpError("channel closed".into()))?;
+            .map_err(|_| WispError::Browser(BrowserError::CdpConnection("channel closed".into())))?;
 
         if let Some(error) = response.get("error") {
             let msg = error
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("CDP error");
-            return Err(WispError::CdpError(msg.to_string()));
+            return Err(WispError::Browser(BrowserError::CdpConnection(msg.to_string())));
         }
 
         Ok(response.get("result").cloned().unwrap_or(Value::Null))

@@ -26,11 +26,18 @@ impl ProxyPool {
     /// Create a new proxy pool.
     ///
     /// Proxies should be in format: `http://user:pass@host:port` or `http://host:port`
+    ///
+    /// Sticky 模式初始索引随机化，避免所有实例都固定到第一个代理。
     pub fn new(proxies: Vec<String>, strategy: RotationStrategy) -> Self {
+        let initial = if strategy == RotationStrategy::Sticky && !proxies.is_empty() {
+            rand::rng().random_range(0..proxies.len())
+        } else {
+            0
+        };
         Self {
             proxies,
             strategy,
-            index: AtomicUsize::new(0),
+            index: AtomicUsize::new(initial),
         }
     }
 

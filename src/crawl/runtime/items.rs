@@ -18,7 +18,7 @@ impl Items {
     /// 导出为 JSON 字符串（pretty）
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string_pretty(&self.items)
-            .map_err(|e| WispError::Serialize(e.to_string()))
+            .map_err(|e| WispError::Parse(crate::error::ParseError::Serialize(e.to_string())))
     }
 
     /// 导出为 JSONL（每行一个 JSON 对象）
@@ -26,7 +26,7 @@ impl Items {
         let mut out = String::new();
         for item in &self.items {
             let line = serde_json::to_string(item)
-                .map_err(|e| WispError::Serialize(e.to_string()))?;
+                .map_err(|e| WispError::Parse(crate::error::ParseError::Serialize(e.to_string())))?;
             out.push_str(&line);
             out.push('\n');
         }
@@ -77,7 +77,7 @@ impl JsonlWriter {
     pub fn write(&mut self, item: &Value) -> Result<()> {
         use std::io::Write;
         let line = serde_json::to_string(item)
-            .map_err(|e| WispError::Serialize(e.to_string()))?;
+            .map_err(|e| WispError::Parse(crate::error::ParseError::Serialize(e.to_string())))?;
         writeln!(self.file, "{}", line)?;
         Ok(())
     }

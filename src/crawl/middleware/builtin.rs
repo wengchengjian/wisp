@@ -312,17 +312,17 @@ impl Middleware for CacheMiddleware {
         let method_str = req.method.as_str();
         match self.store.load_response(method_str, &req.url) {
             Ok(Some(cached)) => {
-                let resp = Response {
-                    url: req.url.clone(),
-                    status: cached.status,
-                    headers: cached.headers,
-                    body: cached.body,
-                    title: None,
-                    cookies: Vec::new(),
-                    request: req.clone(),
-                    content_type: cached.content_type,
-                    from_cache: true,
-                };
+                let resp = Response::from_parts(
+                    cached.status,
+                    req.url.clone(),
+                    cached.headers,
+                    cached.body,
+                    None,
+                    Vec::new(),
+                    req.clone(),
+                    cached.content_type,
+                    true,
+                );
                 return MwAction::Respond(resp);
             }
             Ok(None) => {}
@@ -811,17 +811,14 @@ mod tests {
         let mut req = make_req();
         assert_eq!(mw.process_request(&mut req, &ctx).await, MwAction::Continue);
 
-        let mut resp = Response {
-            url: "http://example.com".into(),
-            status: 200,
-            headers: HashMap::new(),
-            body: b"hello".to_vec(),
-            request: req.clone(),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        };
+        let mut resp = Response::from_http(
+            200,
+            "http://example.com".into(),
+            HashMap::new(),
+            b"hello".to_vec(),
+            String::new(),
+            req.clone(),
+        );
         mw.process_response(&mut resp, &ctx).await;
 
         let mut req2 = make_req();
@@ -874,17 +871,17 @@ mod tests {
     // === DynamicUpgradeMiddleware 测试 ===
 
     fn make_resp(status: u16, body: &[u8]) -> Response {
-        Response {
-            url: "http://example.com".into(),
+        Response::from_parts(
             status,
-            headers: HashMap::new(),
-            body: body.to_vec(),
-            request: make_req(),
-            title: None,
-            cookies: Vec::new(),
-            content_type: String::new(),
-            from_cache: false,
-        }
+            "http://example.com".into(),
+            HashMap::new(),
+            body.to_vec(),
+            None,
+            Vec::new(),
+            make_req(),
+            String::new(),
+            false,
+        )
     }
 
     #[tokio::test]

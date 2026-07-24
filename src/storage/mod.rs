@@ -17,7 +17,7 @@ use moka::Expiry;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, WispError};
+use crate::error::{Result, WispError, StorageError};
 
 // ============================================================================
 // Trait 定义
@@ -101,7 +101,7 @@ pub struct SqliteStore {
 impl SqliteStore {
     /// 打开或创建数据库文件。
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).map_err(|e| WispError::Storage(e.to_string()))?;
+        let conn = Connection::open(path).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         let store = Self { conn: Mutex::new(conn) };
         store.init_schema()?;
         Ok(store)
@@ -109,7 +109,7 @@ impl SqliteStore {
 
     /// 内存数据库（测试用）。
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory().map_err(|e| WispError::Storage(e.to_string()))?;
+        let conn = Connection::open_in_memory().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         let store = Self { conn: Mutex::new(conn) };
         store.init_schema()?;
         Ok(store)
@@ -118,11 +118,11 @@ impl SqliteStore {
     fn init_schema(&self) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute_batch("PRAGMA journal_mode=WAL;")
-            .map_err(|e| WispError::Storage(e.to_string()))?;
+            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         conn.execute_batch("PRAGMA synchronous=NORMAL;")
-            .map_err(|e| WispError::Storage(e.to_string()))?;
+            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         conn.execute_batch(migrations::SCHEMA_V1)
-            .map_err(|e| WispError::Storage(e.to_string()))?;
+            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         Ok(())
     }
 }
@@ -133,17 +133,17 @@ impl Store for SqliteStore {
         conn.execute(
             "INSERT OR REPLACE INTO crawl_checkpoints (spider_name, state, saved_at) VALUES (?1, ?2, ?3)",
             params![spider_name, state_bytes, saved_at],
-        ).map_err(|e| WispError::Storage(e.to_string()))?;
+        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         Ok(())
     }
 
     fn load_checkpoint(&self, spider_name: &str) -> Result<Option<Vec<u8>>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT state FROM crawl_checkpoints WHERE spider_name = ?1")
-            .map_err(|e| WispError::Storage(e.to_string()))?;
-        let mut rows = stmt.query(params![spider_name]).map_err(|e| WispError::Storage(e.to_string()))?;
-        if let Some(row) = rows.next().map_err(|e| WispError::Storage(e.to_string()))? {
-            let blob: Vec<u8> = row.get(0).map_err(|e| WispError::Storage(e.to_string()))?;
+            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+        let mut rows = stmt.query(params![spider_name]).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+        if let Some(row) = rows.next().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))? {
+            let blob: Vec<u8> = row.get(0).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
             Ok(Some(blob))
         } else {
             Ok(None)
@@ -153,7 +153,7 @@ impl Store for SqliteStore {
     fn delete_checkpoint(&self, spider_name: &str) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM crawl_checkpoints WHERE spider_name = ?1", params![spider_name])
-            .map_err(|e| WispError::Storage(e.to_string()))?;
+            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         Ok(())
     }
 
@@ -171,7 +171,7 @@ impl Store for SqliteStore {
                 row.position_in_parent, row.parent_tag, row.parent_attrs.to_string(),
                 row.captured_at,
             ],
-        ).map_err(|e| WispError::Storage(e.to_string()))?;
+        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         Ok(())
     }
 
@@ -181,19 +181,19 @@ impl Store for SqliteStore {
             "SELECT tag, attrs, text_preview, ancestor_path, sibling_tags,
                     position_in_parent, parent_tag, parent_attrs, captured_at
              FROM element_snapshots WHERE url = ?1 AND key = ?2"
-        ).map_err(|e| WispError::Storage(e.to_string()))?;
-        let mut rows = stmt.query(params![url, key]).map_err(|e| WispError::Storage(e.to_string()))?;
-        if let Some(row) = rows.next().map_err(|e| WispError::Storage(e.to_string()))? {
+        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+        let mut rows = stmt.query(params![url, key]).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+        if let Some(row) = rows.next().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))? {
             Ok(Some(ElementSnapshotRow {
-                tag: row.get(0).map_err(|e| WispError::Storage(e.to_string()))?,
+                tag: row.get(0).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
                 attrs: serde_json::from_str(&row.get::<_, String>(1).unwrap_or_default()).unwrap_or_default(),
-                text_preview: row.get(2).map_err(|e| WispError::Storage(e.to_string()))?,
+                text_preview: row.get(2).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
                 ancestor_path: serde_json::from_str(&row.get::<_, String>(3).unwrap_or_default()).unwrap_or_default(),
                 sibling_tags: serde_json::from_str(&row.get::<_, String>(4).unwrap_or_default()).unwrap_or_default(),
-                position_in_parent: row.get(5).map_err(|e| WispError::Storage(e.to_string()))?,
-                parent_tag: row.get(6).map_err(|e| WispError::Storage(e.to_string()))?,
+                position_in_parent: row.get(5).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
+                parent_tag: row.get(6).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
                 parent_attrs: serde_json::from_str(&row.get::<_, String>(7).unwrap_or_default()).unwrap_or_default(),
-                captured_at: row.get(8).map_err(|e| WispError::Storage(e.to_string()))?,
+                captured_at: row.get(8).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
             }))
         } else {
             Ok(None)
@@ -212,7 +212,7 @@ impl Store for SqliteStore {
                 serde_json::to_string(&resp.headers).unwrap_or_default(),
                 resp.body, resp.content_type, resp.cached_at, ttl_secs,
             ],
-        ).map_err(|e| WispError::Storage(e.to_string()))?;
+        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         Ok(())
     }
 
@@ -226,15 +226,15 @@ impl Store for SqliteStore {
              FROM response_cache
              WHERE url = ?1 AND method = ?2
                AND (ttl_secs IS NULL OR cached_at + ttl_secs >= CAST(strftime('%s','now') AS INTEGER))"
-        ).map_err(|e| WispError::Storage(e.to_string()))?;
-        let mut rows = stmt.query(params![url, method]).map_err(|e| WispError::Storage(e.to_string()))?;
-        if let Some(row) = rows.next().map_err(|e| WispError::Storage(e.to_string()))? {
-            let status: i64 = row.get(0).map_err(|e| WispError::Storage(e.to_string()))?;
-            let headers_str: String = row.get(1).map_err(|e| WispError::Storage(e.to_string()))?;
-            let body: Vec<u8> = row.get(2).map_err(|e| WispError::Storage(e.to_string()))?;
-            let content_type: String = row.get(3).map_err(|e| WispError::Storage(e.to_string()))?;
-            let cached_at: i64 = row.get(4).map_err(|e| WispError::Storage(e.to_string()))?;
-            let ttl_secs: Option<i64> = row.get(5).map_err(|e| WispError::Storage(e.to_string()))?;
+        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+        let mut rows = stmt.query(params![url, method]).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+        if let Some(row) = rows.next().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))? {
+            let status: i64 = row.get(0).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+            let headers_str: String = row.get(1).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+            let body: Vec<u8> = row.get(2).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+            let content_type: String = row.get(3).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+            let cached_at: i64 = row.get(4).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+            let ttl_secs: Option<i64> = row.get(5).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
             Ok(Some(CachedResponse {
                 status: status as u16,
                 headers: serde_json::from_str(&headers_str).unwrap_or_default(),
@@ -251,7 +251,7 @@ impl Store for SqliteStore {
     fn delete_response(&self, method: &str, url: &str) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM response_cache WHERE url = ?1 AND method = ?2", params![url, method])
-            .map_err(|e| WispError::Storage(e.to_string()))?;
+            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         Ok(())
     }
 }

@@ -18,7 +18,6 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 tungstenite = "0.30"
-anyhow = "1"
 rand = "0.10"
 # Scraping / parsing（启用 atomic feature 使 Html: Send，支持 tokio::spawn）
 scraper = { version = "0.27", features = ["atomic"] }
@@ -26,6 +25,9 @@ ego-tree = "0.11"
 encoding_rs = "0.8"
 url = "2"
 async-trait = "0.1"
+# wreq 精确锁定 RC 版本：该版本提供 TLS 指纹模拟（emulation）和 cookie_store 支持，
+# API 尚不稳定，升级前需验证 emulation/Proxy/headers 接口兼容性。
+# 跟踪 wreq 正式版发布后及时迁移。
 wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
 wreq-util = "=3.0.0-rc.14"
 toml = "1"
@@ -33,8 +35,8 @@ regex = "1"
 aho-corasick = "1"
 # SQLite 统一存储（阶段 1：adaptive + checkpoint）
 rusqlite = { version = "0.40", features = ["bundled"] }
-# checkpoint blob 序列化（3.0.0 有编译问题，暂用 1.x 稳定版）
-bincode = "1"
+# checkpoint blob 序列化（bincode 3.0.0 停维，2.x 不兼容 serde_json::Value，锁定 1.3.3 稳定版）
+bincode = "1.3.3"
 # 流式输出（阶段 1 内部用，阶段 3 对外暴露）
 tokio-stream = "0.1"
 # 时间戳（CrawlState 用）
@@ -49,6 +51,8 @@ croner = "3"
 dashmap = "6"
 # 无 poison 的 Mutex（替代 std::sync::Mutex，避免 panic 传染）
 parking_lot = "0.12"
+# 临时目录自动清理（替代 Drop 中 thread::spawn + remove_dir_all）
+tempfile = "3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

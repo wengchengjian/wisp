@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::config::LaunchOptions;
-use crate::error::{WispError, Result};
+use crate::error::{WispError, Result, BrowserError};
 
 /// Resolve the browser executable path from options.
 pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
@@ -9,10 +9,10 @@ pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
         if path.exists() {
             return Ok(path.clone());
         }
-        return Err(WispError::LaunchFailed(format!(
+        return Err(WispError::Browser(BrowserError::LaunchFailed(format!(
             "Executable not found: {}",
             path.display()
-        )));
+        ))));
     }
 
     let names: Vec<&str> = match options.channel.as_deref() {
@@ -45,9 +45,9 @@ pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
         }
     }
 
-    Err(WispError::LaunchFailed(
+    Err(WispError::Browser(BrowserError::LaunchFailed(
         "No Chromium-based browser found. Install Chrome/Chromium/Edge or set executable_path.".into(),
-    ))
+    )))
 }
 
 /// Build default Chrome launch arguments from options, with patches applied.

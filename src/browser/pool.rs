@@ -24,7 +24,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::config::LaunchOptions;
-use crate::error::{Result, WispError};
+use crate::error::{Result, WispError, BrowserError};
 
 use super::{Browser, Page};
 
@@ -66,7 +66,7 @@ impl BrowserPool {
         let permit = Arc::clone(&self.page_permits)
             .acquire_owned()
             .await
-            .map_err(|_| WispError::BrowserError("page_permits semaphore closed".into()))?;
+            .map_err(|_| WispError::Browser(BrowserError::Other("page_permits semaphore closed".into())))?;
 
         let browser = self.get_or_launch_browser().await?;
         let page = browser.new_page().await?;

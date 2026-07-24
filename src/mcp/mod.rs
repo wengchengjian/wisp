@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, LazyLock};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::error::{WispError, Result};
+use crate::error::{WispError, Result, McpError, ParseError};
 use crate::storage::Store;
 use crate::crawl::Engine;
 
@@ -112,11 +112,25 @@ pub async fn serve(store: Arc<dyn Store>) -> Result<()> {
     while let Some(line) = lines.next_line().await? {
         let request: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                // JSON-RPC 2.0: 解析错误必须返回 -32700
+                let err_resp = json!({
+                    "jsonrpc": "2.0", "id": null,
+                    "error": { "code": -32700, "message": format!("Parse error: {e}") }
+                });
+                let s = serde_json::to_string(&err_resp).unwrap_or_default();
+                stdout.write_all(s.as_bytes()).await?;
+                stdout.write_all(b"\n").await?;
+                stdout.flush().await?;
+                continue;
+            }
         };
 
         let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let id = request.get("id").cloned();
+
+        // JSON-RPC 2.0: 无 id 的请求是 notification，不得回复
+        let is_notification = id.is_none();
 
         let response: Value = match method {
             "initialize" => json!({
@@ -157,8 +171,13 @@ pub async fn serve(store: Arc<dyn Store>) -> Result<()> {
             }),
         };
 
+        // JSON-RPC 2.0 notification：不回复
+        if is_notification {
+            continue;
+        }
+
         let response_str = serde_json::to_string(&response)
-            .map_err(|e| WispError::Serialize(e.to_string()))?;
+            .map_err(|e| WispError::Parse(ParseError::Serialize(e.to_string())))?;
         stdout.write_all(response_str.as_bytes()).await?;
         stdout.write_all(b"\n").await?;
         stdout.flush().await?;
@@ -191,7 +210,7 @@ fn handle_tools_list() -> Value {
 
 async fn handle_tools_call(request: Value, store: &Arc<dyn Store>, engine: &Engine) -> Result<Value> {
     let params = request.get("params")
-        .ok_or_else(|| WispError::McpError("missing params".into()))?;
+        .ok_or_else(|| WispError::Mcp(McpError::General("missing params".into())))?;
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
@@ -201,14 +220,14 @@ async fn handle_tools_call(request: Value, store: &Arc<dyn Store>, engine: &Engi
         "crawl_site" => tools::crawl_site(args, engine).await,
         "adaptive_scrape" => tools::adaptive_scrape(args, store).await,
         "stealth_fetch" => tools::stealth_fetch(args).await,
-        _ => Err(WispError::McpUnknownTool(name.into())),
+        _ => Err(WispError::Mcp(McpError::UnknownTool(name.into()))),
     }?;
 
     Ok(json!({
         "content": [{
             "type": "text",
             "text": serde_json::to_string_pretty(&result)
-                .map_err(|e| WispError::Serialize(e.to_string()))?
+                .map_err(|e| WispError::Parse(ParseError::Serialize(e.to_string())))?
         }]
     }))
 }
@@ -218,7 +237,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tools_list_has_six_tools() {
+    fn test_tools_list_has_five_tools() {
         let list = handle_tools_list();
         let tools = list.get("tools").unwrap().as_array().unwrap();
         assert_eq!(tools.len(), 5, "应有 5 个工具");
@@ -252,7 +271,7 @@ mod tests {
         let result = handle_tools_call(req, &store, &engine).await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            WispError::McpUnknownTool(n) => assert_eq!(n, "nonexistent"),
+            WispError::Mcp(McpError::UnknownTool(n)) => assert_eq!(n, "nonexistent"),
             other => panic!("预期 McpUnknownTool, 得到 {:?}", other),
         }
     }

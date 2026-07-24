@@ -55,17 +55,14 @@ async fn test_spider_builder_parse_with_follow() {
         })
         .build();
 
-    let resp = Response {
-        url: "https://example.com/".into(),
-        status: 200,
-        headers: Default::default(),
-        body: b"<html><body><h1>Home</h1></body></html>".to_vec(),
-        request: Request::get("https://example.com/"),
-        title: None,
-        cookies: Vec::new(),
-        content_type: String::new(),
-        from_cache: false,
-    };
+    let resp = Response::from_http(
+        200,
+        "https://example.com/".into(),
+        Default::default(),
+        b"<html><body><h1>Home</h1></body></html>".to_vec(),
+        String::new(),
+        Request::get("https://example.com/"),
+    );
 
     let (items, follows) = spider.handle(resp).await;
     assert_eq!(items.len(), 1);
@@ -77,51 +74,42 @@ async fn test_spider_builder_parse_with_follow() {
 
 #[test]
 fn test_response_follow_absolute_url() {
-    let resp = Response {
-        url: "https://example.com/page1".into(),
-        status: 200,
-        headers: Default::default(),
-        body: vec![],
-        request: Request::get("https://example.com/page1"),
-        title: None,
-        cookies: Vec::new(),
-        content_type: String::new(),
-        from_cache: false,
-    };
+    let resp = Response::from_http(
+        200,
+        "https://example.com/page1".into(),
+        Default::default(),
+        vec![],
+        String::new(),
+        Request::get("https://example.com/page1"),
+    );
     let req = resp.follow("https://other.com/page2").unwrap();
     assert_eq!(req.url, "https://other.com/page2");
 }
 
 #[test]
 fn test_response_follow_relative_path() {
-    let resp = Response {
-        url: "https://example.com/dir/page1".into(),
-        status: 200,
-        headers: Default::default(),
-        body: vec![],
-        request: Request::get("https://example.com/dir/page1"),
-        title: None,
-        cookies: Vec::new(),
-        content_type: String::new(),
-        from_cache: false,
-    };
+    let resp = Response::from_http(
+        200,
+        "https://example.com/dir/page1".into(),
+        Default::default(),
+        vec![],
+        String::new(),
+        Request::get("https://example.com/dir/page1"),
+    );
     let req = resp.follow("/page2").unwrap();
     assert_eq!(req.url, "https://example.com/page2");
 }
 
 #[test]
 fn test_response_follow_with_callback() {
-    let resp = Response {
-        url: "https://example.com/".into(),
-        status: 200,
-        headers: Default::default(),
-        body: vec![],
-        request: Request::get("https://example.com/"),
-        title: None,
-        cookies: Vec::new(),
-        content_type: String::new(),
-        from_cache: false,
-    };
+    let resp = Response::from_http(
+        200,
+        "https://example.com/".into(),
+        Default::default(),
+        vec![],
+        String::new(),
+        Request::get("https://example.com/"),
+    );
     let req = resp.follow_with("/detail", "parse_detail").unwrap();
     assert_eq!(req.url, "https://example.com/detail");
     assert_eq!(req.callback, Some("parse_detail".to_string()));

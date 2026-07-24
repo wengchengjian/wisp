@@ -17,14 +17,19 @@
 //!
 //! # Modules
 //! - `fetcher` - Unified Fetcher API (Http / Dynamic / Stealth / Auto modes)
-//! - `parser` - HTML parsing with CSS/XPath selectors
-//! - `crawl` - Spider-based crawling engine
-//! - `browser` / `page` - Core CDP browser automation
-//! - `challenge` - Cloudflare challenge detection & auto-solve
-//! - `human` - Human behavior simulation
-//! - `proxy` - Proxy pool management with rotation
-//! - `fetch` - HTTP client internals
-//! - `text` - Text and attribute processing
+//! - `parser` - HTML parsing with CSS/XPath selectors + adaptive relocation
+//! - `crawl` - Spider-based crawling engine (scheduler, checkpoint, streaming)
+//! - `browser` - Core CDP browser automation (launch, page, element)
+//! - `stealth` - Anti-detection patches + Cloudflare challenge solver + human simulation
+//! - `http` - HTTP client with TLS fingerprint emulation (wreq)
+//! - `proxy` - Proxy pool management with rotation strategies
+//! - `storage` - SQLite persistence (adaptive snapshots, checkpoints, cache)
+//! - `mcp` - MCP server for AI-assisted scraping (stdio JSON-RPC)
+//! - `config` - Browser launch options and proxy configuration
+//! - `config_file` - TOML configuration file parsing
+//! - `error` - Categorized error types (Browser / Network / Parse / Mcp / Storage)
+//! - `text` - Text and attribute processing utilities
+//! - `utils` - Internal helpers (URL resolution, random suffix)
 
 pub mod browser;
 pub mod config;
@@ -48,7 +53,7 @@ pub use fetcher::{Response, Request, Method};
 // === 核心类型 ===
 pub use browser::{Browser, Page};
 pub use config::{LaunchOptions, ProxyConfig};
-pub use error::{WispError, Result};
+pub use error::{WispError, Result, BrowserError, NetworkError, ParseError, McpError, StorageError};
 
 pub use parser::{Node, NodeList};
 pub use proxy::RotationStrategy;
