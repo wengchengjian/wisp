@@ -11,15 +11,15 @@
 
 use dashmap::DashMap;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::stats::SpiderStats;
 use super::{
-    auto, control, middleware, robots, scheduler, CrawlEvent, CrawlState, CrawlStats, Method,
-    Spider, Request, Response,
+    auto, control, middleware, scheduler, CrawlEvent, CrawlState, CrawlStats, Method, Request,
+    Response, Spider,
 };
 use crate::error::Result;
 use crate::fetcher::FetchMode;
@@ -43,25 +43,19 @@ pub(crate) struct EngineConfig {
     pub client: Arc<crate::fetcher::FetchClient>,
     pub fetch_mode: FetchMode,
     pub max_concurrent: usize,
-    pub max_depth: u32,
     pub obey_robots: bool,
     pub engine_max_pages: usize,
     pub max_refetch_rounds: usize,
-    pub dev_mode: bool,
-    pub allowed: Arc<HashSet<String>>,
 }
 
 /// 跨 task 共享的可变状态。
 pub(crate) struct EngineShared {
     pub sched: Arc<scheduler::Scheduler>,
-    pub robots_cache: Arc<Mutex<robots::RobotsCache>>,
     pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Request>>>,
     pub domain_sems: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）
     pub proxy_clients: Arc<DashMap<String, Arc<Client>>>,
-    pub cache_store: Option<Arc<crate::storage::Store>>,
-    pub request_cache: Option<super::request_cache::RequestCache>,
     pub control: Arc<control::EngineControl>,
     pub work_notify: Arc<tokio::sync::Notify>,
     pub middleware_chain: Arc<middleware::MiddlewareChain>,
@@ -108,17 +102,20 @@ async fn check_control_and_hook(ctx: &EngineContext, req: &Request) -> bool {
     }
 }
 
-/// 处理单个请求的完整流程（纯管道编排）。
+/// 处理请求阶段：控制检查 → 中间件请求链 → 抓取。
+///
+/// 返回 `Some(resp)` 表示请求阶段产出响应，需由调用方交给 `process_response` 处理；
+/// 返回 `None` 表示已处理完毕（Skip/Abort/错误已发送事件），无需后续。
 ///
 /// Stages:
 /// 1. 控制状态 + Spider 钩子（基础设施）
 /// 2. 中间件请求链（域名/深度/robots/缓存/延迟/UA/代理 全部在此）
 /// 3. 域名信号量（并发控制）+ fetch
-/// 4. process_response（中间件响应链 + handle + items + events）
-pub(crate) async fn process_request(ctx: &EngineContext, req: Request) {
+#[tracing::instrument(skip(ctx), fields(url = %req.url))]
+pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option<Response> {
     // 1. 控制状态 + Spider 钩子
     if !check_control_and_hook(ctx, &req).await {
-        return;
+        return None;
     }
 
     // 2. 中间件请求链（所有策略过滤在此发生）
@@ -132,15 +129,15 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) {
             .run_request_middlewares(&mut req, &crawl_ctx)
             .await
         {
-            middleware::MwAction::Skip => return,
+            middleware::MwAction::Skip => return None,
             middleware::MwAction::Abort(reason) => {
                 tracing::warn!("middleware abort: {} - {}", reason, req.url);
-                return;
+                return None;
             }
             middleware::MwAction::Respond(cached_resp) => {
                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
                 record_status(stats, cached_resp.status);
-                return process_response(ctx, cached_resp).await;
+                return Some(cached_resp);
             }
             middleware::MwAction::Continue
             | middleware::MwAction::Modified
@@ -151,10 +148,8 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) {
     // 3. 域名信号量（并发控制）+ 抓取
     let (final_resp, last_error) = acquire_and_fetch(ctx, &req).await;
 
-    // 4. 处理结果
-    if let Some(resp) = final_resp {
-        process_response(ctx, resp).await;
-    } else if let Some(err) = last_error {
+    // 4. 请求阶段收尾：失败时发送错误事件；final_resp 即返回值（与 last_error 互斥）
+    if let Some(err) = last_error {
         if let Some(ref tx) = ctx.state.tx {
             let _ = tx
                 .send(CrawlEvent::Error {
@@ -164,16 +159,15 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) {
                 .await;
         }
     }
+    final_resp
 }
 
 /// 处理已获取的响应：handle → Auto 升级 → items → events。
 ///
 /// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
 /// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
-pub(crate) async fn process_response(
-    ctx: &EngineContext,
-    resp: Response,
-) {
+#[tracing::instrument(skip(ctx, resp), fields(status = resp.status))]
+pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let spider = &ctx.state.spider;
     let stats = &ctx.state.stats;
 
@@ -275,6 +269,7 @@ pub(crate) async fn process_response(
 /// 域名信号量（并发控制）+ 单次抓取。
 ///
 /// robots/延迟/缓存均已移至中间件，此函数仅保留不可中间件化的并发控制。
+#[tracing::instrument(skip(ctx, req))]
 async fn acquire_and_fetch(
     ctx: &EngineContext,
     req: &Request,
@@ -305,10 +300,8 @@ async fn acquire_and_fetch(
 /// - blocked 重试：`BlockedRetryMiddleware` 通过 `MwAction::Refetch` 在 `process_response` 中处理
 /// - 网络错误重试：`RetryMiddleware` 通过 `ErrorAction::Retry` 在 `process_error` 中处理
 /// - 中间件链由上层配置模式（如 auto）统一注入，Engine 仅提供基础设施。
-async fn fetch_dispatch(
-    ctx: &EngineContext,
-    req: &Request,
-) -> (Option<Response>, Option<String>) {
+#[tracing::instrument(skip(ctx, req))]
+async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>, Option<String>) {
     let stats = &ctx.state.stats;
     let proxy = req.proxy.clone();
     match fetch_page(
@@ -386,7 +379,6 @@ pub fn record_status(stats: &Arc<SpiderStats>, status: u16) {
         .or_insert(AtomicUsize::new(1));
 }
 
-
 /// 从单个 SpiderStats 构造 CrawlStats 快照。
 pub(crate) fn snapshot_stats_for(
     stats: &Arc<SpiderStats>,
@@ -454,8 +446,7 @@ pub async fn fetch_page(
 ) -> Result<Response> {
     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
     if let Some(override_mode) = req.fetch_mode_override {
-        return fetch_page_inner(fetch_client, req, proxy_url, override_mode, proxy_clients)
-            .await;
+        return fetch_page_inner(fetch_client, req, proxy_url, override_mode, proxy_clients).await;
     }
 
     // 2. Auto 模式：rule_engine 缓存 → HTTP 先行，blocked 检测由 StealthUpgradeMiddleware 承担
@@ -466,14 +457,8 @@ pub async fn fetch_page(
                 .await;
         }
         // HTTP 先行（升级由 DynamicUpgradeMiddleware 中间件通过 Refetch 触发）
-        let resp = fetch_page_inner(
-            fetch_client,
-            req,
-            proxy_url,
-            FetchMode::Http,
-            proxy_clients,
-        )
-        .await?;
+        let resp =
+            fetch_page_inner(fetch_client, req, proxy_url, FetchMode::Http, proxy_clients).await?;
         return Ok(resp);
     }
 
@@ -577,7 +562,11 @@ pub async fn fetch_page_inner(
         title: None,
         cookies: Vec::new(),
         request: req.clone(),
-        content_type: resp.headers.get("content-type").cloned().unwrap_or_default(),
+        content_type: resp
+            .headers
+            .get("content-type")
+            .cloned()
+            .unwrap_or_default(),
         from_cache: false,
     })
 }
@@ -624,29 +613,21 @@ mod tests {
         let ctx = EngineContext {
             config: EngineConfig {
                 client: Arc::new(
-                    crate::fetcher::FetchClient::new(
-                        crate::fetcher::FetchClientConfig::default(),
-                    )
-                    .expect("build fetch client"),
+                    crate::fetcher::FetchClient::new(crate::fetcher::FetchClientConfig::default())
+                        .expect("build fetch client"),
                 ),
                 fetch_mode: FetchMode::Http,
                 max_concurrent: 8,
-                max_depth: u32::MAX,
                 obey_robots: false,
                 engine_max_pages: 100,
                 max_refetch_rounds: 5,
-                dev_mode: false,
-                allowed: Arc::new(HashSet::new()),
             },
             shared: EngineShared {
                 sched: Arc::new(scheduler::Scheduler::new()),
-                robots_cache: Arc::new(Mutex::new(robots::RobotsCache::new())),
                 follow_tx,
                 follow_rx: Arc::new(Mutex::new(follow_rx)),
                 domain_sems: Arc::new(DashMap::new()),
                 proxy_clients: Arc::new(dashmap::DashMap::new()),
-                cache_store: None,
-                request_cache: None,
                 control: Arc::new(control::EngineControl::new()),
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
@@ -715,12 +696,8 @@ mod tests {
         let store = crate::storage::Store::open_in_memory().expect("open in-memory store");
         let sched = scheduler::Scheduler::new();
         // push 两个 URL：进入 heap 与 seen 集合
-        sched
-            .push(Request::get("https://example.com/a"))
-            .await;
-        sched
-            .push(Request::get("https://example.com/b"))
-            .await;
+        sched.push(Request::get("https://example.com/a")).await;
+        sched.push(Request::get("https://example.com/b")).await;
 
         let stats = Arc::new(SpiderStats::new());
         save_checkpoint(&store, "seen_persist_spider", &sched, &stats).await;
