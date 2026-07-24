@@ -105,25 +105,49 @@ use wisp::crawl::scheduling::Scheduler;
 use wisp::crawl::{Engine, Request, Response, Spider};
 
 /// 返回固定 HTML 的本地 HTTP 服务器，返回 base URL（如 `http://127.0.0.1:PORT`）。
+///
+/// 支持 HTTP/1.1 keep-alive：每个连接循环处理多个请求，
+/// 让 wreq 连接池能复用 TCP 连接，避免每请求重新握手。
 async fn spawn_html_server(html: &'static str) -> String {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::sync::Arc;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+            html.len(),
+            html
+        );
+        let resp_bytes: Arc<[u8]> = Arc::from(resp.into_bytes());
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
+            let Ok((socket, _)) = listener.accept().await else {
                 return;
             };
+            let resp_bytes = resp_bytes.clone();
             tokio::spawn(async move {
-                let mut buf = [0u8; 1024];
-                let _ = socket.read(&mut buf).await;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(),
-                    html
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
+                let mut reader = BufReader::new(socket);
+                let mut line = Vec::with_capacity(256);
+                loop {
+                    line.clear();
+                    // 读请求头直到空行（\r\n），GET 请求无 body
+                    loop {
+                        match reader.read_until(b'\n', &mut line).await {
+                            Ok(0) => return, // EOF，客户端关闭连接
+                            Ok(_) => {}
+                            Err(_) => return,
+                        }
+                        if line.ends_with(b"\r\n") && line.len() == 2 {
+                            break; // 空行，请求头结束
+                        }
+                        line.clear();
+                    }
+                    // 发响应（BufReader 透传 AsyncWrite 到内部 socket）
+                    if reader.get_mut().write_all(&resp_bytes).await.is_err() {
+                        return;
+                    }
+                }
             });
         }
     });
@@ -144,6 +168,12 @@ impl Spider for BenchSpider {
     }
     fn start_urls(&self) -> Vec<String> {
         self.urls.clone()
+    }
+    // bench 测纯抓取吞吐，关闭 robots 检查（single-flight 已优化 robots 性能，
+    // 此处关闭以隔离测量引擎调度/连接池/中间件链的纯开销；
+    // 临时改为 true 可验证 RobotsMiddleware 在 keep-alive 下的真实开销）
+    fn obey_robots(&self) -> bool {
+        false
     }
     async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
@@ -229,10 +259,7 @@ fn bench_scheduler_concurrent_push(c: &mut Criterion) {
 
 criterion_group!(
     name = benches;
-    config = Criterion::default()
-        .warm_up_time(std::time::Duration::from_secs(1))
-        .measurement_time(std::time::Duration::from_secs(2))
-        .sample_size(30);
+    config = Criterion::default();
     targets =
         bench_parse,
         bench_css_select,

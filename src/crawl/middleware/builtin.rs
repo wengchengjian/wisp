@@ -354,13 +354,16 @@ impl Middleware for CacheMiddleware {
 }
 
 /// Robots.txt 检查中间件：请求前检查目标 URL 是否被 robots.txt 禁止。
+///
+/// `RobotsCache` 内部用 `DashMap` 实现无锁读 + fetch 时不持锁，
+/// 因此 `RobotsMiddleware` 无需额外 `Mutex` 包裹，多个并发请求可并行检查。
 pub struct RobotsMiddleware {
-    robots_cache: Arc<Mutex<RobotsCache>>,
+    robots_cache: Arc<RobotsCache>,
     client: Arc<Client>,
 }
 
 impl RobotsMiddleware {
-    pub fn new(robots_cache: Arc<Mutex<RobotsCache>>, client: Arc<Client>) -> Self {
+    pub fn new(robots_cache: Arc<RobotsCache>, client: Arc<Client>) -> Self {
         Self {
             robots_cache,
             client,
@@ -375,10 +378,7 @@ impl Middleware for RobotsMiddleware {
     }
 
     async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
-        let allowed = {
-            let mut rc = self.robots_cache.lock().await;
-            rc.is_allowed(&self.client, &req.url).await
-        };
+        let allowed = self.robots_cache.is_allowed(&self.client, &req.url).await;
         if allowed {
             MwAction::Continue
         } else {
@@ -645,8 +645,8 @@ pub struct DefaultMiddlewareConfig {
     pub request_cache: Option<RequestCache>,
     /// HTTP 客户端（RobotsMiddleware 拉取 robots.txt 用）
     pub http_client: Arc<Client>,
-    /// robots 缓存（跨请求共享 robots 规则）
-    pub robots_cache: Arc<Mutex<RobotsCache>>,
+    /// robots 缓存（跨请求共享 robots 规则，内部 DashMap 无锁读）
+    pub robots_cache: Arc<RobotsCache>,
     /// Auto 模式规则引擎（StealthUpgradeMiddleware 学习模式用）
     pub rule_engine: Arc<Mutex<ModeRuleEngine>>,
 }
@@ -1003,7 +1003,7 @@ mod tests {
     #[test]
     fn default_middlewares_classifies_by_mode_and_config() {
         let http_client = make_http_client();
-        let robots_cache = Arc::new(Mutex::new(RobotsCache::new()));
+        let robots_cache = Arc::new(RobotsCache::new());
         let rule_engine = Arc::new(Mutex::new(ModeRuleEngine::new()));
 
         let priorities =

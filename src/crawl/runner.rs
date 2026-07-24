@@ -162,7 +162,7 @@ impl Engine {
         let fetch_client = self.fetch_client.clone();
 
         let sched = Arc::new(scheduler::Scheduler::new());
-        let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
+        let robots_cache = Arc::new(robots::RobotsCache::new());
         let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
 
         // checkpoint 恢复（单 Spider）
