@@ -111,7 +111,7 @@ async fn check_control_and_hook(ctx: &EngineContext, req: &Request) -> bool {
 /// 1. 控制状态 + Spider 钩子（基础设施）
 /// 2. 中间件请求链（域名/深度/robots/缓存/延迟/UA/代理 全部在此）
 /// 3. 域名信号量（并发控制）+ fetch
-#[tracing::instrument(skip(ctx), fields(url = %req.url))]
+#[tracing::instrument(skip(ctx, req), fields(url = %req.url))]
 pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option<Response> {
     // 1. 控制状态 + Spider 钩子
     if !check_control_and_hook(ctx, &req).await {
