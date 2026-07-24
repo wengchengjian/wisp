@@ -68,6 +68,7 @@ async fn count_page_targets(probe: &wisp::Page) -> usize {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test tab_leak_test -- --ignored"]
 async fn page_drop_does_not_leak_tabs() {
     let Some(browser) = launch_browser().await else {
         eprintln!("SKIP: No Chrome found");

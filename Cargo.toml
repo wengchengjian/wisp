@@ -65,3 +65,12 @@ harness = false
 [[bin]]
 name = "wisp"
 path = "src/bin/wisp.rs"
+
+# ND-001-DEP：release profile 优化（性能敏感的爬虫框架）
+# 注意：未启用 panic = "abort"，因为部分 Drop 实现依赖 catch_unwind 语义
+# （如 Page::Drop 的 tokio::spawn 兜底）。如需进一步缩减二进制体积可手动启用。
+[profile.release]
+lto = "thin"          # 跨 crate 内联优化，约 5-10% 性能提升
+codegen-units = 1     # 单 codegen unit，最佳优化（牺牲编译时间）
+strip = true          # 移除调试符号，减小二进制体积
+opt-level = 3         # 默认值，显式声明

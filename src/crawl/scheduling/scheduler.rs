@@ -58,12 +58,20 @@ struct HeapInner {
 ///
 /// push 时先查/插 seen（DashSet，无锁），命中才锁 heap 入队；
 /// pop 时只锁 heap。两者不再串行于同一锁。
+///
+/// ND-008-ARCH：`max_seen` 字段控制 seen 集合容量告警阈值。超过时 log warn，
+/// 提示用户切换 Fingerprint 模式或定期重启。默认 `usize::MAX` 表示无告警。
+/// 注意：此为可观测性改进，不自动淘汰（避免重复爬取）。完整 LRU 淘汰可作为后续优化。
 #[derive(Clone)]
 pub struct Scheduler {
     heap: Arc<Mutex<HeapInner>>,
     seen_exact: Arc<DashSet<String>>,
     seen_fp: Arc<DashSet<u64>>,
     strategy: DedupStrategy,
+    /// ND-008-ARCH：seen 集合容量告警阈值。
+    max_seen: usize,
+    /// 已发出过告警的标记，避免重复日志刷屏（每次超过只告警一次）。
+    warned: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Scheduler {
@@ -73,11 +81,21 @@ impl Scheduler {
 
     /// 使用指定去重策略创建 Scheduler。
     pub fn with_strategy(strategy: DedupStrategy) -> Self {
+        Self::with_strategy_and_max_seen(strategy, usize::MAX)
+    }
+
+    /// ND-008-ARCH：创建 Scheduler 并设置 seen 集合容量告警阈值。
+    ///
+    /// 当 seen 集合大小超过 `max_seen` 时，记录一次 warn 日志。
+    /// 默认 `usize::MAX` 表示无告警。建议大规模爬取设置为 1_000_000。
+    pub fn with_strategy_and_max_seen(strategy: DedupStrategy, max_seen: usize) -> Self {
         Self {
             heap: Arc::new(Mutex::new(HeapInner { heap: BinaryHeap::new(), seq: 0 })),
             seen_exact: Arc::new(DashSet::new()),
             seen_fp: Arc::new(DashSet::new()),
             strategy,
+            max_seen,
+            warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -89,6 +107,23 @@ impl Scheduler {
             DedupStrategy::Fingerprint => self.seen_fp.insert(fingerprint(&req.url)),
         };
         if is_new {
+            // ND-008-ARCH：seen 集合容量告警（只告警一次，避免刷屏）
+            if self.max_seen != usize::MAX {
+                let current_size = match self.strategy {
+                    DedupStrategy::Exact => self.seen_exact.len(),
+                    DedupStrategy::Fingerprint => self.seen_fp.len(),
+                };
+                if current_size > self.max_seen
+                    && !self.warned.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    tracing::warn!(
+                        "Scheduler seen 集合已超过告警阈值 {} (当前 {})，\
+                         长时间爬取可能导致内存增长。建议切换 Fingerprint 模式或定期重启。",
+                        self.max_seen,
+                        current_size
+                    );
+                }
+            }
             let mut g = self.heap.lock().await;
             let seq = g.seq;
             g.heap.push(PrioritizedRequest { req, seq });

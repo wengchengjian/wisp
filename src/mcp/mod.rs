@@ -100,8 +100,10 @@ pub async fn serve(store: Arc<dyn Store>) -> Result<()> {
     // 启动时创建一个长驻共享 Engine，所有 crawl_site 调用复用
     // （共享 HTTP 连接池 / 请求缓存 / 代理池）。Engine 自身的 max_pages 作为全局兜底，
     // 每次 crawl_site 的 per-call 上限由 SimpleSpider 的 until() 终止策略控制。
+    // ND-031-ARCH：obey_robots 从 SimpleSpider 迁移到 Engine 配置
     let engine = Engine::infra()
         .max_pages(100000)
+        .obey_robots(false)
         .build()?;
 
     let stdin = io::stdin();
@@ -263,6 +265,7 @@ mod tests {
         let store: Arc<dyn Store> = Arc::new(crate::storage::SqliteStore::open_in_memory().unwrap());
         let engine = Engine::infra()
             .max_pages(100)
+            .obey_robots(false)
             .build()
             .unwrap();
         let req = json!({

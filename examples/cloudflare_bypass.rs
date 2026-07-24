@@ -2,9 +2,10 @@
 
 use std::time::Duration;
 use wisp::Fetcher;
+use wisp::error::Result;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     println!("Scraping https://nowsecure.nl ...");
 
     let resp = Fetcher::stealth()

@@ -59,7 +59,6 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 
 use super::{Request, Response, Spider};
 
@@ -77,16 +76,14 @@ pub type Handler =
 /// 闭包式 Spider 构建器。
 ///
 /// 允许通过链式调用 + 闭包定义 Spider，避免为简单爬虫手写 trait impl。
+///
+/// ND-031-ARCH 修复：引擎配置（fetch_mode/obey_robots/max_retries/download_delay/auto_rules）
+/// 已从 SpiderBuilder 移除，改用 `EngineBuilder` 配置。SpiderBuilder 只保留业务逻辑配置。
 pub struct SpiderBuilder {
     name: String,
     start_urls: Vec<String>,
     handlers: HashMap<String, Handler>,
     allowed_domains: HashSet<String>,
-    delay: Duration,
-    obey_robots: bool,
-    max_retries: u32,
-    fetch_mode: crate::fetcher::FetchMode,
-    auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
     is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
     middlewares: Vec<Arc<dyn super::middleware::Middleware>>,
@@ -101,11 +98,6 @@ impl SpiderBuilder {
             start_urls: Vec::new(),
             handlers: HashMap::new(),
             allowed_domains: HashSet::new(),
-            delay: Duration::ZERO,
-            obey_robots: true,
-            max_retries: 3,
-            fetch_mode: crate::fetcher::FetchMode::Auto,
-            auto_rules: Vec::new(),
             is_blocked_fn: None,
             until_cond: Arc::new(super::NeverStop),
             middlewares: Vec::new(),
@@ -122,44 +114,6 @@ impl SpiderBuilder {
     /// 设置允许的域名集合。
     pub fn allowed_domains(mut self, domains: Vec<impl Into<String>>) -> Self {
         self.allowed_domains = domains.into_iter().map(|d| d.into()).collect();
-        self
-    }
-
-    /// 设置下载延迟。
-    pub fn delay(mut self, d: Duration) -> Self {
-        self.delay = d;
-        self
-    }
-
-    /// 设置下载延迟（毫秒）。
-    pub fn delay_ms(mut self, ms: u64) -> Self {
-        self.delay = Duration::from_millis(ms);
-        self
-    }
-
-    /// 是否遵守 robots.txt。
-    pub fn obey_robots(mut self, obey: bool) -> Self {
-        self.obey_robots = obey;
-        self
-    }
-
-    /// 设置最大重试次数。
-    pub fn max_retries(mut self, n: u32) -> Self {
-        self.max_retries = n;
-        self
-    }
-
-    /// 设置抓取模式（Http / Dynamic / Stealth / Auto）。
-    pub fn mode(mut self, mode: crate::fetcher::FetchMode) -> Self {
-        self.fetch_mode = mode;
-        self
-    }
-
-    /// Auto 模式：URL 正则规则（优先级最高）。
-    ///
-    /// 匹配该规则的 URL 直接使用指定模式，跳过 Auto 嗅探。
-    pub fn auto_rule(mut self, pattern: &str, mode: crate::fetcher::FetchMode) -> Self {
-        self.auto_rules.push((pattern.to_string(), mode));
         self
     }
 
@@ -255,11 +209,6 @@ impl SpiderBuilder {
             start_urls: self.start_urls,
             handlers: self.handlers,
             allowed_domains: self.allowed_domains,
-            delay: self.delay,
-            obey_robots: self.obey_robots,
-            max_retries: self.max_retries,
-            fetch_mode: self.fetch_mode,
-            auto_rules: self.auto_rules,
             is_blocked_fn: self.is_blocked_fn,
             until_cond: self.until_cond,
             middlewares: self.middlewares,
@@ -269,16 +218,13 @@ impl SpiderBuilder {
 }
 
 /// 由 SpiderBuilder 构建的闭包式 Spider。
+///
+/// ND-031-ARCH：引擎配置字段已移除，ClosureSpider 只持有业务逻辑字段。
 pub struct ClosureSpider {
     name: String,
     start_urls: Vec<String>,
     handlers: HashMap<String, Handler>,
     allowed_domains: HashSet<String>,
-    delay: Duration,
-    obey_robots: bool,
-    max_retries: u32,
-    fetch_mode: crate::fetcher::FetchMode,
-    auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
     is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn super::stop::StopCondition>,
     middlewares: Vec<Arc<dyn super::middleware::Middleware>>,
@@ -295,21 +241,6 @@ impl Spider for ClosureSpider {
     }
     fn allowed_domains(&self) -> HashSet<String> {
         self.allowed_domains.clone()
-    }
-    fn download_delay(&self) -> Duration {
-        self.delay
-    }
-    fn obey_robots(&self) -> bool {
-        self.obey_robots
-    }
-    fn max_retries(&self) -> u32 {
-        self.max_retries
-    }
-    fn fetch_mode(&self) -> crate::fetcher::FetchMode {
-        self.fetch_mode
-    }
-    fn auto_rules(&self) -> Vec<(String, crate::fetcher::FetchMode)> {
-        self.auto_rules.clone()
     }
 
     /// callback 路由：根据 `resp.request.callback` 查表分发。
@@ -365,8 +296,6 @@ mod tests {
     fn test_spider_builder_basic() {
         let spider = SpiderBuilder::new("test")
             .start_urls(vec!["https://example.com/"])
-            .delay_ms(100)
-            .obey_robots(false)
             .on("default", |_resp| async move {
                 (vec![json!({"ok": true})], vec![])
             })
@@ -374,8 +303,7 @@ mod tests {
 
         assert_eq!(spider.name(), "test");
         assert_eq!(spider.start_urls(), vec!["https://example.com/"]);
-        assert_eq!(spider.download_delay(), Duration::from_millis(100));
-        assert!(!spider.obey_robots());
+        // ND-031-ARCH：download_delay/obey_robots 已迁移到 EngineBuilder
     }
 
     #[test]

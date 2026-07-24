@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use wisp::crawl::{Engine, Spider, Request, Response};
-use wisp::storage::Store;
+use wisp::storage::{SqliteStore, Store};
 
 struct CacheSpider;
 #[async_trait]
@@ -18,10 +18,7 @@ impl Spider for CacheSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://httpbin.org/get".to_string()]
     }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let text = resp.text().unwrap_or_default();
         assert!(text.contains("httpbin.org"), "响应应来自 httpbin");
         (vec![], vec![])
@@ -31,11 +28,12 @@ impl Spider for CacheSpider {
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_development_mode_caches_response() {
-    let store = Arc::new(Store::open_in_memory().unwrap());
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
 
     // 第一次运行：发网络请求，保存缓存
     let engine = Engine::infra()
         .max_pages(1)
+        .obey_robots(false)
         .build()
         .unwrap();
     let (stats1, _) = engine.run(CacheSpider).await.unwrap();
@@ -44,7 +42,7 @@ async fn test_development_mode_caches_response() {
 
     // 验证缓存已保存
     let cached = store
-        .load_cached_response("https://httpbin.org/get", "GET")
+        .load_response("GET", "https://httpbin.org/get")
         .unwrap();
     assert!(cached.is_some(), "响应应已缓存");
 

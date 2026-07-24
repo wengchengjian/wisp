@@ -181,8 +181,8 @@ async fn test_callback_pipeline_produces_follows() {
 }
 
 #[tokio::test]
-async fn test_spider_trait_default_handle_calls_parse() {
-    // 验证 Spider trait 的默认 handle() 实现调用 parse()
+async fn test_spider_trait_handle_works() {
+    // 验证 Spider trait 的 handle() 方法被正确调用
     use async_trait::async_trait;
 
     struct PlainSpider;
@@ -190,14 +190,14 @@ async fn test_spider_trait_default_handle_calls_parse() {
     impl Spider for PlainSpider {
         fn name(&self) -> &str { "plain" }
         fn start_urls(&self) -> Vec<String> { vec![] }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![json!({"default_handle": true})], vec![])
         }
     }
 
     let spider = PlainSpider;
     let resp = make_resp("https://example.com/", "<html></html>", None);
-    // 默认 handle() 应调用 parse()
+    // handle() 应被调用并返回 item
     let (items, _) = spider.handle(resp).await;
     assert_eq!(items[0]["default_handle"], true);
 }

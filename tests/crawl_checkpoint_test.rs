@@ -1,12 +1,12 @@
 //! Verify checkpoint save/load round-trip.
 
 use wisp::crawl::{CrawlState, Request, CrawlStats};
-use wisp::storage::Store;
+use wisp::storage::{Store, SqliteStore};
 use std::collections::HashSet;
 
 #[test]
 fn test_checkpoint_save_load_roundtrip() {
-    let store = Store::open_in_memory().unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
 
     let stats = CrawlStats {
         items_scraped: 100,
@@ -40,7 +40,7 @@ fn test_checkpoint_save_load_roundtrip() {
 
 #[test]
 fn test_checkpoint_delete() {
-    let store = Store::open_in_memory().unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
     let state = CrawlState::new("s2".to_string());
     let blob = bincode::serialize(&state).unwrap();
     store.save_checkpoint("s2", &blob, 0).unwrap();
@@ -52,7 +52,7 @@ fn test_checkpoint_delete() {
 
 #[test]
 fn test_checkpoint_load_missing_returns_none() {
-    let store = Store::open_in_memory().unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
     assert!(store.load_checkpoint("nonexistent").unwrap().is_none());
 }
 
@@ -76,7 +76,7 @@ fn test_crawl_state_new_defaults() {
 /// 由 engine.rs 内部 lib 测试 `save_checkpoint_persists_seen_urls` 覆盖。
 #[tokio::test]
 async fn checkpoint_restore_preserves_seen_urls() {
-    let store = Store::open_in_memory().unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
     // 模拟 save_checkpoint 写入：构造含 seen_urls 的 CrawlState
     let mut state = CrawlState::new("test_spider".into());
     state.pending_urls = vec![Request::get("https://example.com/pending")];

@@ -25,8 +25,10 @@ async fn test_crawl_site_uses_start_urls() {
 async fn spawn_html_server(html: &'static str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    // ND-003-SEC：SSRF 防护拒绝 127.0.0.1 字面量，但放行 localhost 域名。
+    // 测试用 localhost:port 让 SSRF 校验通过，DNS 解析到 127.0.0.1。
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else { return };
@@ -41,5 +43,5 @@ async fn spawn_html_server(html: &'static str) -> String {
             });
         }
     });
-    format!("http://{}", addr)
+    format!("http://localhost:{}", port)
 }

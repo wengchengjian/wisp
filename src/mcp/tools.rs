@@ -78,13 +78,10 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
     if start_urls.is_empty() {
         return Err(WispError::Mcp(McpError::General("start_urls 不能为空".into())));
     }
-    // D-007: scheme 校验，仅允许 http/https，防止 SSRF
+    // ND-003-SEC：严格 URL 校验（scheme + host + 拒绝内网 IP），防止 SSRF。
+    // 替换原 starts_with 校验，处理大小写/前导空格/内网地址。
     for url in &start_urls {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(WispError::Mcp(McpError::General(
-                format!("start_urls 仅支持 http/https scheme，拒绝: {url}")
-            )));
-        }
+        crate::utils::validate_url(url)?;
     }
 
     let css_selector = args.get("css_selector")
@@ -119,14 +116,14 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
                 .collect();
             (items, vec![])
         }
-        fn obey_robots(&self) -> bool { false }
         // per-call max_pages：由 Spider 终止策略生效，Engine 的 max_pages 作为全局兜底
         fn until(&self) -> Arc<dyn StopCondition> {
             Arc::new(MaxPages(self.max_pages))
         }
     }
 
-    // 复用共享 Engine，run() 返回 (stats, items)
+    // 复用共享 Engine（ND-031-ARCH：obey_robots 在 Engine 上配置），run() 返回 (stats, items)
+    // 注意：调用方应确保 Engine 已通过 EngineBuilder::obey_robots(false) 配置
     let spider = SimpleSpider { css: css_selector, start_urls, max_pages };
     let (_stats, items) = engine.run(spider).await?;
 

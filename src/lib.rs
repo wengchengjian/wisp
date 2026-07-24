@@ -31,6 +31,19 @@
 //! - `text` - Text and attribute processing utilities
 //! - `utils` - Internal helpers (URL resolution, random suffix)
 
+// ND-006-DOC：启用 missing_docs 警告（软约束）。
+// 当前存在 293 个历史警告，逐步补充文档。CI 可通过 -D warnings 强制。
+#![warn(missing_docs)]
+// ND-014-STYLE：启用 clippy::all + pedantic（软约束）。
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+// pedantic 例外：模块名重复、问号操作符等不强制
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::doc_markdown)]
+
 pub mod browser;
 pub mod config;
 pub mod config_file;

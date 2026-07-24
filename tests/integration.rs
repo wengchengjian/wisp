@@ -11,6 +11,7 @@ async fn launch_test_browser() -> Option<Browser> {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test integration -- --ignored"]
 async fn test_navigator_webdriver_is_null() {
     let Some(browser) = launch_test_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -30,6 +31,7 @@ async fn test_navigator_webdriver_is_null() {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test integration -- --ignored"]
 async fn test_evaluate_returns_value() {
     let Some(browser) = launch_test_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -49,6 +51,7 @@ async fn test_evaluate_returns_value() {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test integration -- --ignored"]
 async fn test_navigation_and_title() {
     let Some(browser) = launch_test_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -67,6 +70,7 @@ async fn test_navigation_and_title() {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test integration -- --ignored"]
 async fn test_element_click_and_fill() {
     let Some(browser) = launch_test_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -90,6 +94,7 @@ async fn test_element_click_and_fill() {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test integration -- --ignored"]
 async fn test_screenshot_creates_file() {
     let Some(browser) = launch_test_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -116,7 +121,7 @@ async fn test_screenshot_creates_file() {
 /// Adaptive + crawl integration tests (no network required).
 mod adaptive_test {
     use wisp::parser::Node;
-    use wisp::storage::Store;
+    use wisp::storage::{Store, SqliteStore};
 
     const PRODUCT_HTML: &str = r#"
     <html><body>
@@ -142,7 +147,7 @@ mod adaptive_test {
 
     #[test]
     fn test_end_to_end_adaptive_relocation() {
-        let store = Store::open_in_memory().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
         let url = "https://shop.example.com/products";
 
         // Phase 1: capture snapshot
@@ -161,7 +166,7 @@ mod adaptive_test {
     #[test]
     fn test_dom_navigation_with_adaptive_snapshot() {
         // 验证 Node 重构后 adaptive 仍正常工作，且 capture 用了导航 API
-        let store = Store::open_in_memory().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
         let url = "https://shop.example.com/products";
 
         let html = r#"

@@ -133,7 +133,7 @@ impl Page {
 
     /// Set the page HTML content.
     pub async fn set_content(&self, html: &str) -> Result<()> {
-        let escaped = serde_json::to_string(html).unwrap();
+        let escaped = serde_json::to_string(html).expect("serialize &str cannot fail");
         self.evaluate(&format!("document.documentElement.innerHTML = {}", escaped)).await?;
         Ok(())
     }
@@ -186,13 +186,13 @@ impl Page {
 
     /// Get inner text of an element.
     pub async fn inner_text(&self, selector: &str) -> Result<String> {
-        let js = format!("document.querySelector({})?.innerText || ''", serde_json::to_string(selector).unwrap());
+        let js = format!("document.querySelector({})?.innerText || ''", serde_json::to_string(selector).expect("serialize &str cannot fail"));
         self.evaluate_as_string(&js).await
     }
 
     /// Get inner HTML of an element.
     pub async fn inner_html(&self, selector: &str) -> Result<String> {
-        let js = format!("document.querySelector({})?.innerHTML || ''", serde_json::to_string(selector).unwrap());
+        let js = format!("document.querySelector({})?.innerHTML || ''", serde_json::to_string(selector).expect("serialize &str cannot fail"));
         self.evaluate_as_string(&js).await
     }
 
@@ -200,8 +200,8 @@ impl Page {
     pub async fn get_attribute(&self, selector: &str, attr: &str) -> Result<Option<String>> {
         let js = format!(
             "document.querySelector({})?.getAttribute({})",
-            serde_json::to_string(selector).unwrap(),
-            serde_json::to_string(attr).unwrap()
+            serde_json::to_string(selector).expect("serialize &str cannot fail"),
+            serde_json::to_string(attr).expect("serialize &str cannot fail")
         );
         let val = self.evaluate(&js).await?;
         Ok(val.as_str().map(|s| s.to_string()))
@@ -209,7 +209,7 @@ impl Page {
 
     /// Check if an element exists on the page.
     pub async fn query_selector(&self, selector: &str) -> Result<bool> {
-        let js = format!("!!document.querySelector({})", serde_json::to_string(selector).unwrap());
+        let js = format!("!!document.querySelector({})", serde_json::to_string(selector).expect("serialize &str cannot fail"));
         let val = self.evaluate(&js).await?;
         Ok(val.as_bool().unwrap_or(false))
     }
@@ -221,7 +221,7 @@ impl Page {
             if (!el) return false;
             const style = window.getComputedStyle(el);
             return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetHeight > 0;
-        }})()"#, serde_json::to_string(selector).unwrap());
+        }})()"#, serde_json::to_string(selector).expect("serialize &str cannot fail"));
         let val = self.evaluate(&js).await?;
         Ok(val.as_bool().unwrap_or(false))
     }
@@ -233,7 +233,7 @@ impl Page {
             if (!el) throw new Error('Element not found');
             const r = el.getBoundingClientRect();
             return {{x: r.x + r.width/2, y: r.y + r.height/2}};
-        }})()"#, serde_json::to_string(selector).unwrap());
+        }})()"#, serde_json::to_string(selector).expect("serialize &str cannot fail"));
         let pos = self.evaluate(&js).await?;
         let x = pos.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let y = pos.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -248,7 +248,7 @@ impl Page {
             if (!el) throw new Error('Element not found');
             el.value = {};
             el.dispatchEvent(new Event('change', {{bubbles: true}}));
-        }})()"#, serde_json::to_string(selector).unwrap(), serde_json::to_string(value).unwrap());
+        }})()"#, serde_json::to_string(selector).expect("serialize &str cannot fail"), serde_json::to_string(value).expect("serialize &str cannot fail"));
         self.evaluate(&js).await?;
         Ok(())
     }

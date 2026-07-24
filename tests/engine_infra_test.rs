@@ -4,11 +4,12 @@
 //! - run 返回 (stats, items)
 //! - 每次 run 重置 control 状态
 
-use wisp::crawl::*;
 use async_trait::async_trait;
 use serde_json::Value;
+use wisp::crawl::*;
+use wisp::fetcher::FetchMode;
 
-/// 最小 Spider：parse 返回单个 item，不 follow。
+/// 最小 Spider：handle 返回单个 item，不 follow。
 struct CountSpider {
     name: String,
     url: String,
@@ -22,14 +23,8 @@ impl Spider for CountSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![self.url.clone()]
     }
-    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![serde_json::json!({"name": self.name})], vec![])
-    }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    fn max_retries(&self) -> u32 {
-        0
     }
 }
 
@@ -37,7 +32,14 @@ impl Spider for CountSpider {
 async fn test_engine_multiple_runs_share_resources() {
     // 同一 Engine 多次 run 不同 Spider，各自独立 stats/items
     // 端口 1 不可达，请求会立即失败（connection refused）
-    let engine = Engine::infra().max_pages(10).build().unwrap();
+    // 必须指定 FetchMode::Http，否则默认 Auto 模式会尝试启动 Chrome 嗅探，导致卡住
+    let engine = Engine::infra()
+        .max_pages(10)
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
+        .build()
+        .unwrap();
 
     let (stats_a, items_a) = engine
         .run(CountSpider {
@@ -122,7 +124,7 @@ async fn test_engine_run_returns_items() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.url.clone()]
         }
-        async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
             let doc = resp.parse();
             let items: Vec<Value> = doc
                 .select("p")
@@ -131,12 +133,13 @@ async fn test_engine_run_returns_items() {
                 .collect();
             (items, vec![])
         }
-        fn obey_robots(&self) -> bool {
-            false
-        }
     }
 
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     let (stats, items) = engine.run(PSpider { url: base }).await.unwrap();
     assert!(stats.pages_crawled >= 1, "应爬取至少 1 页");
     assert_eq!(items.len(), 2, "应产出 2 个 item");
@@ -147,7 +150,13 @@ async fn test_engine_run_returns_items() {
 #[tokio::test]
 async fn test_engine_control_reset_between_runs() {
     // 验证每次 run 开始时 control 被 reset（清除上次的 shutdown/pause 状态）
-    let engine = Engine::infra().build().unwrap();
+    // 必须指定 FetchMode::Http，否则默认 Auto 模式会尝试启动 Chrome 嗅探，导致卡住
+    let engine = Engine::infra()
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
+        .build()
+        .unwrap();
 
     // run 前 shutdown
     engine.control().shutdown();

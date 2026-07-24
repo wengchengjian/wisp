@@ -1,10 +1,10 @@
 //! Adaptive relocation tests: capture snapshot, simulate site change, verify relocate finds the right element.
 
 use wisp::parser::{Node, adaptive::{ElementSnapshot, relocate_with_snapshot, DEFAULT_TOLERANCE}};
-use wisp::storage::Store;
+use wisp::storage::{Store, SqliteStore};
 
-fn make_store() -> Store {
-    Store::open_in_memory().unwrap()
+fn make_store() -> impl Store {
+    SqliteStore::open_in_memory().unwrap()
 }
 
 const HTML_BEFORE: &str = r#"

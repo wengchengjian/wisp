@@ -26,11 +26,13 @@ fn test_unified_response_css() {
         <div class="quote"><span class="text">"The world as we have created it..."</span><small class="author">Albert Einstein</small></div>
     "#);
 
-    let quotes = resp.css(".quote");
-    assert_eq!(quotes.len(), 2);
+    // Response::parse() 只允许调用一次，在一次 parse() 返回的 Node 上执行多次查询
+    let node = resp.parse();
+    let quotes = node.select(".quote");
+    assert_eq!(quotes.iter().count(), 2);
 
-    let texts = resp.css(".text");
-    assert_eq!(texts.len(), 2);
+    let texts = node.select(".text");
+    assert_eq!(texts.iter().count(), 2);
     assert!(texts.text()[0].contains("Life is what happens"));
 }
 
@@ -42,12 +44,13 @@ fn test_unified_response_find_by_text() {
         <small class="author">Einstein Smith</small>
     "#);
 
+    let node = resp.parse();
     // 精确匹配
-    let exact = resp.find_by_text("Albert Einstein", Some("small"), true);
+    let exact = node.find_by_text("Albert Einstein", Some("small"), true);
     assert_eq!(exact.len(), 1);
 
     // 模糊匹配
-    let contains = resp.find_by_text("Einstein", Some("small"), false);
+    let contains = node.find_by_text("Einstein", Some("small"), false);
     assert_eq!(contains.len(), 2);
 }
 

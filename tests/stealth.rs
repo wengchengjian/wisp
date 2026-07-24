@@ -1,12 +1,13 @@
-use wisp::{Browser, LaunchOptions};
 use std::sync::atomic::{AtomicU32, Ordering};
+use wisp::{Browser, LaunchOptions};
 
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Helper: launch browser for stealth tests with unique profile dir.
 async fn launch_stealth_browser() -> Option<Browser> {
     let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let user_data = std::env::temp_dir().join(format!("patchright-stealth-{}-{id}", std::process::id()));
+    let user_data =
+        std::env::temp_dir().join(format!("patchright-stealth-{}-{id}", std::process::id()));
     let result = Browser::launch(LaunchOptions {
         headless: true,
         user_data_dir: Some(user_data),
@@ -32,6 +33,7 @@ async fn eval_main_world(page: &mut wisp::Page, js: &str) -> serde_json::Value {
 
 /// Test 1: navigator.webdriver must be undefined in the MAIN world
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test stealth -- --ignored"]
 async fn stealth_navigator_webdriver() {
     let Some(browser) = launch_stealth_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -39,14 +41,24 @@ async fn stealth_navigator_webdriver() {
     };
 
     let mut page = browser.new_page().await.unwrap();
-    
+
     // Check from MAIN world (where anti-bot scripts run)
-    let result = eval_main_world(&mut page, "return { typeof_wd: typeof navigator.webdriver, wd: navigator.webdriver };").await;
+    let result = eval_main_world(
+        &mut page,
+        "return { typeof_wd: typeof navigator.webdriver, wd: navigator.webdriver };",
+    )
+    .await;
     println!("Main world webdriver check: {result}");
-    
-    let typeof_wd = result.get("typeof_wd").and_then(|v| v.as_str()).unwrap_or("");
-    assert_eq!(typeof_wd, "undefined", "typeof navigator.webdriver should be 'undefined' in main world");
-    
+
+    let typeof_wd = result
+        .get("typeof_wd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        typeof_wd, "undefined",
+        "typeof navigator.webdriver should be 'undefined' in main world"
+    );
+
     println!("PASS: navigator.webdriver is undefined in main world");
     browser.close().await.unwrap();
 }
@@ -55,6 +67,7 @@ async fn stealth_navigator_webdriver() {
 /// When Runtime.enable is active, Error().stack contains extra CDP frames.
 /// This is the detection method used by Brotector and CreepJS.
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test stealth -- --ignored"]
 async fn stealth_runtime_enable_leak() {
     let Some(browser) = launch_stealth_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -102,10 +115,11 @@ async fn stealth_runtime_enable_leak() {
     let result = page.evaluate(detection_js).await.unwrap();
     println!("Runtime.enable leak test result: {result}");
 
-    let has_cdp_frames = result.get("hasCdpFrames")
+    let has_cdp_frames = result
+        .get("hasCdpFrames")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    
+
     assert!(!has_cdp_frames, "FAIL: CDP frames detected in Error.stack");
     println!("PASS: No CDP frames in Error.stack");
 
@@ -114,6 +128,7 @@ async fn stealth_runtime_enable_leak() {
 
 /// Test 3: Check that automation-related properties are not exposed
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test stealth -- --ignored"]
 async fn stealth_automation_properties() {
     let Some(browser) = launch_stealth_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -146,16 +161,25 @@ async fn stealth_automation_properties() {
     let result = page.evaluate(detection_js).await.unwrap();
     println!("Automation properties test: {result}");
 
-    let webdriver = result.get("webdriver").cloned().unwrap_or(serde_json::Value::Null);
+    let webdriver = result
+        .get("webdriver")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     assert!(
         webdriver.is_null() || webdriver == serde_json::Value::Bool(false),
         "FAIL: navigator.webdriver = {webdriver}"
     );
 
-    let has_playwright = result.get("hasPlaywright").and_then(|v| v.as_bool()).unwrap_or(false);
+    let has_playwright = result
+        .get("hasPlaywright")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(!has_playwright, "FAIL: window.__playwright detected");
 
-    let has_puppeteer = result.get("hasPuppeteer").and_then(|v| v.as_bool()).unwrap_or(false);
+    let has_puppeteer = result
+        .get("hasPuppeteer")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(!has_puppeteer, "FAIL: window.__puppeteer detected");
 
     println!("PASS: No automation properties exposed");
@@ -165,6 +189,7 @@ async fn stealth_automation_properties() {
 
 /// Test 4: Verify --disable-blink-features=AutomationControlled is working
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test stealth -- --ignored"]
 async fn stealth_blink_features() {
     let Some(browser) = launch_stealth_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -174,12 +199,22 @@ async fn stealth_blink_features() {
     let mut page = browser.new_page().await.unwrap();
 
     // Check from MAIN world
-    let result = eval_main_world(&mut page, "return { typeof_wd: typeof navigator.webdriver };").await;
-    let typeof_wd = result.get("typeof_wd").and_then(|v| v.as_str()).unwrap_or("");
-    
+    let result = eval_main_world(
+        &mut page,
+        "return { typeof_wd: typeof navigator.webdriver };",
+    )
+    .await;
+    let typeof_wd = result
+        .get("typeof_wd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
     // With --disable-blink-features=AutomationControlled + our JS patch,
     // typeof should be "undefined" (not "boolean")
-    assert_eq!(typeof_wd, "undefined", "typeof navigator.webdriver should be 'undefined'");
+    assert_eq!(
+        typeof_wd, "undefined",
+        "typeof navigator.webdriver should be 'undefined'"
+    );
     println!("PASS: Blink AutomationControlled feature disabled, webdriver is undefined");
 
     browser.close().await.unwrap();
@@ -188,6 +223,7 @@ async fn stealth_blink_features() {
 /// Test 5: Verify no Console.enable leak
 /// Console.enable activates the Console domain which can be detected
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test stealth -- --ignored"]
 async fn stealth_console_disabled() {
     let Some(browser) = launch_stealth_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -201,10 +237,17 @@ async fn stealth_console_disabled() {
     // but CDP won't capture it. The key is that we never send Console.enable.
     // We verify indirectly: if Console domain was enabled, certain internal
     // hooks would be active.
-    
+
     // Basic check: console object exists (it should, we just don't enable CDP capture)
-    let has_console = page.evaluate("typeof console !== 'undefined'").await.unwrap();
-    assert_eq!(has_console, serde_json::json!(true), "console object should exist");
+    let has_console = page
+        .evaluate("typeof console !== 'undefined'")
+        .await
+        .unwrap();
+    assert_eq!(
+        has_console,
+        serde_json::json!(true),
+        "console object should exist"
+    );
 
     println!("PASS: Console domain not activated via CDP");
 
@@ -213,6 +256,7 @@ async fn stealth_console_disabled() {
 
 /// Test 6: Comprehensive Sannysoft-style checks
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test stealth -- --ignored"]
 async fn stealth_sannysoft_checks() {
     let Some(browser) = launch_stealth_browser().await else {
         eprintln!("SKIP: No Chrome found");
@@ -235,20 +279,32 @@ async fn stealth_sannysoft_checks() {
     "#;
 
     let results = eval_main_world(&mut page, checks_js).await;
-    println!("Sannysoft-style checks (main world): {}", serde_json::to_string_pretty(&results).unwrap());
+    println!(
+        "Sannysoft-style checks (main world): {}",
+        serde_json::to_string_pretty(&results).unwrap()
+    );
 
     // Critical checks
-    let webdriver_ok = results.get("webdriver").and_then(|v| v.as_bool()).unwrap_or(false);
+    let webdriver_ok = results
+        .get("webdriver")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(webdriver_ok, "FAIL: webdriver check");
 
-    let ua_clean = results.get("userAgentClean").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ua_clean = results
+        .get("userAgentClean")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // Note: In headless mode, UA contains "HeadlessChrome". This is expected.
     // For full stealth, use headed mode or override UA via CDP.
     if !ua_clean {
         println!("WARN: userAgent contains headless markers (expected in headless mode)");
     }
 
-    let chrome_ok = results.get("chrome").and_then(|v| v.as_bool()).unwrap_or(false);
+    let chrome_ok = results
+        .get("chrome")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(chrome_ok, "FAIL: window.chrome missing");
 
     println!("PASS: Sannysoft-style checks passed");

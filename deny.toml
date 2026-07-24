@@ -1,0 +1,56 @@
+# ND-005-DEP：cargo-deny 配置
+#
+# 用法：cargo install cargo-deny && cargo deny check
+# CI 集成：cargo deny check advisories licenses bans sources
+
+[graph]
+# 锁定 Cargo.lock，确保可复现构建
+all-features = true
+
+[advisories]
+# 检查已知漏洞（RustSec Advisory Database）
+# https://rustsec.org/advisories/
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "deny"
+notice = "warn"
+# 忽略特定 advisory（按需添加，附理由和过期时间）
+# ignore = ["RUSTSEC-2024-0000"]
+
+[licenses]
+# 许可证合规检查
+# wisp 自身是 Apache-2.0
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "Unlicense",
+]
+
+[bans]
+# 依赖禁用规则
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+# 允许特定 crate 的多个版本（必要时添加）
+# allow = []
+# deny = []
+
+[sources]
+# 依赖来源限制
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# 允许的 git 源（如有私有仓库依赖按需添加）
+# allow-git = []

@@ -20,6 +20,25 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, WispError, StorageError};
 
 // ============================================================================
+// 辅助函数
+// ============================================================================
+
+/// ND-010-CORR：解析 JSON 字符串，失败时返回 `StorageError` 而非静默吞掉。
+///
+/// 空字符串视为合法的 `Value::Null`（兼容旧数据），其他解析错误返回错误。
+pub(crate) fn parse_json_or_err<T: serde::de::DeserializeOwned>(
+    s: &str,
+    field: &str,
+) -> Result<T> {
+    if s.is_empty() {
+        return serde_json::from_str("null")
+            .map_err(|e| WispError::Storage(StorageError::General(format!("parse {field}: {e}"))));
+    }
+    serde_json::from_str(s)
+        .map_err(|e| WispError::Storage(StorageError::General(format!("parse {field}: {e}"))))
+}
+
+// ============================================================================
 // Trait 定义
 // ============================================================================
 
@@ -184,15 +203,21 @@ impl Store for SqliteStore {
         ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         let mut rows = stmt.query(params![url, key]).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         if let Some(row) = rows.next().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))? {
+            // ND-010-CORR：JSON 解析失败返回错误，不再静默吞掉返回 Null。
+            // 这样调用方能区分"字段为空"和"数据损坏"。
+            let attrs_str: String = row.get::<_, String>(1).unwrap_or_default();
+            let ancestor_path_str: String = row.get::<_, String>(3).unwrap_or_default();
+            let sibling_tags_str: String = row.get::<_, String>(4).unwrap_or_default();
+            let parent_attrs_str: String = row.get::<_, String>(7).unwrap_or_default();
             Ok(Some(ElementSnapshotRow {
                 tag: row.get(0).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
-                attrs: serde_json::from_str(&row.get::<_, String>(1).unwrap_or_default()).unwrap_or_default(),
+                attrs: parse_json_or_err(&attrs_str, "attrs")?,
                 text_preview: row.get(2).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
-                ancestor_path: serde_json::from_str(&row.get::<_, String>(3).unwrap_or_default()).unwrap_or_default(),
-                sibling_tags: serde_json::from_str(&row.get::<_, String>(4).unwrap_or_default()).unwrap_or_default(),
+                ancestor_path: parse_json_or_err(&ancestor_path_str, "ancestor_path")?,
+                sibling_tags: parse_json_or_err(&sibling_tags_str, "sibling_tags")?,
                 position_in_parent: row.get(5).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
                 parent_tag: row.get(6).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
-                parent_attrs: serde_json::from_str(&row.get::<_, String>(7).unwrap_or_default()).unwrap_or_default(),
+                parent_attrs: parse_json_or_err(&parent_attrs_str, "parent_attrs")?,
                 captured_at: row.get(8).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
             }))
         } else {
@@ -237,7 +262,7 @@ impl Store for SqliteStore {
             let ttl_secs: Option<i64> = row.get(5).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
             Ok(Some(CachedResponse {
                 status: status as u16,
-                headers: serde_json::from_str(&headers_str).unwrap_or_default(),
+                headers: parse_json_or_err(&headers_str, "headers")?,
                 body,
                 content_type,
                 cached_at,

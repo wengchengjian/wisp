@@ -20,7 +20,7 @@ use wisp::crawl::{
     CrawlEvent, CrawlStats, Engine, JsonlWriter, Spider, Request, Response,
 };
 use wisp::http::Client;
-use wisp::storage::Store;
+use wisp::storage::{Store, SqliteStore};
 
 /// 探测 httpbin.org 是否可达且未被 Cloudflare 拦截。
 ///
@@ -55,10 +55,7 @@ impl Spider for HttpbinHtmlSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://httpbin.org/html".to_string()]
     }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let node = resp.parse();
         let h1_texts: Vec<String> = node.select("h1").text();
         // httpbin.org/html 的 h1 是 "Herman Melville - Moby Dick"
@@ -86,7 +83,11 @@ async fn test_e2e_fetch_single_page_httpbin() {
         );
         return;
     }
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(HttpbinHtmlSpider).await.unwrap();
     assert_eq!(stats.pages_crawled, 1, "应抓取 1 页");
     assert!(
@@ -113,10 +114,7 @@ impl Spider for QuotesSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://quotes.toscrape.com/".to_string()]
     }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let node = resp.parse();
         let quotes = node.select(".quote");
         let items: Vec<Value> = quotes
@@ -137,7 +135,11 @@ impl Spider for QuotesSpider {
 #[tokio::test]
 #[ignore = "requires network access to quotes.toscrape.com"]
 async fn test_e2e_crawl_quotes_toscrape() {
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(QuotesSpider).await.unwrap();
     assert_eq!(stats.pages_crawled, 1, "应抓取 1 页");
     assert!(
@@ -159,10 +161,7 @@ impl Spider for QuotesFollowSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://quotes.toscrape.com/".to_string()]
     }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let node = resp.parse();
         let quotes = node.select(".quote");
         let items: Vec<Value> = quotes
@@ -188,7 +187,11 @@ impl Spider for QuotesFollowSpider {
 #[tokio::test]
 #[ignore = "requires network access to quotes.toscrape.com"]
 async fn test_e2e_follow_links_quotes_toscrape() {
-    let engine = Engine::infra().max_pages(3).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(3)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(QuotesFollowSpider).await.unwrap();
     assert_eq!(
         stats.pages_crawled, 3,
@@ -220,10 +223,7 @@ impl Spider for DomainFilterSpider {
         s.insert("quotes.toscrape.com".to_string());
         s
     }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
 }
@@ -231,7 +231,11 @@ impl Spider for DomainFilterSpider {
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_e2e_allowed_domains_filter() {
-    let engine = Engine::infra().max_pages(5).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(5)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(DomainFilterSpider).await.unwrap();
     assert_eq!(stats.pages_crawled, 0, "example.com 应被过滤");
     assert!(
@@ -253,16 +257,7 @@ impl Spider for Retry503Spider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://httpbin.org/status/503".to_string()]
     }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    fn max_retries(&self) -> u32 {
-        2
-    }
-    fn download_delay(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(100)
-    }
-    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
 }
@@ -270,7 +265,13 @@ impl Spider for Retry503Spider {
 #[tokio::test]
 #[ignore = "requires network access to httpbin.org"]
 async fn test_e2e_retry_on_blocked_status() {
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .max_retries(2)
+        .download_delay(std::time::Duration::from_millis(100))
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(Retry503Spider).await.unwrap();
     assert_eq!(stats.pages_crawled, 0, "503 不应计入成功页");
     assert!(stats.errors >= 1, "应有错误统计, 实际: {}", stats.errors);
@@ -304,10 +305,7 @@ impl Spider for StreamQuotesSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://quotes.toscrape.com/".to_string()]
     }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let node = resp.parse();
         let items: Vec<Value> = node
             .select(".quote")
@@ -324,7 +322,11 @@ impl Spider for StreamQuotesSpider {
 #[tokio::test]
 #[ignore = "requires network access to quotes.toscrape.com"]
 async fn test_e2e_streaming_events() {
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     let mut stream = engine.run_stream(StreamQuotesSpider).events();
     let mut item_count = 0;
     let mut page_scraped_count = 0;
@@ -370,7 +372,11 @@ async fn test_e2e_jsonl_export() {
     // 清理可能的旧文件
     let _ = std::fs::remove_file(&path);
 
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     let mut items_stream = engine.run_stream(QuotesSpider).items();
     let mut writer = JsonlWriter::new(&path).unwrap();
     let mut count = 0;
@@ -411,10 +417,7 @@ impl Spider for CacheSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://httpbin.org/get".to_string()]
     }
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    async fn parse(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
         let text = resp.text().unwrap_or_default();
         assert!(text.contains("httpbin.org"), "响应应来自 httpbin");
         (vec![], vec![])
@@ -430,11 +433,12 @@ async fn test_e2e_development_mode_cache_replay() {
         );
         return;
     }
-    let store = Arc::new(Store::open_in_memory().unwrap());
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
 
     // 第一次运行：发网络请求，保存缓存
     let engine = Engine::infra()
         .max_pages(1)
+        .obey_robots(false)
         .build()
         .unwrap();
     let (stats1, _) = engine.run(CacheSpider).await.unwrap();
@@ -443,7 +447,7 @@ async fn test_e2e_development_mode_cache_replay() {
 
     // 验证缓存已保存
     let cached = store
-        .load_cached_response("https://httpbin.org/get", "GET")
+        .load_response("GET", "https://httpbin.org/get")
         .unwrap();
     assert!(cached.is_some(), "响应应已缓存");
 

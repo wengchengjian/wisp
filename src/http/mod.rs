@@ -37,6 +37,9 @@ pub struct Config {
     /// 响应体最大字节数。超过则返回 `ResponseBodyTooLarge` 错误，防止 OOM。
     /// 默认 64MB（覆盖大多数 HTML 页面；二进制/大文件场景应显式调高）。
     pub max_body_size: usize,
+    /// ND-011-SEC：是否禁用 TLS 证书验证（危险！仅用于测试或自签名证书内部站点）。
+    /// 默认 false（启用验证）。设为 true 等价于 curl -k，存在中间人攻击风险。
+    pub danger_accept_invalid_certs: bool,
 }
 
 impl Default for Config {
@@ -52,6 +55,7 @@ impl Default for Config {
             header_order: None,
             dns_over_https: None,
             max_body_size: 64 * 1024 * 1024,
+            danger_accept_invalid_certs: false,
         }
     }
 }
@@ -128,6 +132,15 @@ impl ClientBuilder {
         self
     }
 
+    /// ND-011-SEC：禁用 TLS 证书验证（危险！）。
+    ///
+    /// 仅用于测试或抓取自签名证书的内部站点。启用后存在中间人攻击风险，
+    /// 生产环境应保持默认 false（启用验证）。
+    pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
+        self.config.danger_accept_invalid_certs = accept;
+        self
+    }
+
     /// 获取配置引用（测试用）
     #[doc(hidden)]
     pub fn config_ref(&self) -> &Config {
@@ -138,7 +151,7 @@ impl ClientBuilder {
         let mut builder = wreq::Client::builder()
             .timeout(self.config.timeout)
             .redirect(wreq::redirect::Policy::limited(self.config.max_redirects))
-            .tls_cert_verification(true)
+            .tls_cert_verification(!self.config.danger_accept_invalid_certs)
             .cookie_store(true);
 
         if let Some(ref ua) = self.config.user_agent {

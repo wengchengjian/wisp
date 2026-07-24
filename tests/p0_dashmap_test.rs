@@ -2,6 +2,7 @@
 //! 使用最小 Spider + 不可达 URL，验证引擎不 panic。
 
 use wisp::crawl::*;
+use wisp::fetcher::FetchMode;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,12 +23,10 @@ impl Spider for MultiDomainSpider {
             "http://127.0.0.1:1/domain-a/page2".into(),
         ]
     }
-    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         self.counter.fetch_add(1, Ordering::SeqCst);
         (vec![], vec![])
     }
-    fn obey_robots(&self) -> bool { false }
-    fn max_retries(&self) -> u32 { 0 }
 }
 
 #[tokio::test]
@@ -36,6 +35,9 @@ async fn domain_sems_no_panic_on_multiple_domains() {
     let engine = Engine::infra()
         .max_pages(10)
         .max_concurrent(4)
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
         .build()
         .expect("build engine");
 

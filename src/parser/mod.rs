@@ -1,20 +1,19 @@
 //! HTML parsing with CSS selectors.
 
+pub mod adaptive;
 pub mod difflib;
 pub mod document;
-pub mod adaptive;
 pub mod generate;
 
 pub use adaptive::{
-    ElementSnapshot, similarity, relocate_with_snapshot,
-    css_adaptive, DEFAULT_TOLERANCE,
+    css_adaptive, relocate_with_snapshot, similarity, ElementSnapshot, DEFAULT_TOLERANCE,
 };
 
-use scraper::{Html, Selector as CssSelector, ElementRef};
+use document::Document;
+use ego_tree::NodeId;
+use scraper::{ElementRef, Html, Selector as CssSelector};
 use std::collections::HashMap;
 use std::sync::Arc;
-use ego_tree::NodeId;
-use document::Document;
 
 /// A parsed HTML document or element.
 ///
@@ -29,7 +28,10 @@ pub struct Node {
 impl Node {
     /// 从 ElementRef 创建 Node（内部辅助方法）。
     fn from_element_ref(doc: Arc<Document>, el: ElementRef) -> Self {
-        Self { doc, node_id: el.id() }
+        Self {
+            doc,
+            node_id: el.id(),
+        }
     }
 
     /// 获取当前节点对应的 ElementRef（在 scraper 树中查找）。
@@ -41,7 +43,10 @@ impl Node {
     pub fn from_html(html: &str) -> Self {
         let doc = Document::from_html(html);
         let root_id = doc.html.root_element().id();
-        Self { doc, node_id: root_id }
+        Self {
+            doc,
+            node_id: root_id,
+        }
     }
 
     /// Parse an HTML fragment.
@@ -67,8 +72,7 @@ impl Node {
         // 表格元素片段需要特殊处理
         let is_table_fragment = matches!(
             inner_tag.as_str(),
-            "td" | "tr" | "th" | "thead" | "tbody" | "tfoot"
-                | "caption" | "colgroup" | "col"
+            "td" | "tr" | "th" | "thead" | "tbody" | "tfoot" | "caption" | "colgroup" | "col"
         );
 
         if is_table_fragment {
@@ -81,24 +85,37 @@ impl Node {
                 Ok(s) => s,
                 Err(_) => {
                     let root_id = doc.html.root_element().id();
-                    return Self { doc, node_id: root_id };
+                    return Self {
+                        doc,
+                        node_id: root_id,
+                    };
                 }
             };
-            let root_id = doc.html.select(&selector)
+            let root_id = doc
+                .html
+                .select(&selector)
                 .next()
                 .map(|el| el.id())
                 .unwrap_or_else(|| doc.html.root_element().id());
-            Self { doc, node_id: root_id }
+            Self {
+                doc,
+                node_id: root_id,
+            }
         } else {
             // 普通元素用 parse_fragment（保留片段语义，不创建 <html><head><body> 结构）。
             // parse_fragment 创建 `<html>` root_element，片段内容直接在其下。
             let doc = Document::from_fragment(html);
             let selector = CssSelector::parse("html > *").unwrap();
-            let root_id = doc.html.select(&selector)
+            let root_id = doc
+                .html
+                .select(&selector)
                 .next()
                 .map(|el| el.id())
                 .unwrap_or_else(|| doc.html.root_element().id());
-            Self { doc, node_id: root_id }
+            Self {
+                doc,
+                node_id: root_id,
+            }
         }
     }
 
@@ -112,7 +129,8 @@ impl Node {
             return NodeList { nodes: Vec::new() };
         };
         let nodes: Vec<Node> = match self.element_ref() {
-            Some(el) => el.select(&selector)
+            Some(el) => el
+                .select(&selector)
                 .map(|child| Node::from_element_ref(self.doc.clone(), child))
                 .collect(),
             None => vec![],
@@ -128,7 +146,9 @@ impl Node {
     /// Select the first element matching a CSS selector, scoped to this node's subtree.
     pub fn select_one(&self, css: &str) -> Option<Node> {
         let selector = CssSelector::parse(css).ok()?;
-        self.element_ref()?.select(&selector).next()
+        self.element_ref()?
+            .select(&selector)
+            .next()
             .map(|el| Node::from_element_ref(self.doc.clone(), el))
     }
 
@@ -150,7 +170,7 @@ impl Node {
     /// Get the text content of the document/element.
     pub fn text(&self) -> String {
         self.element_ref()
-            .map(|e| e.text().collect::<Vec<_>>().join(""))
+            .map(|e| e.text().collect::<String>())
             .unwrap_or_default()
     }
 
@@ -163,9 +183,7 @@ impl Node {
 
     /// Get the outer HTML.
     pub fn outer_html(&self) -> String {
-        self.element_ref()
-            .map(|e| e.html())
-            .unwrap_or_default()
+        self.element_ref().map(|e| e.html()).unwrap_or_default()
     }
 
     /// Get an attribute value.
@@ -178,7 +196,8 @@ impl Node {
     pub fn attrs(&self) -> HashMap<String, String> {
         self.element_ref()
             .map(|e| {
-                e.value().attrs()
+                e.value()
+                    .attrs()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect()
             })
@@ -198,15 +217,20 @@ impl Node {
     /// 但 `ElementRef::wrap` 本身只对元素节点返回 `Some`）。
     pub fn parent(&self) -> Option<Node> {
         let element = self.element_ref()?;
-        element.parent()
+        element
+            .parent()
             .and_then(ElementRef::wrap)
             .map(|p| Node::from_element_ref(self.doc.clone(), p))
     }
 
     /// Get direct child elements.
     pub fn children(&self) -> NodeList {
-        let element = match self.element_ref() { Some(e) => e, None => return NodeList { nodes: Vec::new() } };
-        let nodes: Vec<Node> = element.child_elements()
+        let element = match self.element_ref() {
+            Some(e) => e,
+            None => return NodeList { nodes: Vec::new() },
+        };
+        let nodes: Vec<Node> = element
+            .child_elements()
             .map(|c| Node::from_element_ref(self.doc.clone(), c))
             .collect();
         NodeList { nodes }
@@ -239,13 +263,25 @@ impl Node {
     }
 
     /// Get the first child element.
+    ///
+    /// 直接遍历子元素取第一个，避免构造完整 Vec。
     pub fn first_child(&self) -> Option<Node> {
-        self.children().first().cloned()
+        let element = self.element_ref()?;
+        element
+            .child_elements()
+            .next()
+            .map(|c| Node::from_element_ref(self.doc.clone(), c))
     }
 
     /// Get the last child element.
+    ///
+    /// 直接遍历子元素取最后一个，避免构造完整 Vec。
     pub fn last_child(&self) -> Option<Node> {
-        self.children().last().cloned()
+        let element = self.element_ref()?;
+        element
+            .child_elements()
+            .last()
+            .map(|c| Node::from_element_ref(self.doc.clone(), c))
     }
 
     /// Iterate ancestor elements from parent up to document root.
@@ -281,10 +317,18 @@ impl Node {
             None => "*".to_string(),
         };
         let candidates = self.select(&selector_str);
-        let matched: Vec<Node> = candidates.nodes.into_iter().filter(|node| {
-            let node_text = node.text();
-            if exact { node_text.trim() == text.trim() } else { node_text.contains(text) }
-        }).collect();
+        let matched: Vec<Node> = candidates
+            .nodes
+            .into_iter()
+            .filter(|node| {
+                let node_text = node.text();
+                if exact {
+                    node_text.trim() == text.trim()
+                } else {
+                    node_text.contains(text)
+                }
+            })
+            .collect();
         NodeList { nodes: matched }
     }
 
@@ -292,20 +336,41 @@ impl Node {
     pub fn find_similar(&self) -> NodeList {
         let tag = self.tag();
         let attrs = self.attrs();
-        let class_count = attrs.get("class").map(|c| c.split_whitespace().count()).unwrap_or(0);
+        let class_count = attrs
+            .get("class")
+            .map(|c| c.split_whitespace().count())
+            .unwrap_or(0);
         let parent = match self.parent() {
             Some(p) => p,
             None => return NodeList { nodes: Vec::new() },
         };
-        let similar: Vec<Node> = parent.children().nodes.into_iter().filter(|sibling| {
-            if sibling.outer_html() == self.outer_html() { return false; }
-            if sibling.tag() != tag { return false; }
-            let sib_class_count = sibling.attrs().get("class").map(|c| c.split_whitespace().count()).unwrap_or(0);
-            if (sib_class_count as i32 - class_count as i32).abs() > 1 { return false; }
-            let sib_attr_count = sibling.attrs().len();
-            if (sib_attr_count as i32 - attrs.len() as i32).abs() > 2 { return false; }
-            true
-        }).collect();
+        let similar: Vec<Node> = parent
+            .children()
+            .nodes
+            .into_iter()
+            .filter(|sibling| {
+                // O(1) 比较 node_id 排除自身，避免生成完整 HTML 字符串
+                if sibling.node_id == self.node_id {
+                    return false;
+                }
+                if sibling.tag() != tag {
+                    return false;
+                }
+                let sib_class_count = sibling
+                    .attrs()
+                    .get("class")
+                    .map(|c| c.split_whitespace().count())
+                    .unwrap_or(0);
+                if (sib_class_count as i32 - class_count as i32).abs() > 1 {
+                    return false;
+                }
+                let sib_attr_count = sibling.attrs().len();
+                if (sib_attr_count as i32 - attrs.len() as i32).abs() > 2 {
+                    return false;
+                }
+                true
+            })
+            .collect();
         NodeList { nodes: similar }
     }
 
@@ -337,18 +402,34 @@ pub struct NodeList {
 }
 
 impl NodeList {
-    pub fn new(nodes: Vec<Node>) -> Self { Self { nodes } }
-    pub fn len(&self) -> usize { self.nodes.len() }
-    pub fn is_empty(&self) -> bool { self.nodes.is_empty() }
-    pub fn first(&self) -> Option<&Node> { self.nodes.first() }
-    pub fn last(&self) -> Option<&Node> { self.nodes.last() }
-    pub fn get(&self, index: usize) -> Option<&Node> { self.nodes.get(index) }
+    pub fn new(nodes: Vec<Node>) -> Self {
+        Self { nodes }
+    }
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+    pub fn first(&self) -> Option<&Node> {
+        self.nodes.first()
+    }
+    pub fn last(&self) -> Option<&Node> {
+        self.nodes.last()
+    }
+    pub fn get(&self, index: usize) -> Option<&Node> {
+        self.nodes.get(index)
+    }
 
     /// Get text of all nodes.
-    pub fn text(&self) -> Vec<String> { self.nodes.iter().map(|n| n.text()).collect() }
+    pub fn text(&self) -> Vec<String> {
+        self.nodes.iter().map(|n| n.text()).collect()
+    }
 
     /// Get HTML of all nodes.
-    pub fn html(&self) -> Vec<String> { self.nodes.iter().map(|n| n.html()).collect() }
+    pub fn html(&self) -> Vec<String> {
+        self.nodes.iter().map(|n| n.html()).collect()
+    }
 
     /// Get an attribute from all nodes.
     pub fn attr(&self, name: &str) -> Vec<Option<String>> {
@@ -366,16 +447,27 @@ impl NodeList {
 
     /// Filter nodes by predicate.
     pub fn filter(&self, predicate: impl Fn(&Node) -> bool) -> NodeList {
-        NodeList { nodes: self.nodes.iter().filter(|n| predicate(n)).cloned().collect() }
+        NodeList {
+            nodes: self
+                .nodes
+                .iter()
+                .filter(|n| predicate(n))
+                .cloned()
+                .collect(),
+        }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Node> { self.nodes.iter() }
+    pub fn iter(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.iter()
+    }
 }
 
 impl IntoIterator for NodeList {
     type Item = Node;
     type IntoIter = std::vec::IntoIter<Node>;
-    fn into_iter(self) -> Self::IntoIter { self.nodes.into_iter() }
+    fn into_iter(self) -> Self::IntoIter {
+        self.nodes.into_iter()
+    }
 }
 
 #[cfg(test)]
@@ -390,19 +482,23 @@ mod tests {
 
     #[test]
     fn test_select() {
-        let doc = Node::from_html(r#"<html><body>
+        let doc = Node::from_html(
+            r#"<html><body>
             <div class="item">First</div>
             <div class="item">Second</div>
-        </body></html>"#);
+        </body></html>"#,
+        );
         let items = doc.select("div.item");
         assert_eq!(items.len(), 2);
     }
 
     #[test]
     fn test_select_one() {
-        let doc = Node::from_html(r#"<html><body>
+        let doc = Node::from_html(
+            r#"<html><body>
             <p id="main">Content here</p>
-        </body></html>"#);
+        </body></html>"#,
+        );
         let p = doc.select_one("#main");
         assert!(p.is_some());
         assert!(p.unwrap().text().contains("Content here"));
@@ -447,23 +543,27 @@ mod tests {
 
     #[test]
     fn test_node_list_text() {
-        let doc = Node::from_html(r#"<html><body>
+        let doc = Node::from_html(
+            r#"<html><body>
             <li>A</li><li>B</li><li>C</li>
-        </body></html>"#);
+        </body></html>"#,
+        );
         let texts = doc.select("li").text();
         assert_eq!(texts, vec!["A", "B", "C"]);
     }
 
     #[test]
     fn test_node_list_filter() {
-        let doc = Node::from_html(r#"<html><body>
+        let doc = Node::from_html(
+            r#"<html><body>
             <div class="keep">Keep1</div>
             <div class="drop">Drop</div>
             <div class="keep">Keep2</div>
-        </body></html>"#);
-        let filtered = doc.select("div").filter(|n| {
-            n.attr("class") == Some("keep".to_string())
-        });
+        </body></html>"#,
+        );
+        let filtered = doc
+            .select("div")
+            .filter(|n| n.attr("class") == Some("keep".to_string()));
         assert_eq!(filtered.len(), 2);
     }
 
@@ -489,9 +589,11 @@ mod tests {
         let doc = Node::from_html(r#"<html><body><p>a</p><p>b</p></body></html>"#);
         // 非法选择器（未闭合括号）
         let nodes = doc.select("p[onclick=alert(");
-        assert!(nodes.iter().count() == 0,
+        assert!(
+            nodes.iter().count() == 0,
             "非法选择器应返回空，实际返回 {} 个（静默回退到 * 会返回 2 个 <p>）",
-            nodes.iter().count());
+            nodes.iter().count()
+        );
     }
 
     #[test]

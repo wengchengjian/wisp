@@ -12,10 +12,7 @@ impl Spider for RetrySpider {
         // httpbin.org/status/403 返回 403，应触发重试
         vec!["https://httpbin.org/status/403".to_string()]
     }
-    fn max_retries(&self) -> u32 { 2 }
-    fn download_delay(&self) -> std::time::Duration { std::time::Duration::from_millis(100) }
-    fn obey_robots(&self) -> bool { false }
-    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
 }
@@ -23,7 +20,13 @@ impl Spider for RetrySpider {
 #[tokio::test]
 #[ignore = "requires network access to httpbin.org"]
 async fn test_retry_on_403_status() {
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .max_retries(2)
+        .download_delay(std::time::Duration::from_millis(100))
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(RetrySpider).await.unwrap();
     // 403 应触发重试，最终 errors >= 1（重试耗尽后计入 errors）
     assert!(stats.errors >= 1, "应有错误统计: {:?}", stats);
@@ -41,11 +44,14 @@ async fn test_retry_on_500_then_success() {
     impl Spider for OkSpider {
         fn name(&self) -> &str { "ok-test" }
         fn start_urls(&self) -> Vec<String> { vec!["https://httpbin.org/status/200".to_string()] }
-        fn max_retries(&self) -> u32 { 2 }
-        fn obey_robots(&self) -> bool { false }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) { (vec![], vec![]) }
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) { (vec![], vec![]) }
     }
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .max_retries(2)
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(OkSpider).await.unwrap();
     assert_eq!(stats.pages_crawled, 1);
     assert_eq!(stats.retry_count, 0);

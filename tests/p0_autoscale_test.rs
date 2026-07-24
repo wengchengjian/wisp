@@ -38,6 +38,7 @@ fn autoscaled_pool_exposes_max_concurrency() {
 // 使用不可达 URL（127.0.0.1:1），请求会快速失败，验证引擎不卡死。
 
 use wisp::crawl::*;
+use wisp::fetcher::FetchMode;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -51,9 +52,7 @@ impl Spider for FailSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["http://127.0.0.1:1/a".into(), "http://127.0.0.1:1/b".into()]
     }
-    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) { (vec![], vec![]) }
-    fn obey_robots(&self) -> bool { false }
-    fn max_retries(&self) -> u32 { 0 }
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) { (vec![], vec![]) }
 }
 
 #[tokio::test]
@@ -62,6 +61,9 @@ async fn run_with_autoscale_completes_without_deadlock() {
     let engine = wisp::crawl::Engine::infra()
         .max_pages(10)
         .autoscale(1, 4)
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
         .build()
         .expect("build engine");
 

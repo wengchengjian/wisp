@@ -72,6 +72,7 @@ async fn fetch_status(client: &FetchClient, url: String) -> u16 {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test browser_status_code_test -- --ignored"]
 async fn browser_fetch_captures_200_status() {
     let client = match FetchClient::new(fetch_client_config()) {
         Ok(c) => c,
@@ -92,6 +93,7 @@ async fn browser_fetch_captures_200_status() {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test browser_status_code_test -- --ignored"]
 async fn browser_fetch_captures_404_status_not_fallback_to_200() {
     let client = match FetchClient::new(fetch_client_config()) {
         Ok(c) => c,
@@ -112,6 +114,7 @@ async fn browser_fetch_captures_404_status_not_fallback_to_200() {
 }
 
 #[tokio::test]
+#[ignore = "需要真实 Chrome：手动运行 cargo test --test browser_status_code_test -- --ignored"]
 async fn browser_fetch_captures_500_status_not_fallback_to_200() {
     let client = match FetchClient::new(fetch_client_config()) {
         Ok(c) => c,

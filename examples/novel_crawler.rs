@@ -36,8 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let spider = SpiderBuilder::new("qishuxia")
         .start_urls(vec!["https://www.qishuxia.com/"])
-        .delay(Duration::from_millis(500))
-        .obey_robots(false)
+        // ND-031-ARCH：delay/obey_robots 已迁移到 EngineBuilder
         // Auto 模式：先尝试 HTTP，遇 403/CF 拦截自动升级 Stealth 浏览器模式
         // 中间件：每次请求自动轮换 User-Agent
         .middleware(UaRotationMiddleware::desktop())
@@ -191,9 +190,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     // 构建引擎并运行（代理通过 EngineBuilder.proxy 注入共享 FetchClient）
+    // ND-031-ARCH：delay/obey_robots 从 SpiderBuilder 迁移到 EngineBuilder
     let engine = Engine::infra()
         .max_concurrent(4)
         .max_pages(200)
+        .download_delay(Duration::from_millis(500))
+        .obey_robots(false)
         .proxy("http://127.0.0.1:7897")
         .build()?;
 

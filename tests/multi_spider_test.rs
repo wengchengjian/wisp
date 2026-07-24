@@ -59,11 +59,10 @@ async fn test_multiple_runs_independent_stats() {
     impl Spider for SpiderA {
         fn name(&self) -> &str { "spider-a" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }
-        fn obey_robots(&self) -> bool { false }
     }
 
     struct SpiderB { url: String, parsed: Arc<AtomicUsize> }
@@ -71,16 +70,19 @@ async fn test_multiple_runs_independent_stats() {
     impl Spider for SpiderB {
         fn name(&self) -> &str { "spider-b" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }
-        fn obey_robots(&self) -> bool { false }
     }
 
     let parsed_a = Arc::new(AtomicUsize::new(0));
     let parsed_b = Arc::new(AtomicUsize::new(0));
-    let engine = Engine::infra().max_pages(10).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(10)
+        .obey_robots(false)
+        .build()
+        .unwrap();
 
     let (stats_a, _) = engine
         .run(SpiderA { url: server_a, parsed: parsed_a.clone() })
@@ -108,11 +110,10 @@ async fn test_until_stops_one_spider_without_affecting_other() {
     impl Spider for StoppingSpider {
         fn name(&self) -> &str { "stopping" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             // follow 一个 URL，验证 until 会阻止它被处理
             (vec![], vec![Request::get(&format!("{}/2", self.url))])
         }
-        fn obey_robots(&self) -> bool { false }
         fn until(&self) -> Arc<dyn StopCondition> {
             Arc::new(MaxPages(1))
         }
@@ -123,15 +124,18 @@ async fn test_until_stops_one_spider_without_affecting_other() {
     impl Spider for NormalSpider {
         fn name(&self) -> &str { "normal" }
         fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }
-        fn obey_robots(&self) -> bool { false }
     }
 
     let parsed = Arc::new(AtomicUsize::new(0));
-    let engine = Engine::infra().max_pages(10).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(10)
+        .obey_robots(false)
+        .build()
+        .unwrap();
 
     let (stats_stopping, _) = engine
         .run(StoppingSpider { url: format!("{}/stop", server) })

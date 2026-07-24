@@ -156,7 +156,7 @@ async fn spawn_html_server(html: &'static str) -> String {
 
 const BENCH_HTML: &str = r#"<html><body><div class="item"><h2>Title</h2><p class="desc">content</p></div></body></html>"#;
 
-/// 最小 Spider：N 个 start_urls，parse 返回空（不 follow），用于测纯抓取吞吐。
+/// 最小 Spider：N 个 start_urls，handle 返回空（不 follow），用于测纯抓取吞吐。
 struct BenchSpider {
     urls: Vec<String>,
 }
@@ -169,13 +169,7 @@ impl Spider for BenchSpider {
     fn start_urls(&self) -> Vec<String> {
         self.urls.clone()
     }
-    // bench 测纯抓取吞吐，关闭 robots 检查（single-flight 已优化 robots 性能，
-    // 此处关闭以隔离测量引擎调度/连接池/中间件链的纯开销；
-    // 临时改为 true 可验证 RobotsMiddleware 在 keep-alive 下的真实开销）
-    fn obey_robots(&self) -> bool {
-        false
-    }
-    async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         (vec![], vec![])
     }
 }
@@ -194,6 +188,7 @@ fn bench_engine_concurrent_fetch(c: &mut Criterion) {
         let engine = Engine::infra()
             .max_concurrent(concurrent)
             .max_pages(50)
+            .obey_robots(false)
             .build()
             .unwrap();
         timing.reset();

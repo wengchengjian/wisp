@@ -51,6 +51,12 @@ pub struct FetchClientConfig {
     pub dns_over_https: Option<String>,
     /// BrowserPool 最大并发 page 数（0 = 禁用浏览器模式）
     pub max_concurrent_pages: usize,
+    /// ND-008-SEC：响应体最大字节数。超过则返回 `ResponseBodyTooLarge` 错误，防止 OOM。
+    /// 默认 64MB（覆盖大多数 HTML 页面；二进制/大文件场景应显式调高）。
+    pub max_response_size: usize,
+    /// ND-011-SEC：是否禁用 TLS 证书验证（危险！仅用于测试或自签名证书内部站点）。
+    /// 默认 false（启用验证）。设为 true 等价于 curl -k，存在中间人攻击风险。
+    pub danger_accept_invalid_certs: bool,
 }
 
 impl Default for FetchClientConfig {
@@ -71,6 +77,8 @@ impl Default for FetchClientConfig {
             domain_blocker: None,
             dns_over_https: None,
             max_concurrent_pages: 4,
+            max_response_size: 64 * 1024 * 1024, // 64MB
+            danger_accept_invalid_certs: false,
         }
     }
 }
@@ -278,9 +286,13 @@ impl FetchClient {
     }
 
     fn build_http_client(config: &FetchClientConfig) -> Result<Client> {
+        // ND-008-SEC/ND-011-SEC：将 max_response_size 和 danger_accept_invalid_certs
+        // 传递给底层 http::Client，使配置实际生效。
         let mut builder = Client::builder()
             .timeout(config.timeout)
-            .max_redirects(config.max_redirects);
+            .max_redirects(config.max_redirects)
+            .max_body_size(config.max_response_size)
+            .danger_accept_invalid_certs(config.danger_accept_invalid_certs);
 
         if let Some(ref proxy) = config.proxy {
             builder = builder.proxy(proxy);

@@ -75,6 +75,13 @@ pub struct Request {
     /// 抓取模式覆盖（由 StealthUpgradeMiddleware 等设置，引擎优先使用此模式）。
     #[serde(skip)]
     pub fetch_mode_override: Option<FetchMode>,
+    /// 网络错误重试计数（由 engine 维护，中间件只读）。
+    ///
+    /// 与 `refetch_depth`（响应中间件 Refetch 计数，engine 局部变量）独立：
+    /// - `retry_count`：fetch 失败后同步重试的次数，上限 `EngineConfig.max_retries`
+    /// - `refetch_depth`：响应成功后业务重做的次数，上限 `EngineConfig.max_refetch_rounds`
+    #[serde(skip)]
+    pub retry_count: u32,
 }
 
 impl Default for Request {
@@ -90,6 +97,7 @@ impl Default for Request {
             depth: 0,
             proxy: None,
             fetch_mode_override: None,
+            retry_count: 0,
         }
     }
 }
@@ -108,6 +116,7 @@ impl Request {
             depth: 0,
             proxy: None,
             fetch_mode_override: None,
+            retry_count: 0,
         }
     }
 
@@ -124,6 +133,7 @@ impl Request {
             depth: 0,
             proxy: None,
             fetch_mode_override: None,
+            retry_count: 0,
         }
     }
 

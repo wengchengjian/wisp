@@ -1,6 +1,5 @@
 //! Builder pattern API tests (no network required).
 
-use std::time::Duration;
 use serde_json::{json, Value};
 use wisp::crawl::{
     Spider, SpiderBuilder, Engine, Request, Response,
@@ -16,9 +15,6 @@ fn test_spider_builder_full_config() {
     let spider = SpiderBuilder::new("full-test")
         .start_urls(vec!["https://a.com/", "https://b.com/"])
         .allowed_domains(vec!["a.com", "b.com"])
-        .delay(Duration::from_millis(500))
-        .obey_robots(false)
-        .max_retries(5)
         .on("default", |_resp| async move {
             (vec![json!({"ok": true})], vec![])
         })
@@ -26,19 +22,6 @@ fn test_spider_builder_full_config() {
 
     assert_eq!(spider.name(), "full-test");
     assert_eq!(spider.start_urls().len(), 2);
-    assert_eq!(spider.download_delay(), Duration::from_millis(500));
-    assert!(!spider.obey_robots());
-    assert_eq!(spider.max_retries(), 5);
-}
-
-#[test]
-fn test_spider_builder_delay_ms() {
-    let spider = SpiderBuilder::new("delay-test")
-        .start_urls(vec!["https://x.com/"])
-        .delay_ms(250)
-        .on("default", |_| async move { (vec![], vec![]) })
-        .build();
-    assert_eq!(spider.download_delay(), Duration::from_millis(250));
 }
 
 #[tokio::test]
@@ -145,7 +128,6 @@ async fn test_engine_builder_local_server() {
 
     let spider = SpiderBuilder::new("builder-test")
         .start_urls(vec![base_url])
-        .obey_robots(false)
         .on("default", |resp| async move {
             let doc = resp.parse();
             let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
@@ -156,6 +138,7 @@ async fn test_engine_builder_local_server() {
     let engine = Engine::infra()
         .max_pages(1)
         .max_concurrent(2)
+        .obey_robots(false)
         .build()
         .unwrap();
     let (stats, _items) = engine.run(spider).await.unwrap();
@@ -226,7 +209,6 @@ async fn test_stream_with_builder() {
 
     let spider = SpiderBuilder::new("stream-builder")
         .start_urls(vec![base_url])
-        .obey_robots(false)
         .on("default", |resp| async move {
             let doc = resp.parse();
             let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
@@ -234,7 +216,11 @@ async fn test_stream_with_builder() {
         })
         .build();
 
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     let mut stream = engine.run_stream(spider).events();
 
     let mut items = 0;

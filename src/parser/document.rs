@@ -7,9 +7,11 @@ use std::sync::Arc;
 use scraper::Html;
 
 /// 共享的 HTML 文档。scraper 树用于 CSS 查询和 DOM 导航。
+///
+/// Document 总是通过 `Arc<Document>` 共享，内部直接持有 `Html`（无需再包一层 Arc）。
 pub struct Document {
     /// scraper 解析的 HTML 树（html5ever 容错）
-    pub(crate) html: Arc<Html>,
+    pub(crate) html: Html,
 }
 
 impl Document {
@@ -20,9 +22,7 @@ impl Document {
     /// 适合完整 HTML 文档；若需保留片段语义（不包裹 table），用 `from_fragment`。
     pub fn from_html(html: &str) -> Arc<Self> {
         let parsed = Html::parse_document(html);
-        Arc::new(Self {
-            html: Arc::new(parsed),
-        })
+        Arc::new(Self { html: parsed })
     }
 
     /// 从 HTML 片段创建文档（不应用 HTML5 结构规则）。
@@ -32,8 +32,6 @@ impl Document {
     /// 适合解析独立的元素片段（如 `<td>cell</td>` 应保持 tag 为 `td`）。
     pub fn from_fragment(html: &str) -> Arc<Self> {
         let parsed = Html::parse_fragment(html);
-        Arc::new(Self {
-            html: Arc::new(parsed),
-        })
+        Arc::new(Self { html: parsed })
     }
 }

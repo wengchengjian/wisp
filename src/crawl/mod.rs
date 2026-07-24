@@ -39,7 +39,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use self::stats::SpiderStats;
-use crate::fetcher::FetchMode;
 
 // 统一类型：直接使用 fetcher 的 Request/Response/Method
 pub use crate::fetcher::{Method, Request, Response};
@@ -62,6 +61,10 @@ pub enum RequestAction {
 
 
 /// The core Spider trait users implement to define a crawler.
+///
+/// ND-031-ARCH 修复：Spider 只关心业务逻辑（解析什么、如何解析），
+/// 引擎配置（fetch_mode/obey_robots/max_retries/download_delay/auto_rules）
+/// 已迁移到 `EngineBuilder`，由 Engine 统一管理。
 #[async_trait]
 pub trait Spider: Send + Sync + 'static {
     // Required
@@ -70,18 +73,9 @@ pub trait Spider: Send + Sync + 'static {
     /// 请求分发入口。Engine 调用此方法处理响应，返回 (items, follows)。
     async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>);
 
-    // Optional with defaults
+    // Optional with defaults — 业务逻辑（保留在 Spider）
     fn allowed_domains(&self) -> HashSet<String> {
         HashSet::new()
-    }
-    fn download_delay(&self) -> Duration {
-        Duration::from_millis(0)
-    }
-    fn obey_robots(&self) -> bool {
-        true
-    }
-    fn max_retries(&self) -> u32 {
-        3
     }
     async fn on_start(&self) {}
     async fn on_close(&self) {}
@@ -92,13 +86,9 @@ pub trait Spider: Send + Sync + 'static {
     fn is_blocked(&self, resp: &Response) -> bool {
         BLOCKED_STATUS_CODES.contains(&resp.status)
     }
-    fn fetch_mode(&self) -> FetchMode {
-        FetchMode::Http
-    }
-    fn auto_rules(&self) -> Vec<(String, FetchMode)> {
-        Vec::new()
-    }
     /// 最大爬取深度。默认无限制。
+    ///
+    /// 保留在 Spider：爬取深度是业务范围决策（"我要爬多深"），非引擎行为。
     fn max_depth(&self) -> u32 {
         u32::MAX
     }
@@ -166,6 +156,9 @@ pub enum CrawlEvent {
     Item(Value),
     PageScraped { url: String, stats: CrawlStats },
     Error { url: String, error: String },
+    /// ND-001-ERR：重试事件，让 stream 消费者感知重试发生。
+    /// `attempt` 为当前重试次数（从 1 开始），`max` 为上限，`error` 为失败原因。
+    Retry { url: String, attempt: u32, max: u32, error: String },
     Done(CrawlStats),
 }
 
@@ -336,11 +329,8 @@ mod tests {
                 let text = node.select("p").text().join("");
                 (vec![serde_json::json!({"text": text})], vec![])
             }
-            fn obey_robots(&self) -> bool {
-                false
-            }
         }
-        let engine = Engine::infra().max_pages(1).build().unwrap();
+        let engine = Engine::infra().max_pages(1).obey_robots(false).build().unwrap();
         let mut stream = engine.run_stream(CountSpider { start_url: base }).events();
         let mut items = 0;
         let mut done = false;
@@ -376,11 +366,8 @@ mod tests {
             async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
                 (vec![serde_json::json!({"v": 1})], vec![])
             }
-            fn obey_robots(&self) -> bool {
-                false
-            }
         }
-        let engine = Engine::infra().max_pages(1).build().unwrap();
+        let engine = Engine::infra().max_pages(1).obey_robots(false).build().unwrap();
         let mut items_stream = engine.run_stream(OneSpider { start_url: base }).items();
         let mut count = 0;
         while items_stream.next().await.is_some() {

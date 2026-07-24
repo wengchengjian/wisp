@@ -198,7 +198,6 @@ async fn test_engine_with_proxy_pool() {
 
     let spider = SpiderBuilder::new("proxy-crawl")
         .start_urls(vec!["https://quotes.toscrape.com/"])
-        .obey_robots(false)
         .middleware(wisp::crawl::middleware::ProxyInjectionMiddleware::new(pool))
         .on("default", |resp| async move {
             let doc = resp.parse();
@@ -214,6 +213,7 @@ async fn test_engine_with_proxy_pool() {
 
     let engine = Engine::infra()
         .max_pages(1)
+        .obey_robots(false)
         .build()
         .unwrap();
     let (stats, _items) = engine.run(spider).await.unwrap();

@@ -14,11 +14,14 @@ use crate::fetcher::{FetchClient, FetchClientConfig};
 
 /// 爬虫引擎基础设施。长期持有，多次 run 不同 Spider。
 ///
-/// Task 3 重构：从“Spider 容器”变为“纯基础设施”。
+/// Task 3 重构：从"Spider 容器"变为"纯基础设施"。
 /// - 不持有 Spider（删除 `spiders: Vec<Box<dyn Spider>>`）
 /// - 共享：HTTP client / Store（SQLite 缓存 + checkpoint）
 /// - 独立：每次 run 内部 Scheduler/去重/stats（per-Spider 隔离）
 /// - 控制：per-Engine `EngineControl`
+///
+/// ND-031-ARCH 修复：引擎配置（fetch_mode/obey_robots/max_retries/download_delay/auto_rules）
+/// 从 Spider trait 迁移到 Engine，职责分离：Spider 只关心解析逻辑，Engine 管理抓取行为。
 #[derive(Clone)]
 pub struct Engine {
     /// 共享 FetchClient（HTTP 连接池 + BrowserPool，跨 Spider 复用）
@@ -36,6 +39,17 @@ pub struct Engine {
     /// 运行时并发保护：防止同一 Engine 实例并发调用 run/run_stream。
     /// 未来支持并发爬取时，移除此 guard 并将 EngineControl 改为 per-run 即可。
     pub(crate) running: Arc<AtomicBool>,
+    // === 引擎配置（ND-031-ARCH：从 Spider trait 迁移） ===
+    /// 抓取模式（Http/Dynamic/Stealth/Auto）。
+    pub(crate) fetch_mode: crate::fetcher::FetchMode,
+    /// 是否遵守 robots.txt。
+    pub(crate) obey_robots: bool,
+    /// 网络错误重试上限（fetch 失败后同步重试）。
+    pub(crate) max_retries: u32,
+    /// 下载延迟（每次请求前的等待时间）。
+    pub(crate) download_delay: Duration,
+    /// Auto 模式 URL 正则规则（优先级最高，跳过嗅探）。
+    pub(crate) auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
 }
 
 /// Engine 构造器（Builder 模式）。
@@ -48,6 +62,12 @@ pub struct EngineBuilder {
     checkpoint_store: Option<Arc<dyn crate::storage::Store>>,
     checkpoint_interval: usize,
     autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
+    // === 引擎配置（ND-031-ARCH） ===
+    fetch_mode: crate::fetcher::FetchMode,
+    obey_robots: bool,
+    max_retries: u32,
+    download_delay: Duration,
+    auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
 }
 
 impl Engine {
@@ -65,6 +85,12 @@ impl Engine {
             checkpoint_store: None,
             checkpoint_interval: 100,
             autoscale: None,
+            // 引擎配置默认值（ND-031-ARCH：原 Spider trait 默认值）
+            fetch_mode: crate::fetcher::FetchMode::Auto,
+            obey_robots: true,
+            max_retries: 3,
+            download_delay: Duration::ZERO,
+            auto_rules: Vec::new(),
         }
     }
 
@@ -163,11 +189,12 @@ impl Engine {
     ) -> Result<CrawlStats> {
         // 运行时并发保护：同一 Engine 实例不允许并发 run。
         // 未来支持并发时移除此 guard，将 EngineControl 改为 per-run 即可。
+        // ND-001-ARCH：使用语义正确的 WispError::Engine 变体，而非 NetworkError::Http。
         if self.running.swap(true, Ordering::SeqCst) {
-            return Err(crate::error::WispError::Network(crate::error::NetworkError::Http(
+            return Err(crate::error::WispError::Engine(
                 "Engine is already running. Concurrent run/run_stream on the same Engine is not supported. \
                  Create separate Engine instances for concurrent spiders.".into(),
-            )));
+            ));
         }
         // RAII guard：无论正常结束还是 panic，都释放 running 标志
         struct RunGuard(Arc<AtomicBool>);
@@ -182,15 +209,16 @@ impl Engine {
         self.control.reset().await;
 
         let stats = Arc::new(SpiderStats::new());
+        // ND-031-ARCH：引擎配置从 Engine 自身读取（而非 Spider trait 方法）
         let mut rule_engine = auto::ModeRuleEngine::new();
-        for (pattern, mode) in spider.auto_rules() {
-            rule_engine.add_user_rule(&pattern, mode)?;
+        for (pattern, mode) in &self.auto_rules {
+            rule_engine.add_user_rule(pattern, *mode)?;
         }
         let rule_engine = Arc::new(Mutex::new(rule_engine));
-        let fetch_mode = spider.fetch_mode();
+        let fetch_mode = self.fetch_mode;
         let max_concurrent = self.max_concurrent;
         let max_depth = spider.max_depth();
-        let obey_robots = spider.obey_robots();
+        let obey_robots = self.obey_robots;
 
         // 复用 Engine 持有的共享 FetchClient（HTTP 连接池 + BrowserPool 跨 Spider 复用）
         let fetch_client = self.fetch_client.clone();
@@ -246,12 +274,14 @@ impl Engine {
                 obey_robots,
                 engine_max_pages: self.max_pages,
                 max_refetch_rounds: self.max_refetch_rounds,
+                max_retries: self.max_retries,
             },
             shared: engine::EngineShared {
                 sched: sched.clone(),
                 follow_tx,
                 follow_rx: Arc::new(Mutex::new(follow_rx)),
-                proxy_clients: Arc::new(dashmap::DashMap::new()),
+                // ND-009-SEC：moka::Cache 限制 proxy client 缓存最大 1024 条
+                proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
                 control: self.control.clone(),
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: {
@@ -259,11 +289,10 @@ impl Engine {
                     let defaults = middleware::builtin::default_middlewares(
                         middleware::builtin::DefaultMiddlewareConfig {
                             fetch_mode,
-                            delay: spider.download_delay(),
+                            delay: self.download_delay,
                             obey_robots,
                             allowed_domains: spider.allowed_domains(),
                             max_depth,
-                            max_retries: spider.max_retries(),
                             cache_store: self.cache_store.clone(),
                             http_client: mw_http_client,
                             robots_cache: mw_robots_cache,
@@ -303,6 +332,9 @@ impl Engine {
 
         // 启用 autoscale 时，spawn 后台 autoscaler task
         let autoscaler_handle = if let Some(ref pool) = self.autoscale {
+            // ND-004-CORR：注入 work_notify，autoscale 扩容时唤醒主循环，
+            // 避免主循环 10ms timeout 轮询。
+            pool.set_work_notify(Arc::clone(&ctx.shared.work_notify));
             let pool = Arc::clone(pool);
             let stats = Arc::clone(&stats);
             Some(tokio::spawn(async move {
@@ -377,13 +409,11 @@ impl Engine {
                             ctx.config.max_concurrent
                         };
                         if ctx.state.global_in_flight.load(Ordering::SeqCst) >= limit {
-                            // 已达当前并发上限，等待 in-flight 下降
-                            tokio::time::timeout(
-                                Duration::from_millis(10),
-                                ctx.shared.work_notify.notified(),
-                            )
-                            .await
-                            .ok();
+                            // ND-004-CORR/ND-007-PERF：已达并发上限，纯 Notify 驱动等待。
+                            // 唤醒来源：process_response 末尾 notify_one（in-flight 下降）、
+                            // autoscaler 扩容时 notify_one（limit 上升）。
+                            // 不再使用 10ms timeout 轮询，避免 CPU 浪费。
+                            ctx.shared.work_notify.notified().await;
                             continue;
                         }
 
@@ -393,12 +423,9 @@ impl Engine {
                                 if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
                                     return None;
                                 }
-                                tokio::time::timeout(
-                                    Duration::from_millis(100),
-                                    ctx.shared.work_notify.notified(),
-                                )
-                                .await
-                                .ok();
+                                // ND-004-CORR/ND-007-PERF：scheduler 空但仍有 in-flight，
+                                // 纯 Notify 驱动等待新 work（follow 请求通过 process_response notify）。
+                                ctx.shared.work_notify.notified().await;
                                 continue;
                             }
                         };
@@ -410,9 +437,11 @@ impl Engine {
                         let fut = async move {
                             let _g1 = engine::InFlightGuard {
                                 counter: ctx_c.state.global_in_flight.clone(),
+                                work_notify: ctx_c.shared.work_notify.clone(),
                             };
                             let _g2 = engine::InFlightGuard {
                                 counter: ctx_c.state.stats.in_flight.clone(),
+                                work_notify: ctx_c.shared.work_notify.clone(),
                             };
                             // 请求阶段 → 响应阶段（同级编排，process_request 不再内嵌 process_response）
                             if let Some(resp) = engine::process_request(&ctx_c, req).await {
@@ -433,7 +462,23 @@ impl Engine {
             pages_since_checkpoint += 1;
             if pages_since_checkpoint >= self.checkpoint_interval {
                 if let Some(ref store) = self.checkpoint_store {
-                    engine::save_checkpoint(store.as_ref(), &spider_name, &sched, &ctx.state.stats).await;
+                    // ND-003-ERR：save_checkpoint 失败时发送 Error 事件，不静默吞掉
+                    if let Err(e) = engine::save_checkpoint(
+                        store.as_ref(),
+                        &spider_name,
+                        &sched,
+                        &ctx.state.stats,
+                    )
+                    .await
+                    {
+                        tracing::warn!("checkpoint 失败: {}", e);
+                        if let Some(ref tx) = ctx.state.tx {
+                            let _ = tx.try_send(CrawlEvent::Error {
+                                url: String::new(),
+                                error: format!("checkpoint failed: {e}"),
+                            });
+                        }
+                    }
                 }
                 pages_since_checkpoint = 0;
             }
@@ -530,6 +575,50 @@ impl EngineBuilder {
         self
     }
 
+    // === 引擎配置方法（ND-031-ARCH：从 Spider trait 迁移） ===
+
+    /// 设置抓取模式（Http/Dynamic/Stealth/Auto，默认 Auto）。
+    ///
+    /// 这是引擎行为配置，决定如何抓取页面，与 Spider 的解析逻辑无关。
+    pub fn fetch_mode(mut self, mode: crate::fetcher::FetchMode) -> Self {
+        self.fetch_mode = mode;
+        self
+    }
+
+    /// 是否遵守 robots.txt（默认 true）。
+    pub fn obey_robots(mut self, obey: bool) -> Self {
+        self.obey_robots = obey;
+        self
+    }
+
+    /// 设置网络错误重试上限（默认 3）。
+    ///
+    /// fetch_page 失败后，engine 在 fetch_dispatch 内同步重试，计数 `req.retry_count`。
+    pub fn max_retries(mut self, n: u32) -> Self {
+        self.max_retries = n;
+        self
+    }
+
+    /// 设置下载延迟（默认 0，即无延迟）。
+    pub fn download_delay(mut self, d: Duration) -> Self {
+        self.download_delay = d;
+        self
+    }
+
+    /// 设置下载延迟（毫秒）。
+    pub fn download_delay_ms(mut self, ms: u64) -> Self {
+        self.download_delay = Duration::from_millis(ms);
+        self
+    }
+
+    /// Auto 模式：添加 URL 正则规则（优先级最高，跳过嗅探）。
+    ///
+    /// 匹配该规则的 URL 直接使用指定模式，不经过 Auto 嗅探。
+    pub fn auto_rule(mut self, pattern: &str, mode: crate::fetcher::FetchMode) -> Self {
+        self.auto_rules.push((pattern.to_string(), mode));
+        self
+    }
+
     pub fn build(self) -> Result<Engine> {
         let fetch_client = Arc::new(FetchClient::new(self.fetch_client_config)?);
         Ok(Engine {
@@ -543,6 +632,12 @@ impl EngineBuilder {
             control: Arc::new(control::EngineControl::new()),
             autoscale: self.autoscale,
             running: Arc::new(AtomicBool::new(false)),
+            // 引擎配置（ND-031-ARCH）
+            fetch_mode: self.fetch_mode,
+            obey_robots: self.obey_robots,
+            max_retries: self.max_retries,
+            download_delay: self.download_delay,
+            auto_rules: self.auto_rules,
         })
     }
 }

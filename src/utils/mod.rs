@@ -4,8 +4,10 @@
 
 pub mod http;
 pub mod random;
+pub mod ssrf;
 pub mod url;
 
 pub use http::status_text;
 pub use random::rand_suffix;
+pub use ssrf::validate_url;
 pub use url::{resolve_href, url_to_filename};

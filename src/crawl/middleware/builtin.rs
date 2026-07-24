@@ -66,18 +66,24 @@ impl Middleware for UaRotationMiddleware {
     }
 }
 
-/// 重试中间件：在错误时决定重试。
+/// 重试中间件：决定网络错误是否值得重试。
+///
+/// 职责单一（修复 ND-002-CORR）：
+/// - **只决定**：这个错误是否值得重试（业务决策）
+/// - **不维护**：重试计数和上限由 engine 在 `fetch_dispatch` 内统一管理
+///
+/// engine 读取 `EngineConfig.max_retries` 作为上限，维护 `req.retry_count` 计数。
+/// 中间件只返回 `ErrorAction::Retry` 或 `Propagate`，不再读取/写入 `meta["_retry"]`。
 pub struct RetryMiddleware {
-    max_retries: u32,
     retry_delay: Duration,
 }
 
 impl RetryMiddleware {
-    pub fn new(max_retries: u32, retry_delay: Duration) -> Self {
-        Self {
-            max_retries,
-            retry_delay,
-        }
+    /// 创建重试中间件。
+    ///
+    /// - `retry_delay`：重试前的固定退避延迟（在中间件内 sleep）
+    pub fn new(retry_delay: Duration) -> Self {
+        Self { retry_delay }
     }
 }
 
@@ -87,16 +93,14 @@ impl Middleware for RetryMiddleware {
         90
     }
 
-    async fn process_error(&self, req: &Request, _err: &str, _ctx: &CrawlContext) -> ErrorAction {
-        let count = req.meta.get("_retry").and_then(|v| v.as_u64()).unwrap_or(0);
-        if count < self.max_retries as u64 {
-            if !self.retry_delay.is_zero() {
-                tokio::time::sleep(self.retry_delay).await;
-            }
-            ErrorAction::Retry
-        } else {
-            ErrorAction::Propagate
+    async fn process_error(&self, _req: &Request, _err: &str, _ctx: &CrawlContext) -> ErrorAction {
+        // fetch_page 返回 Err 都是网络层错误（DNS/连接/TLS/超时等），
+        // HTTP 业务错误（4xx/5xx）会返回 Ok(resp)，由 BlockedRetryMiddleware 通过 Refetch 处理。
+        // 因此这里默认重试所有 fetch 错误，计数和上限由 engine 在 fetch_dispatch 内统一管理。
+        if !self.retry_delay.is_zero() {
+            tokio::time::sleep(self.retry_delay).await;
         }
+        ErrorAction::Retry
     }
 }
 
@@ -569,24 +573,29 @@ impl Middleware for DynamicUpgradeMiddleware {
 // === 重试类 ===
 
 /// 阻塞重试中间件：检测 403/429/503 等阻塞状态码，通过 Refetch 自动重试。
+///
+/// 职责单一（修复 ND-032-CORR：原 `_retry` 计数与 `RetryMiddleware` 共享 meta 字段冲突）：
+/// - **只决定**：响应是否被阻塞、是否值得重试
+/// - **不维护**：Refetch 计数由 engine 在 `process_response` 内通过 `refetch_depth` 管理，
+///   上限 `EngineConfig.max_refetch_rounds`
+///
+/// 原 `meta["_retry"]` 计数已移除，避免与 `RetryMiddleware` 的网络错误重试计数冲突。
+/// 现在两套重试完全独立：
+/// - 网络错误重试：`req.retry_count`（engine 维护，上限 `max_retries`）
+/// - 阻塞重试：`refetch_depth`（engine 维护，上限 `max_refetch_rounds`）
 pub struct BlockedRetryMiddleware {
-    max_retries: u32,
     retry_delay: Duration,
 }
 
 impl BlockedRetryMiddleware {
-    pub fn new(max_retries: u32, retry_delay: Duration) -> Self {
-        Self {
-            max_retries,
-            retry_delay,
-        }
+    pub fn new(retry_delay: Duration) -> Self {
+        Self { retry_delay }
     }
 }
 
 impl Default for BlockedRetryMiddleware {
     fn default() -> Self {
         Self {
-            max_retries: 3,
             retry_delay: Duration::from_millis(500),
         }
     }
@@ -601,20 +610,12 @@ impl Middleware for BlockedRetryMiddleware {
     async fn process_response(&self, resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         use crate::crawl::BLOCKED_STATUS_CODES;
         if BLOCKED_STATUS_CODES.contains(&resp.status) {
-            let count = resp
-                .request
-                .meta
-                .get("_retry")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if count < self.max_retries as u64 {
-                if !self.retry_delay.is_zero() {
-                    tokio::time::sleep(self.retry_delay).await;
-                }
-                let mut new_req = resp.request.clone();
-                new_req.meta["_retry"] = serde_json::json!(count + 1);
-                return MwAction::Refetch(new_req);
+            // 不再维护 _retry 计数，依赖 engine 的 refetch_depth 上限
+            if !self.retry_delay.is_zero() {
+                tokio::time::sleep(self.retry_delay).await;
             }
+            let new_req = resp.request.clone();
+            return MwAction::Refetch(new_req);
         }
         MwAction::Continue
     }
@@ -636,8 +637,6 @@ pub struct DefaultMiddlewareConfig {
     pub allowed_domains: HashSet<String>,
     /// 最大深度（注入 DepthLimitMiddleware；MAX 时等价无限制）
     pub max_depth: u32,
-    /// 最大重试次数（注入 RetryMiddleware；0 时仅 Propagate）
-    pub max_retries: u32,
     /// 响应缓存存储（Some 时注入 CacheMiddleware，永不过期）
     pub cache_store: Option<Arc<dyn Store>>,
     /// HTTP 客户端（RobotsMiddleware 拉取 robots.txt 用）
@@ -694,10 +693,7 @@ pub fn default_middlewares(cfg: DefaultMiddlewareConfig) -> Vec<Arc<dyn Middlewa
     // 4. 重试/挑战类
     mws.push(Arc::new(CookieChallengeMiddleware::default()));
     mws.push(Arc::new(BlockedRetryMiddleware::default()));
-    mws.push(Arc::new(RetryMiddleware::new(
-        cfg.max_retries,
-        Duration::from_millis(500),
-    )));
+    mws.push(Arc::new(RetryMiddleware::new(Duration::from_millis(500))));
 
     mws
 }
@@ -730,6 +726,7 @@ mod tests {
             depth: 0,
             proxy: None,
             fetch_mode_override: None,
+            retry_count: 0,
         }
     }
 
@@ -766,17 +763,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_middleware() {
-        let mw = RetryMiddleware::new(3, Duration::ZERO);
+    async fn test_retry_middleware_always_retries_fetch_errors() {
+        // RetryMiddleware 只决定"是否值得重试"，不维护计数
+        // fetch_page 返回 Err 都是网络层错误，默认全部可重试
+        let mw = RetryMiddleware::new(Duration::ZERO);
         let ctx = make_ctx();
-        let req = make_req();
-        let action = mw.process_error(&req, "timeout", &ctx).await;
-        assert_eq!(action, ErrorAction::Retry);
 
-        let mut req_max = make_req();
-        req_max.meta = serde_json::json!({"_retry": 3});
-        let action = mw.process_error(&req_max, "timeout", &ctx).await;
-        assert_eq!(action, ErrorAction::Propagate);
+        // 各种网络错误都应可重试
+        for err in &[
+            "operation timed out",
+            "connection reset by peer",
+            "broken pipe",
+            "connection refused",
+            "dns resolution failed",
+            "Connection failed to 127.0.0.1: error sending request",
+            "tls handshake error",
+        ] {
+            let req = make_req();
+            let action = mw.process_error(&req, err, &ctx).await;
+            assert_eq!(action, ErrorAction::Retry, "网络错误 '{}' 应可重试", err);
+        }
     }
 
     #[tokio::test]
@@ -806,7 +812,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_middleware() {
-        let mw = CacheMiddleware::new(Arc::new(crate::storage::MemoryStore::default()), Some(Duration::from_secs(60)));
+        let mw = CacheMiddleware::new(
+            Arc::new(crate::storage::MemoryStore::default()),
+            Some(Duration::from_secs(60)),
+        );
         let ctx = make_ctx();
         let mut req = make_req();
         assert_eq!(mw.process_request(&mut req, &ctx).await, MwAction::Continue);
@@ -854,7 +863,10 @@ mod tests {
     #[tokio::test]
     async fn test_priority_ordering() {
         let domain = DomainFilterMiddleware::new(["a.com"]);
-        let cache = CacheMiddleware::new(Arc::new(crate::storage::MemoryStore::default()), Some(Duration::from_secs(1)));
+        let cache = CacheMiddleware::new(
+            Arc::new(crate::storage::MemoryStore::default()),
+            Some(Duration::from_secs(1)),
+        );
         let depth = DepthLimitMiddleware::new(5);
         let headers = HeadersMiddleware::new(vec![]);
         let delay = DelayMiddleware::from_millis(0);
@@ -1010,7 +1022,6 @@ mod tests {
             obey_robots: true,
             allowed_domains: ["example.com".to_string()].into_iter().collect(),
             max_depth: 3,
-            max_retries: 3,
             cache_store: None,
             http_client: http_client.clone(),
             robots_cache: robots_cache.clone(),
@@ -1034,7 +1045,6 @@ mod tests {
             obey_robots: false,
             allowed_domains: HashSet::new(),
             max_depth: u32::MAX,
-            max_retries: 0,
             cache_store: None,
             http_client: http_client.clone(),
             robots_cache: robots_cache.clone(),
@@ -1060,7 +1070,6 @@ mod tests {
                 obey_robots: false,
                 allowed_domains: HashSet::new(),
                 max_depth: u32::MAX,
-                max_retries: 0,
                 cache_store: None,
                 http_client: http_client.clone(),
                 robots_cache: robots_cache.clone(),

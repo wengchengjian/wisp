@@ -9,6 +9,7 @@
 //! 对应的 matches/patterns 测试不再适用。
 
 use wisp::crawl::*;
+use wisp::fetcher::FetchMode;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
@@ -53,15 +54,18 @@ async fn test_stopped_spider_url_not_silently_dropped() {
     impl Spider for StoppedSpider {
         fn name(&self) -> &str { "stopped" }
         fn start_urls(&self) -> Vec<String> { vec!["http://127.0.0.1:1/never-fetched".into()] }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![], vec![])
         }
-        fn obey_robots(&self) -> bool { false }
         // MaxPages(0)：pages >= 0 恒为真，Spider 立即停止，start_url 不会被派发。
         fn until(&self) -> Arc<dyn StopCondition> { Arc::new(MaxPages(0)) }
     }
 
-    let engine = Engine::infra().max_pages(10).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(10)
+        .obey_robots(false)
+        .build()
+        .unwrap();
     // 引擎应在不超时的情况下完成（不挂起）。
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -87,12 +91,9 @@ async fn test_fetch_retry_count_semantics() {
             // 端口 1 不可达，连接被拒绝，触发 error 分支重试。
             vec!["http://127.0.0.1:1/unreachable".into()]
         }
-        async fn parse(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![], vec![])
         }
-        fn obey_robots(&self) -> bool { false }
-        fn max_retries(&self) -> u32 { 3 }
-        fn download_delay(&self) -> std::time::Duration { std::time::Duration::ZERO }
         async fn on_error(&self, _req: &Request, _err: &str) {
             self.count.fetch_add(1, Ordering::SeqCst);
         }
@@ -100,7 +101,13 @@ async fn test_fetch_retry_count_semantics() {
 
     let count = Arc::new(AtomicUsize::new(0));
     let spider = RetrySpider { count: count.clone() };
-    let engine = Engine::infra().max_pages(1).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .max_retries(3)
+        .fetch_mode(FetchMode::Http)
+        .build()
+        .unwrap();
     let _ = engine.run(spider).await;
 
     assert_eq!(

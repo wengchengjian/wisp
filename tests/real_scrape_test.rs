@@ -51,8 +51,6 @@ async fn test_quotes_full_crawl_10_pages() {
 
     let spider = SpiderBuilder::new("quotes-full")
         .start_urls(vec!["https://quotes.toscrape.com/"])
-        .delay_ms(200)
-        .obey_robots(false)
         .on("default", |resp| async move {
             let doc = resp.parse();
             let items: Vec<Value> = doc.select(".quote").iter().map(|q| {
@@ -73,7 +71,12 @@ async fn test_quotes_full_crawl_10_pages() {
         })
         .build();
 
-    let engine = Engine::infra().max_pages(10).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(10)
+        .obey_robots(false)
+        .download_delay_ms(200)
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(spider).await.unwrap();
 
     assert_eq!(stats.pages_crawled, 10, "应爬取 10 页");
@@ -95,7 +98,7 @@ async fn test_books_toscrape_extraction() {
         return;
     }
     let resp = resp.unwrap();
-    let doc = resp.parse().unwrap();
+    let doc = resp.parse();
 
     // 提取书籍信息
     let books = doc.select("article.product_pod");
@@ -133,7 +136,7 @@ async fn test_find_by_text_real_page() {
         return;
     }
     let resp = resp.unwrap();
-    let doc = resp.parse().unwrap();
+    let doc = resp.parse();
 
     // 按文本查找作者
     let albert = doc.find_by_text("Albert Einstein", Some("small"), true);
@@ -159,7 +162,7 @@ async fn test_find_similar_real_page() {
         return;
     }
     let resp = resp.unwrap();
-    let doc = resp.parse().unwrap();
+    let doc = resp.parse();
 
     // 获取第一个 quote 元素，查找相似元素
     let first_quote = doc.select_one(".quote").expect("应有 quote 元素");
@@ -188,7 +191,7 @@ async fn test_response_follow_pagination() {
         return;
     }
     let fetch_resp = resp.unwrap();
-    let doc = fetch_resp.parse().unwrap();
+    let doc = fetch_resp.parse();
 
     // 构造 Response 来测试 follow()
     let spider_resp = Response::from_http(
@@ -252,9 +255,6 @@ async fn test_spider_builder_engine_integration() {
 
     let spider = SpiderBuilder::new("books")
         .start_urls(vec!["https://books.toscrape.com/"])
-        .delay_ms(300)
-        .obey_robots(false)
-        .max_retries(2)
         .on("default", |resp| async move {
             let doc = resp.parse();
             let items: Vec<Value> = doc.select("article.product_pod").iter().map(|book| {
@@ -274,7 +274,13 @@ async fn test_spider_builder_engine_integration() {
         })
         .build();
 
-    let engine = Engine::infra().max_pages(3).build().unwrap();
+    let engine = Engine::infra()
+        .max_pages(3)
+        .obey_robots(false)
+        .max_retries(2)
+        .download_delay_ms(300)
+        .build()
+        .unwrap();
     let (stats, _items) = engine.run(spider).await.unwrap();
 
     assert_eq!(stats.pages_crawled, 3, "应爬取 3 页");

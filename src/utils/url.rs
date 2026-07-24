@@ -22,13 +22,16 @@ pub fn resolve_href(base: &str, href: &str) -> Option<String> {
 ///
 /// 提取 host + path 组合为文件名，截断至 100 字符，追加 `.md` 后缀。
 /// 解析失败时回退为 `page_{counter}.md`。
+///
+/// ND-004-SEC：过滤 Windows 保留名和路径分隔符，提升跨平台兼容性。
 pub fn url_to_filename(url: &str, counter: usize) -> String {
     let parsed = url::Url::parse(url);
     let base = parsed
         .as_ref()
         .map(|u| {
             let host = u.host_str().unwrap_or("page");
-            let path = u.path().trim_matches('/').replace('/', "_");
+            // ND-004-SEC：用 sanitize_filename_component 过滤路径分隔符和 Windows 保留名
+            let path = sanitize_filename_component(u.path().trim_matches('/'));
             if path.is_empty() {
                 format!("{}_index", host)
             } else {
@@ -38,6 +41,29 @@ pub fn url_to_filename(url: &str, counter: usize) -> String {
         .unwrap_or_else(|_| format!("page_{}", counter));
     let truncated: String = base.chars().take(100).collect();
     format!("{}.md", truncated)
+}
+
+/// ND-004-SEC：过滤文件名组件，防止路径穿越和 Windows 保留名冲突。
+///
+/// - 替换 `/` 和 `\` 为 `_`（防止路径分隔符穿越）
+/// - Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）加 `wisp_` 前缀
+fn sanitize_filename_component(s: &str) -> String {
+    let s = s.replace('/', "_").replace('\\', "_");
+    // Windows 保留名检查（不区分大小写）
+    let upper = s.to_uppercase();
+    let is_reserved = matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL"
+        | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
+        | "COM6" | "COM7" | "COM8" | "COM9"
+        | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5"
+        | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+    );
+    if is_reserved {
+        format!("wisp_{}", s)
+    } else {
+        s
+    }
 }
 
 #[cfg(test)]
