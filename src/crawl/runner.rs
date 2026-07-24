@@ -1,16 +1,16 @@
 //! Engine 运行时：Engine 结构体 + EngineBuilder + run_inner 流驱动。
 
+use futures::stream::{self, StreamExt};
+use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use futures::stream::{self, StreamExt};
 use tokio::sync::Mutex;
-use serde_json::Value;
 
-use crate::error::Result;
-use crate::fetcher::FetchClient;
-use super::*;
 use super::stats::SpiderStats;
+use super::*;
+use crate::error::Result;
+use crate::fetcher::{FetchClient, FetchClientConfig};
 
 /// 爬虫引擎基础设施。长期持有，多次 run 不同 Spider。
 ///
@@ -21,13 +21,12 @@ use super::stats::SpiderStats;
 /// - 控制：per-Engine `EngineControl`（替代原全局 static）
 #[derive(Clone)]
 pub struct Engine {
-    pub(crate) cache_store: Option<Arc<crate::storage::Store>>,
+    /// 共享 FetchClient（HTTP 连接池 + BrowserPool，跨 Spider 复用）
+    pub(crate) fetch_client: Arc<FetchClient>,
     pub(crate) request_cache: Option<RequestCache>,
     pub(crate) max_concurrent: usize,
     pub(crate) max_pages: usize,
-    pub(crate) max_depth: Option<u32>,
     pub(crate) max_refetch_rounds: usize,
-    pub(crate) dev_mode: bool,
     pub(crate) checkpoint_store: Option<Arc<crate::storage::Store>>,
     pub(crate) checkpoint_interval: usize,
     /// per-Engine 控制状态（替代原全局 static，解决 I4）。
@@ -38,13 +37,11 @@ pub struct Engine {
 
 /// Engine 构造器（Builder 模式）。
 pub struct EngineBuilder {
+    fetch_client_config: FetchClientConfig,
     max_concurrent: usize,
     max_pages: usize,
-    max_depth: Option<u32>,
     max_refetch_rounds: usize,
-    cache_store: Option<Arc<crate::storage::Store>>,
     request_cache: Option<RequestCache>,
-    dev_mode: bool,
     checkpoint_store: Option<Arc<crate::storage::Store>>,
     checkpoint_interval: usize,
     autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
@@ -57,13 +54,11 @@ impl Engine {
     /// Engine 不再持有 Spider，长期持有共享底层资源。
     pub fn infra() -> EngineBuilder {
         EngineBuilder {
+            fetch_client_config: FetchClientConfig::default(),
             max_concurrent: 8,
             max_pages: 1000,
-            max_depth: None,
             max_refetch_rounds: 5,
-            cache_store: None,
             request_cache: None,
-            dev_mode: false,
             checkpoint_store: None,
             checkpoint_interval: 100,
             autoscale: None,
@@ -96,7 +91,12 @@ impl Engine {
                     let _ = tx.send(CrawlEvent::Done(stats)).await;
                 }
                 Err(e) => {
-                    let _ = tx.send(CrawlEvent::Error { url: "*".into(), error: e.to_string() }).await;
+                    let _ = tx
+                        .send(CrawlEvent::Error {
+                            url: "*".into(),
+                            error: e.to_string(),
+                        })
+                        .await;
                     let _ = tx.send(CrawlEvent::Done(CrawlStats::default())).await;
                 }
             }
@@ -153,15 +153,13 @@ impl Engine {
             let _ = rule_engine.add_user_rule(&pattern, mode);
         }
         let rule_engine = Arc::new(Mutex::new(rule_engine));
-        let allowed = Arc::new(spider.allowed_domains());
-        let fetch_client_config = spider.fetch_client_config();
         let fetch_mode = spider.fetch_mode();
         let max_concurrent = self.max_concurrent;
-        let max_depth = self.max_depth.unwrap_or_else(|| spider.max_depth());
+        let max_depth = spider.max_depth();
         let obey_robots = spider.obey_robots();
 
-        // 每个 Spider 自带 FetchClientConfig，构造独立 FetchClient（含 HTTP 连接池 + BrowserPool）
-        let fetch_client = Arc::new(FetchClient::new(fetch_client_config)?);
+        // 复用 Engine 持有的共享 FetchClient（HTTP 连接池 + BrowserPool 跨 Spider 复用）
+        let fetch_client = self.fetch_client.clone();
 
         let sched = Arc::new(scheduler::Scheduler::new());
         let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
@@ -182,7 +180,9 @@ impl Engine {
                             sched.restore(state.pending_urls, seen).await;
                             tracing::info!(
                                 "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs (含 {} seen)",
-                                spider_name, n, sched.seen_urls().await.len()
+                                spider_name,
+                                n,
+                                sched.seen_urls().await.len()
                             );
                             restored_pending = true;
                         }
@@ -200,34 +200,49 @@ impl Engine {
 
         spider.on_start().await;
 
+        // 默认中间件注入所需资源（在 ctx 字面量 move 这些 Arc 前提取）
+        let mw_http_client = fetch_client.http_arc();
+        let mw_robots_cache = robots_cache.clone();
+
         let ctx = Arc::new(engine::EngineContext {
             config: engine::EngineConfig {
                 client: fetch_client,
                 fetch_mode,
                 max_concurrent,
-                max_depth,
                 obey_robots,
                 engine_max_pages: self.max_pages,
                 max_refetch_rounds: self.max_refetch_rounds,
-                dev_mode: self.dev_mode,
-                allowed,
             },
             shared: engine::EngineShared {
                 sched: sched.clone(),
-                robots_cache,
                 follow_tx,
                 follow_rx: Arc::new(Mutex::new(follow_rx)),
                 domain_sems: Arc::new(dashmap::DashMap::new()),
                 proxy_clients: Arc::new(dashmap::DashMap::new()),
-                cache_store: self.cache_store.clone(),
-                request_cache: self.request_cache.clone(),
                 control: self.control.clone(),
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: {
+                    // 默认中间件链：按 fetch_mode + spider 配置注入（详见 builtin::default_middlewares）
+                    let defaults = middleware::builtin::default_middlewares(
+                        middleware::builtin::DefaultMiddlewareConfig {
+                            fetch_mode,
+                            delay: spider.download_delay(),
+                            obey_robots,
+                            allowed_domains: spider.allowed_domains(),
+                            max_depth,
+                            max_retries: spider.max_retries(),
+                            request_cache: self.request_cache.clone(),
+                            http_client: mw_http_client,
+                            robots_cache: mw_robots_cache,
+                            rule_engine: rule_engine.clone(),
+                        },
+                    );
                     let mut chain = middleware::MiddlewareChain::new();
+                    // 用户中间件 + 默认中间件合并，sort 按 priority 统一排序
                     chain.middlewares = spider.middlewares();
+                    chain.middlewares.extend(defaults);
                     chain.pipelines = spider.pipelines();
-                    chain.sort(); // 按 priority 排序
+                    chain.sort();
                     Arc::new(chain)
                 },
                 rule_engine,
@@ -247,7 +262,10 @@ impl Engine {
         if !ctx.shared.middleware_chain.is_empty() {
             let crawl_ctx = engine::build_crawl_context(&ctx);
             ctx.shared.middleware_chain.run_init(&crawl_ctx).await;
-            ctx.shared.middleware_chain.run_pipelines_open(&crawl_ctx).await;
+            ctx.shared
+                .middleware_chain
+                .run_pipelines_open(&crawl_ctx)
+                .await;
         }
 
         // 启用 autoscale 时，spawn 后台 autoscaler task
@@ -276,7 +294,9 @@ impl Engine {
                 let autoscale = autoscale.clone();
                 async move {
                     loop {
-                        if ctx.shared.control.is_shutdown() || ctx.state.abort_flag.load(Ordering::SeqCst) {
+                        if ctx.shared.control.is_shutdown()
+                            || ctx.state.abort_flag.load(Ordering::SeqCst)
+                        {
                             return None;
                         }
 
@@ -289,8 +309,12 @@ impl Engine {
 
                         // 引擎级 max_pages 兜底
                         let pages = ctx.state.stats.pages.load(Ordering::SeqCst);
-                        if pages + ctx.state.global_in_flight.load(Ordering::SeqCst) >= ctx.config.engine_max_pages {
-                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
+                        if pages + ctx.state.global_in_flight.load(Ordering::SeqCst)
+                            >= ctx.config.engine_max_pages
+                        {
+                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
+                                return None;
+                            }
                             tokio::task::yield_now().await;
                             continue;
                         }
@@ -306,7 +330,9 @@ impl Engine {
                             queue_size,
                         };
                         if ctx.state.spider.until().should_stop(&stop_ctx) {
-                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
+                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
+                                return None;
+                            }
                             tokio::task::yield_now().await;
                             continue;
                         }
@@ -322,15 +348,24 @@ impl Engine {
                             tokio::time::timeout(
                                 Duration::from_millis(10),
                                 ctx.shared.work_notify.notified(),
-                            ).await.ok();
+                            )
+                            .await
+                            .ok();
                             continue;
                         }
 
                         let req = match ctx.shared.sched.pop().await {
                             Some(req) => req,
                             None => {
-                                if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
-                                tokio::time::timeout(Duration::from_millis(100), ctx.shared.work_notify.notified()).await.ok();
+                                if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
+                                    return None;
+                                }
+                                tokio::time::timeout(
+                                    Duration::from_millis(100),
+                                    ctx.shared.work_notify.notified(),
+                                )
+                                .await
+                                .ok();
                                 continue;
                             }
                         };
@@ -340,9 +375,16 @@ impl Engine {
                         ctx.state.stats.in_flight.fetch_add(1, Ordering::SeqCst);
                         let ctx_c = ctx.clone();
                         let fut = async move {
-                            let _g1 = engine::InFlightGuard { counter: ctx_c.state.global_in_flight.clone() };
-                            let _g2 = engine::InFlightGuard { counter: ctx_c.state.stats.in_flight.clone() };
-                            engine::process_request(&ctx_c, req).await;
+                            let _g1 = engine::InFlightGuard {
+                                counter: ctx_c.state.global_in_flight.clone(),
+                            };
+                            let _g2 = engine::InFlightGuard {
+                                counter: ctx_c.state.stats.in_flight.clone(),
+                            };
+                            // 请求阶段 → 响应阶段（同级编排，process_request 不再内嵌 process_response）
+                            if let Some(resp) = engine::process_request(&ctx_c, req).await {
+                                engine::process_response(&ctx_c, resp).await;
+                            }
                         };
                         return Some((fut, ()));
                     }
@@ -372,7 +414,10 @@ impl Engine {
         // pipeline 关闭：爬取结束后释放资源
         if !ctx.shared.middleware_chain.is_empty() {
             let crawl_ctx = engine::build_crawl_context(&ctx);
-            ctx.shared.middleware_chain.run_pipelines_close(&crawl_ctx).await;
+            ctx.shared
+                .middleware_chain
+                .run_pipelines_close(&crawl_ctx)
+                .await;
         }
 
         spider.on_close().await;
@@ -384,30 +429,54 @@ impl Engine {
         }
 
         let status_codes = ctx.state.stats.status_codes_snapshot();
-        Ok(engine::snapshot_stats_for(&ctx.state.stats, status_codes, ctx.state.start))
+        Ok(engine::snapshot_stats_for(
+            &ctx.state.stats,
+            status_codes,
+            ctx.state.start,
+        ))
     }
 }
 
 impl EngineBuilder {
-    pub fn max_concurrent(mut self, n: usize) -> Self { self.max_concurrent = n; self }
-    pub fn max_pages(mut self, n: usize) -> Self { self.max_pages = n; self }
-    pub fn max_depth(mut self, n: u32) -> Self { self.max_depth = Some(n); self }
+    pub fn max_concurrent(mut self, n: usize) -> Self {
+        self.max_concurrent = n;
+        self
+    }
+    pub fn max_pages(mut self, n: usize) -> Self {
+        self.max_pages = n;
+        self
+    }
+    /// 设置 FetchClient 配置（HTTP 连接池/超时/浏览器等基础设施配置，跨 Spider 共享）。
+    pub fn fetch_client_config(mut self, config: FetchClientConfig) -> Self {
+        self.fetch_client_config = config;
+        self
+    }
+    /// 设置代理（作用于共享 FetchClient 的所有 HTTP 请求）。
+    pub fn proxy(mut self, proxy: &str) -> Self {
+        self.fetch_client_config.proxy = Some(proxy.to_string());
+        self
+    }
     /// 设置中间件 Refetch 最大轮数（默认 5）。
-    pub fn max_refetch_rounds(mut self, n: usize) -> Self { self.max_refetch_rounds = n; self }
-    pub fn cache_store(mut self, s: Arc<crate::storage::Store>) -> Self { self.cache_store = Some(s); self }
-    pub fn request_cache(mut self, c: RequestCache) -> Self { self.request_cache = Some(c); self }
-    pub fn dev_mode(mut self, s: Arc<crate::storage::Store>) -> Self {
-        self.cache_store = Some(s); self.dev_mode = true; self
+    pub fn max_refetch_rounds(mut self, n: usize) -> Self {
+        self.max_refetch_rounds = n;
+        self
+    }
+    pub fn request_cache(mut self, c: RequestCache) -> Self {
+        self.request_cache = Some(c);
+        self
     }
     pub fn checkpoint(mut self, s: Arc<crate::storage::Store>, interval: usize) -> Self {
-        self.checkpoint_store = Some(s); self.checkpoint_interval = interval; self
+        self.checkpoint_store = Some(s);
+        self.checkpoint_interval = interval;
+        self
     }
 
     /// 启用自适应并发池。min 为初始/下限，max 为上限。
     /// 启用后 run_inner 会启动后台 autoscaler，根据饱和度动态调整并发数。
     pub fn autoscale(mut self, min: usize, max: usize) -> Self {
         self.autoscale = Some(crate::crawl::runtime::autoscale::AutoscaledPool::new(
-            min, max,
+            min,
+            max,
             crate::crawl::runtime::autoscale::AutoscaleConfig::default(),
         ));
         self
@@ -420,19 +489,20 @@ impl EngineBuilder {
         max: usize,
         config: crate::crawl::runtime::autoscale::AutoscaleConfig,
     ) -> Self {
-        self.autoscale = Some(crate::crawl::runtime::autoscale::AutoscaledPool::new(min, max, config));
+        self.autoscale = Some(crate::crawl::runtime::autoscale::AutoscaledPool::new(
+            min, max, config,
+        ));
         self
     }
 
     pub fn build(self) -> Result<Engine> {
+        let fetch_client = Arc::new(FetchClient::new(self.fetch_client_config)?);
         Ok(Engine {
-            cache_store: self.cache_store,
+            fetch_client,
             request_cache: self.request_cache,
             max_concurrent: self.max_concurrent,
             max_pages: self.max_pages,
-            max_depth: self.max_depth,
             max_refetch_rounds: self.max_refetch_rounds,
-            dev_mode: self.dev_mode,
             checkpoint_store: self.checkpoint_store,
             checkpoint_interval: self.checkpoint_interval,
             control: Arc::new(control::EngineControl::new()),

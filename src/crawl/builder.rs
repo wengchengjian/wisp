@@ -52,24 +52,22 @@
 //!     .build();
 //! ```
 
+use async_trait::async_trait;
+use futures::future::BoxFuture;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use async_trait::async_trait;
-use futures::future::BoxFuture;
-use serde_json::Value;
 
-use super::{Spider, Request, Response};
+use super::{Request, Response, Spider};
 
 /// 异步 handler 签名：接收 Response，返回 (items, follows)。
 ///
 /// 用 `Arc<dyn Fn(...) -> BoxFuture>` 让闭包可 Clone + 异步 + Send + Sync。
 /// 每个 handler 捕获不同状态都满足同一签名。
-pub type Handler = Arc<
-    dyn Fn(Response) -> BoxFuture<'static, (Vec<Value>, Vec<Request>)>
-        + Send + Sync
->;
+pub type Handler =
+    Arc<dyn Fn(Response) -> BoxFuture<'static, (Vec<Value>, Vec<Request>)> + Send + Sync>;
 
 /// 闭包式 Spider 构建器。
 ///
@@ -82,7 +80,6 @@ pub struct SpiderBuilder {
     delay: Duration,
     obey_robots: bool,
     max_retries: u32,
-    fetch_client_config: crate::fetcher::FetchClientConfig,
     fetch_mode: crate::fetcher::FetchMode,
     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
     is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
@@ -102,8 +99,7 @@ impl SpiderBuilder {
             delay: Duration::ZERO,
             obey_robots: true,
             max_retries: 3,
-            fetch_client_config: crate::fetcher::FetchClientConfig::default(),
-            fetch_mode: crate::fetcher::FetchMode::Http,
+            fetch_mode: crate::fetcher::FetchMode::Auto,
             auto_rules: Vec::new(),
             is_blocked_fn: None,
             until_cond: Arc::new(super::NeverStop),
@@ -145,12 +141,6 @@ impl SpiderBuilder {
     /// 设置最大重试次数。
     pub fn max_retries(mut self, n: u32) -> Self {
         self.max_retries = n;
-        self
-    }
-
-    /// 设置 fetch client 配置。
-    pub fn fetch_client_config(mut self, config: crate::fetcher::FetchClientConfig) -> Self {
-        self.fetch_client_config = config;
         self
     }
 
@@ -253,6 +243,9 @@ impl SpiderBuilder {
             !self.handlers.is_empty(),
             "SpiderBuilder: 必须至少注册一个 handler（通过 on()）"
         );
+
+        // 默认行为中间件由 Engine::run_inner 按 fetch_mode 注入（见 builtin::default_middlewares），
+        // build() 仅收集用户显式添加的中间件。
         ClosureSpider {
             name: self.name,
             start_urls: self.start_urls,
@@ -261,7 +254,6 @@ impl SpiderBuilder {
             delay: self.delay,
             obey_robots: self.obey_robots,
             max_retries: self.max_retries,
-            fetch_client_config: self.fetch_client_config,
             fetch_mode: self.fetch_mode,
             auto_rules: self.auto_rules,
             is_blocked_fn: self.is_blocked_fn,
@@ -281,7 +273,6 @@ pub struct ClosureSpider {
     delay: Duration,
     obey_robots: bool,
     max_retries: u32,
-    fetch_client_config: crate::fetcher::FetchClientConfig,
     fetch_mode: crate::fetcher::FetchMode,
     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
     is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
@@ -292,15 +283,30 @@ pub struct ClosureSpider {
 
 #[async_trait]
 impl Spider for ClosureSpider {
-    fn name(&self) -> &str { &self.name }
-    fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
-    fn allowed_domains(&self) -> HashSet<String> { self.allowed_domains.clone() }
-    fn download_delay(&self) -> Duration { self.delay }
-    fn obey_robots(&self) -> bool { self.obey_robots }
-    fn max_retries(&self) -> u32 { self.max_retries }
-    fn fetch_client_config(&self) -> crate::fetcher::FetchClientConfig { self.fetch_client_config.clone() }
-    fn fetch_mode(&self) -> crate::fetcher::FetchMode { self.fetch_mode }
-    fn auto_rules(&self) -> Vec<(String, crate::fetcher::FetchMode)> { self.auto_rules.clone() }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn start_urls(&self) -> Vec<String> {
+        self.start_urls.clone()
+    }
+    fn allowed_domains(&self) -> HashSet<String> {
+        self.allowed_domains.clone()
+    }
+    fn download_delay(&self) -> Duration {
+        self.delay
+    }
+    fn obey_robots(&self) -> bool {
+        self.obey_robots
+    }
+    fn max_retries(&self) -> u32 {
+        self.max_retries
+    }
+    fn fetch_mode(&self) -> crate::fetcher::FetchMode {
+        self.fetch_mode
+    }
+    fn auto_rules(&self) -> Vec<(String, crate::fetcher::FetchMode)> {
+        self.auto_rules.clone()
+    }
 
     /// callback 路由：根据 `resp.request.callback` 查表分发。
     ///

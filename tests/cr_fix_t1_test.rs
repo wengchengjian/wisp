@@ -8,11 +8,9 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_crawl_site_uses_start_urls() {
     let server = spawn_html_server("<p>item1</p><p>item2</p>").await;
-    let store = Arc::new(Store::open_in_memory().unwrap());
     // Task 5：crawl_site 复用共享 Engine（HTTP/缓存/代理池）
     let engine = Engine::infra()
         .max_pages(100)
-        .cache_store(store.clone())
         .build()
         .unwrap();
     let args = json!({

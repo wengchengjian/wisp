@@ -102,6 +102,11 @@ impl FetchClient {
         &self.http
     }
 
+    /// 获取 HTTP 客户端的 Arc 克隆（用于需要独立持有 Client 的中间件，如 RobotsMiddleware）。
+    pub fn http_arc(&self) -> Arc<Client> {
+        Arc::clone(&self.http)
+    }
+
     /// 获取浏览器池引用（若有）。
     pub fn browser_pool(&self) -> Option<&Arc<BrowserPool>> {
         self.browser_pool.as_ref()

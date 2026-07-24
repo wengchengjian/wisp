@@ -90,9 +90,6 @@ pub trait Spider: Send + Sync + 'static {
     fn max_retries(&self) -> u32 {
         3
     }
-    fn fetch_client_config(&self) -> crate::fetcher::FetchClientConfig {
-        crate::fetcher::FetchClientConfig::default()
-    }
     async fn on_start(&self) {}
     async fn on_close(&self) {}
     async fn on_error(&self, _req: &Request, _err: &str) {}

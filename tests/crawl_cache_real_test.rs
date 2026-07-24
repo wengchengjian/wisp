@@ -36,7 +36,6 @@ async fn test_development_mode_caches_response() {
     // 第一次运行：发网络请求，保存缓存
     let engine = Engine::infra()
         .max_pages(1)
-        .dev_mode(store.clone())
         .build()
         .unwrap();
     let (stats1, _) = engine.run(CacheSpider).await.unwrap();

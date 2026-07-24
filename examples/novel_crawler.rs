@@ -4,12 +4,13 @@
 //!
 //! 运行：cargo run --example novel_crawler
 
-use std::time::Duration;
 use serde_json::json;
-use wisp::crawl::{Engine, SpiderBuilder};
+use std::time::Duration;
+use wisp::crawl::middleware::{
+    CookieChallengeMiddleware, HeadersMiddleware, JsonlWriterPipeline, UaRotationMiddleware,
+};
 use wisp::crawl::stop::MaxPages;
-use wisp::crawl::middleware::{UaRotationMiddleware, HeadersMiddleware, CookieChallengeMiddleware, JsonlWriterPipeline};
-use wisp::fetcher::{FetchClientConfig, FetchMode};
+use wisp::crawl::{Engine, SpiderBuilder};
 
 /// 小说条目结构。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -31,21 +32,13 @@ struct NovelItem {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
+    tracing_subscriber::fmt().with_env_filter("info").init();
 
     let spider = SpiderBuilder::new("qishuxia")
         .start_urls(vec!["https://www.qishuxia.com/"])
         .delay(Duration::from_millis(500))
         .obey_robots(false)
-        // 代理配置（通过 FetchClientConfig 统一注入 HTTP 与浏览器请求）
-        .fetch_client_config(FetchClientConfig {
-            proxy: Some("http://127.0.0.1:7897".into()),
-            ..Default::default()
-        })
         // Auto 模式：先尝试 HTTP，遇 403/CF 拦截自动升级 Stealth 浏览器模式
-        .mode(FetchMode::Auto)
         // 中间件：每次请求自动轮换 User-Agent
         .middleware(UaRotationMiddleware::desktop())
         // 中间件：自动解决多步 Cookie 挑战（403 + Set-Cookie + JS 重定向）
@@ -62,10 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .pipeline(JsonlWriterPipeline::new("novel_output.jsonl"))
         // === 第一级：首页 → 提取书籍列表 → follow 到 "detail" ===
         .on("default", |resp| async move {
-            let doc = match resp.parse() {
-                Ok(d) => d,
-                Err(_) => return (vec![], vec![]),
-            };
+            let doc = resp.parse();
 
             // 诊断信息：帮助确认页面是否加载成功
             let title = doc.select_one("title").map(|n| n.text()).unwrap_or_default();
@@ -119,10 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         // === 第二级：书籍详情 → 提取章节列表 → follow 到 "chapter" ===
         .on("detail", |resp| async move {
-            let doc = match resp.parse() {
-                Ok(d) => d,
-                Err(_) => return (vec![], vec![]),
-            };
+            let doc = resp.parse();
 
             // 从 meta 获取书名
             let title = resp.request.meta.get("title")
@@ -160,10 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         // === 第三级：章节页 → 提取正文 → 组装 NovelItem ===
         .on("chapter", |resp| async move {
-            let doc = match resp.parse() {
-                Ok(d) => d,
-                Err(_) => return (vec![], vec![]),
-            };
+            let doc = resp.parse();
 
             let meta = &resp.request.meta;
             let title = meta.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -206,10 +190,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .until(MaxPages(200))
         .build();
 
-    // 构建引擎并运行（代理已在 SpiderBuilder.fetch_client_config 中配置）
+    // 构建引擎并运行（代理通过 EngineBuilder.proxy 注入共享 FetchClient）
     let engine = Engine::infra()
         .max_concurrent(4)
         .max_pages(200)
+        .proxy("http://127.0.0.1:7897")
         .build()?;
 
     println!("=== 开始爬取 qishuxia.com ===\n");

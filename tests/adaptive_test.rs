@@ -55,7 +55,6 @@ fn test_capture_then_relocate_after_class_change() {
 
 #[test]
 fn test_relocate_returns_none_when_no_match() {
-    let store = make_store();
     let doc = Node::from_html(HTML_BEFORE);
     let apple = doc.select_one(".name").unwrap();
     let snapshot = ElementSnapshot::capture(&apple);

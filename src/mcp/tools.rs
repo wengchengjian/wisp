@@ -258,10 +258,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_crawl_site_missing_args() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
         let engine = crate::crawl::Engine::infra()
             .max_pages(100)
-            .cache_store(store.clone())
             .build()
             .unwrap();
         let args = json!({});

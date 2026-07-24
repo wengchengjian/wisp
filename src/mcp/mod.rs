@@ -102,7 +102,6 @@ pub async fn serve(store: Arc<Store>) -> Result<()> {
     // 每次 crawl_site 的 per-call 上限由 SimpleSpider 的 until() 终止策略控制。
     let engine = Engine::infra()
         .max_pages(100000)
-        .cache_store(store.clone())
         .build()?;
 
     let stdin = io::stdin();
@@ -245,7 +244,6 @@ mod tests {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let engine = Engine::infra()
             .max_pages(100)
-            .cache_store(store.clone())
             .build()
             .unwrap();
         let req = json!({

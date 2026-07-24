@@ -87,12 +87,7 @@ impl Middleware for RetryMiddleware {
         90
     }
 
-    async fn process_error(
-        &self,
-        req: &Request,
-        _err: &str,
-        _ctx: &CrawlContext,
-    ) -> ErrorAction {
+    async fn process_error(&self, req: &Request, _err: &str, _ctx: &CrawlContext) -> ErrorAction {
         let count = req.meta.get("_retry").and_then(|v| v.as_u64()).unwrap_or(0);
         if count < self.max_retries as u64 {
             if !self.retry_delay.is_zero() {
@@ -628,6 +623,88 @@ impl Middleware for BlockedRetryMiddleware {
     }
 }
 
+// === 默认中间件注入 ===
+
+/// 默认中间件注入配置（由 Spider 配置 + Engine 资源组装）。
+///
+/// `default_middlewares` 据此构造中间件链；字段对应各默认中间件所需的输入。
+pub struct DefaultMiddlewareConfig {
+    /// 抓取模式（决定是否注入模式升级类）
+    pub fetch_mode: FetchMode,
+    /// 下载延迟（>0 时注入 DelayMiddleware）
+    pub delay: Duration,
+    /// 是否遵守 robots.txt（true 时注入 RobotsMiddleware）
+    pub obey_robots: bool,
+    /// 允许的域名集合（非空时注入 DomainFilterMiddleware）
+    pub allowed_domains: HashSet<String>,
+    /// 最大深度（注入 DepthLimitMiddleware；MAX 时等价无限制）
+    pub max_depth: u32,
+    /// 最大重试次数（注入 RetryMiddleware；0 时仅 Propagate）
+    pub max_retries: u32,
+    /// 请求缓存（Some 时注入 CacheMiddleware）
+    pub request_cache: Option<RequestCache>,
+    /// HTTP 客户端（RobotsMiddleware 拉取 robots.txt 用）
+    pub http_client: Arc<Client>,
+    /// robots 缓存（跨请求共享 robots 规则）
+    pub robots_cache: Arc<Mutex<RobotsCache>>,
+    /// Auto 模式规则引擎（StealthUpgradeMiddleware 学习模式用）
+    pub rule_engine: Arc<Mutex<ModeRuleEngine>>,
+}
+
+/// 按 FetchMode 和 Spider 配置注入默认行为中间件链。
+///
+/// 中间件分 4 类（按 priority 升序，由 `MiddlewareChain::sort` 统一排序）：
+/// 1. **过滤类**（0-8）：DomainFilter / Cache / DepthLimit / Robots — 按配置启用
+/// 2. **请求修改类**（10-30）：Delay / UaRotation — delay>0 / 总是
+/// 3. **模式升级类**（40-45）：DynamicUpgrade / StealthUpgrade — **仅 Auto 模式**
+/// 4. **重试/挑战类**（50-90）：CookieChallenge / BlockedRetry / Retry — 总是
+///
+/// Http/Dynamic/Stealth 模式不注入升级类（用户已明确选择模式）；
+/// Auto 模式注入完整链，由响应中间件按需 `Refetch` 升级。
+///
+/// 用户通过 `SpiderBuilder::middleware` 添加的中间件视为额外自定义，
+/// 与默认链合并后统一排序。请勿重复添加同类 builtin 中间件。
+pub fn default_middlewares(cfg: DefaultMiddlewareConfig) -> Vec<Arc<dyn Middleware>> {
+    let mut mws: Vec<Arc<dyn Middleware>> = Vec::new();
+
+    // 1. 过滤类
+    if !cfg.allowed_domains.is_empty() {
+        mws.push(Arc::new(DomainFilterMiddleware::new(cfg.allowed_domains)));
+    }
+    if let Some(cache) = cfg.request_cache {
+        mws.push(Arc::new(CacheMiddleware::new(cache)));
+    }
+    mws.push(Arc::new(DepthLimitMiddleware::new(cfg.max_depth)));
+    if cfg.obey_robots {
+        mws.push(Arc::new(RobotsMiddleware::new(
+            cfg.robots_cache,
+            cfg.http_client,
+        )));
+    }
+
+    // 2. 请求修改类
+    if !cfg.delay.is_zero() {
+        mws.push(Arc::new(DelayMiddleware::new(cfg.delay)));
+    }
+    mws.push(Arc::new(UaRotationMiddleware::desktop()));
+
+    // 3. 模式升级类（仅 Auto）
+    if cfg.fetch_mode == FetchMode::Auto {
+        mws.push(Arc::new(DynamicUpgradeMiddleware::new()));
+        mws.push(Arc::new(StealthUpgradeMiddleware::new(cfg.rule_engine)));
+    }
+
+    // 4. 重试/挑战类
+    mws.push(Arc::new(CookieChallengeMiddleware::default()));
+    mws.push(Arc::new(BlockedRetryMiddleware::default()));
+    mws.push(Arc::new(RetryMiddleware::new(
+        cfg.max_retries,
+        Duration::from_millis(500),
+    )));
+
+    mws
+}
+
 // === 测试 ===
 
 #[cfg(test)]
@@ -635,8 +712,14 @@ mod tests {
     use super::super::pipeline::FilterFieldsPipeline;
     use super::super::ItemPipeline;
     use super::*;
+    use crate::crawl::auto::ModeRuleEngine;
+    use crate::crawl::runtime::robots::RobotsCache;
     use serde_json::Value;
     use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
 
     fn make_req() -> Request {
         Request {
@@ -905,5 +988,92 @@ mod tests {
         let mut resp = make_resp(200, body);
         let action = mw.process_response(&mut resp, &ctx).await;
         assert_eq!(action, MwAction::Continue);
+    }
+
+    // === default_middlewares 分类逻辑测试 ===
+
+    /// 构造测试用 HTTP Client（从 FetchClient 提取，复用 engine 测试模式）。
+    fn make_http_client() -> Arc<Client> {
+        crate::fetcher::FetchClient::new(crate::fetcher::FetchClientConfig::default())
+            .expect("build fetch client")
+            .http_arc()
+    }
+
+    /// 验证默认中间件按 fetch_mode + 配置正确分类注入。
+    #[test]
+    fn default_middlewares_classifies_by_mode_and_config() {
+        let http_client = make_http_client();
+        let robots_cache = Arc::new(Mutex::new(RobotsCache::new()));
+        let rule_engine = Arc::new(Mutex::new(ModeRuleEngine::new()));
+
+        let priorities =
+            |mws: &[Arc<dyn Middleware>]| mws.iter().map(|m| m.priority()).collect::<Vec<_>>();
+
+        // Auto + 全配置：应注入完整链（含模式升级类 40/45）
+        let auto_p = priorities(&default_middlewares(DefaultMiddlewareConfig {
+            fetch_mode: FetchMode::Auto,
+            delay: Duration::from_millis(100),
+            obey_robots: true,
+            allowed_domains: ["example.com".to_string()].into_iter().collect(),
+            max_depth: 3,
+            max_retries: 3,
+            request_cache: None,
+            http_client: http_client.clone(),
+            robots_cache: robots_cache.clone(),
+            rule_engine: rule_engine.clone(),
+        }));
+        assert!(auto_p.contains(&0), "allowed 非空应含 DomainFilter");
+        assert!(auto_p.contains(&5), "应含 DepthLimit");
+        assert!(auto_p.contains(&8), "obey_robots=true 应含 Robots");
+        assert!(auto_p.contains(&15), "delay>0 应含 Delay");
+        assert!(auto_p.contains(&20), "应含 UaRotation");
+        assert!(auto_p.contains(&40), "Auto 应含 DynamicUpgrade");
+        assert!(auto_p.contains(&45), "Auto 应含 StealthUpgrade");
+        assert!(auto_p.contains(&50), "应含 CookieChallenge");
+        assert!(auto_p.contains(&80), "应含 BlockedRetry");
+        assert!(auto_p.contains(&90), "应含 Retry");
+
+        // Http + 最小配置：不应含升级类和条件类
+        let http_p = priorities(&default_middlewares(DefaultMiddlewareConfig {
+            fetch_mode: FetchMode::Http,
+            delay: Duration::ZERO,
+            obey_robots: false,
+            allowed_domains: HashSet::new(),
+            max_depth: u32::MAX,
+            max_retries: 0,
+            request_cache: None,
+            http_client: http_client.clone(),
+            robots_cache: robots_cache.clone(),
+            rule_engine: rule_engine.clone(),
+        }));
+        assert!(!http_p.contains(&0), "allowed 空不应含 DomainFilter");
+        assert!(!http_p.contains(&8), "obey_robots=false 不应含 Robots");
+        assert!(!http_p.contains(&15), "delay=0 不应含 Delay");
+        assert!(!http_p.contains(&40), "Http 不应含 DynamicUpgrade");
+        assert!(!http_p.contains(&45), "Http 不应含 StealthUpgrade");
+        // 总是注入的仍存在
+        assert!(http_p.contains(&5), "总是含 DepthLimit");
+        assert!(http_p.contains(&20), "总是含 UaRotation");
+        assert!(http_p.contains(&50), "总是含 CookieChallenge");
+        assert!(http_p.contains(&80), "总是含 BlockedRetry");
+        assert!(http_p.contains(&90), "总是含 Retry");
+
+        // Dynamic/Stealth 模式同样不注入升级类
+        for mode in [FetchMode::Dynamic, FetchMode::Stealth] {
+            let p = priorities(&default_middlewares(DefaultMiddlewareConfig {
+                fetch_mode: mode,
+                delay: Duration::ZERO,
+                obey_robots: false,
+                allowed_domains: HashSet::new(),
+                max_depth: u32::MAX,
+                max_retries: 0,
+                request_cache: None,
+                http_client: http_client.clone(),
+                robots_cache: robots_cache.clone(),
+                rule_engine: rule_engine.clone(),
+            }));
+            assert!(!p.contains(&40), "{:?} 不应含 DynamicUpgrade", mode);
+            assert!(!p.contains(&45), "{:?} 不应含 StealthUpgrade", mode);
+        }
     }
 }

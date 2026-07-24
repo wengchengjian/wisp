@@ -7,9 +7,7 @@
 
 use std::time::Duration;
 use wisp::http::Client;
-use wisp::parser::Node;
 use wisp::crawl::{Engine, SpiderBuilder, Response, Request};
-use wisp::proxy::RotationStrategy;
 use wreq_util::Profile;
 use serde_json::Value;
 
