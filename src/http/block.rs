@@ -68,26 +68,33 @@ impl DomainBlocker {
 
     /// 判断给定 URL 是否应被拦截。
     ///
-    /// 匹配规则：URL 的域名等于或以 `.blocked_domain` 结尾。
+    /// 匹配规则：URL 的域名等于 blocked 集合中的某项，或是其子域名。
+    /// 使用 HashSet contains 查找（O(k)，k=域名标签数），避免 O(n) 全量遍历。
     pub fn should_block(&self, url: &str) -> bool {
         let host = match url::Url::parse(url) {
             Ok(u) => u.host_str().unwrap_or("").to_lowercase(),
             Err(_) => return false,
         };
-
-        for blocked in &self.blocked {
-            if host == *blocked || host.ends_with(&format!(".{}", blocked)) {
-                return true;
-            }
-        }
-        false
+        self.matches_host(&host)
     }
 
     /// 判断给定域名是否应被拦截（不解析 URL）。
     pub fn should_block_host(&self, host: &str) -> bool {
-        let host = host.to_lowercase();
-        for blocked in &self.blocked {
-            if host == *blocked || host.ends_with(&format!(".{}", blocked)) {
+        self.matches_host(&host.to_lowercase())
+    }
+
+    /// 内部匹配：逐级剥离最左标签做 HashSet contains 查找。
+    ///
+    /// 例如 `a.b.ads.com` 依次检查 `a.b.ads.com` → `b.ads.com` → `ads.com` → `com`，
+    /// 最多 k 次 O(1) 哈希查找（k = 标签数，通常 3~5），无堆分配。
+    fn matches_host(&self, host: &str) -> bool {
+        if self.blocked.contains(host) {
+            return true;
+        }
+        let mut remaining = host;
+        while let Some(pos) = remaining.find('.') {
+            remaining = &remaining[pos + 1..];
+            if self.blocked.contains(remaining) {
                 return true;
             }
         }

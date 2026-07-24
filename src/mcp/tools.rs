@@ -86,7 +86,8 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
 
     let max_pages = args.get("max_pages")
         .and_then(|v| v.as_u64())
-        .unwrap_or(100) as usize;
+        .unwrap_or(100)
+        .min(1000) as usize; // 硬上限 1000，防止恶意调用
 
     use crate::crawl::{Spider, Request, Response, MaxPages, StopCondition};
     use async_trait::async_trait;

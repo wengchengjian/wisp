@@ -276,24 +276,49 @@ impl Response {
 
     /// 解析 HTML 为文档节点。
     ///
-    /// 注意：每次调用都会重新解析 HTML。若需多次查询，建议先 `let doc = resp.parse();`
-    /// 再对 `doc` 执行多次 `select()`，避免重复解析。
+    /// # Performance
+    ///
+    /// **每次调用都会重新解析整个 HTML 文档**（O(n) 复杂度）。
+    /// 若需多次查询，强烈建议先缓存解析结果：
+    ///
+    /// ```rust,no_run
+    /// # use wisp::Response;
+    /// # fn example(resp: &Response) {
+    /// let doc = resp.parse();  // 解析一次
+    /// let titles = doc.select("h1");
+    /// let links = doc.select("a.link");
+    /// # }
+    /// ```
+    ///
+    /// 而非多次调用 `resp.css()`（每次都会重新解析）。
     pub fn parse(&self) -> Node {
         let text = self.text().unwrap_or_default();
         Node::from_html(&text)
     }
 
     /// CSS 选择器查询（快捷方式）。
+    ///
+    /// # Performance
+    ///
+    /// 每次调用都会重新解析 HTML。多次查询时请先 `resp.parse()` 缓存文档节点。
     pub fn css(&self, selector: &str) -> NodeList {
         self.parse().select(selector)
     }
 
     /// 按文本内容查找元素。
+    ///
+    /// # Performance
+    ///
+    /// 每次调用都会重新解析 HTML。多次查询时请先 `resp.parse()` 缓存文档节点。
     pub fn find_by_text(&self, text: &str, tag: Option<&str>, exact: bool) -> NodeList {
         self.parse().find_by_text(text, tag, exact)
     }
 
     /// CSS 选择器查询第一个匹配元素。
+    ///
+    /// # Performance
+    ///
+    /// 每次调用都会重新解析 HTML。多次查询时请先 `resp.parse()` 缓存文档节点。
     pub fn select_one(&self, selector: &str) -> Option<Node> {
         self.parse().select_one(selector)
     }

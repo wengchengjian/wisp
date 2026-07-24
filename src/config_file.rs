@@ -28,6 +28,8 @@
 use serde::Deserialize;
 use std::path::Path;
 
+use crate::proxy::RotationStrategy;
+
 /// Wisp 全局配置（对应 wisp.toml）。
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -60,13 +62,22 @@ impl Default for EngineConfig {
 }
 
 /// 代理配置。
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProxyConfig {
     /// 代理池 URL 列表
     pub pool: Vec<String>,
-    /// 轮换策略：sequential | random | sticky
-    pub strategy: String,
+    /// 轮换策略
+    pub strategy: RotationStrategy,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            pool: Vec::new(),
+            strategy: RotationStrategy::Sequential,
+        }
+    }
 }
 
 /// HTTP 客户端配置。
@@ -160,7 +171,7 @@ headless = false
         assert_eq!(config.engine.max_pages, 200);
         assert_eq!(config.engine.max_refetch_rounds, 5); // 默认值
         assert_eq!(config.proxy.pool, vec!["http://127.0.0.1:7897"]);
-        assert_eq!(config.proxy.strategy, "random");
+        assert_eq!(config.proxy.strategy, RotationStrategy::Random);
         assert_eq!(config.stealth.headless, false);
         assert_eq!(config.stealth.human_mode, true); // 默认值
     }

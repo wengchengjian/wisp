@@ -194,12 +194,12 @@ fn fingerprint(url: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    /// 最终 review #1：Fingerprint 模式下 checkpoint seen 往返必须保持一致。
+    /// Fingerprint 模式下 checkpoint seen 往返必须保持一致。
     ///
-    /// RED：当前 restore() 在 Fingerprint 模式下对 seen_urls() 返回的
-    /// 哈希字符串再 fingerprint()，得到完全不同的 u64，导致 seen_fp 失效。
+    /// 验证 restore() 在 Fingerprint 模式下对 seen_urls() 返回的哈希字符串
+    /// 直接 parse 回 u64（而非再次 fingerprint），确保 seen_fp 往返正确。
     ///
-    /// 关键：必须让被测 URL "在 seen 但不在 pending"——这是真实 checkpoint
+    /// 关键：必须让被测 URL “在 seen 但不在 pending”——这是真实 checkpoint
     /// 场景（URL 已爬取并 pop 出 heap，seen 状态需持久化去重）。若 pending
     /// 仍含该 URL，restore 的 pending 分支会再用 fingerprint(req.url) 补回
     /// 正确 u64，掩盖 seen 分支的 bug。

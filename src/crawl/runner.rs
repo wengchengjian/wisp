@@ -14,7 +14,7 @@ use crate::fetcher::{FetchClient, FetchClientConfig};
 
 /// 爬虫引擎基础设施。长期持有，多次 run 不同 Spider。
 ///
-/// Task 3 重构：从"Spider 容器"变为"纯基础设施"。
+/// Task 3 重构：从“Spider 容器”变为“纯基础设施”。
 /// - 不持有 Spider（删除 `spiders: Vec<Box<dyn Spider>>`）
 /// - 共享：HTTP client / Store（SQLite 缓存 + checkpoint）
 /// - 独立：每次 run 内部 Scheduler/去重/stats（per-Spider 隔离）
@@ -33,6 +33,9 @@ pub struct Engine {
     pub(crate) control: Arc<control::EngineControl>,
     /// 自适应并发池（可选）。启用后 run_inner 动态调整并发数。
     pub(crate) autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
+    /// 运行时并发保护：防止同一 Engine 实例并发调用 run/run_stream。
+    /// 未来支持并发爬取时，移除此 guard 并将 EngineControl 改为 per-run 即可。
+    pub(crate) running: Arc<AtomicBool>,
 }
 
 /// Engine 构造器（Builder 模式）。
@@ -153,6 +156,23 @@ impl Engine {
         tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
         items: Arc<Mutex<Vec<Value>>>,
     ) -> Result<CrawlStats> {
+        // 运行时并发保护：同一 Engine 实例不允许并发 run。
+        // 未来支持并发时移除此 guard，将 EngineControl 改为 per-run 即可。
+        if self.running.swap(true, Ordering::SeqCst) {
+            return Err(crate::error::WispError::HttpError(
+                "Engine is already running. Concurrent run/run_stream on the same Engine is not supported. \
+                 Create separate Engine instances for concurrent spiders.".into(),
+            ));
+        }
+        // RAII guard：无论正常结束还是 panic，都释放 running 标志
+        struct RunGuard(Arc<AtomicBool>);
+        impl Drop for RunGuard {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = RunGuard(self.running.clone());
+
         // 重置 control（每次 run 清理上次状态）
         self.control.reset().await;
 
@@ -517,6 +537,7 @@ impl EngineBuilder {
             checkpoint_interval: self.checkpoint_interval,
             control: Arc::new(control::EngineControl::new()),
             autoscale: self.autoscale,
+            running: Arc::new(AtomicBool::new(false)),
         })
     }
 }

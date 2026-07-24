@@ -61,6 +61,12 @@ pub struct ClientBuilder {
     config: Config,
 }
 
+impl Default for ClientBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClientBuilder {
     pub fn new() -> Self {
         Self {
@@ -345,6 +351,11 @@ pub struct Response {
 }
 
 impl Response {
+    /// 获取 Content-Type 头。
+    pub fn content_type(&self) -> &str {
+        &self.content_type
+    }
+
     /// Decode body as text with automatic charset detection.
     pub fn text(&self) -> Result<String> {
         Ok(encoding::decode(&self.body, &self.content_type))

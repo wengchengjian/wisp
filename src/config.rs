@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -28,9 +29,19 @@ impl Default for LaunchOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProxyConfig {
     pub server: String,
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+impl fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("server", &self.server)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "***"))
+            .finish()
+    }
 }

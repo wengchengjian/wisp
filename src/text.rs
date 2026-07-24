@@ -31,7 +31,10 @@ impl<'a> Text<'a> {
     pub fn extract_regex(&self, pattern: &str) -> Vec<String> {
         match Regex::new(pattern) {
             Ok(re) => re.find_iter(self.0).map(|m| m.as_str().to_string()).collect(),
-            Err(_) => Vec::new(),
+            Err(e) => {
+                tracing::warn!("无效正则 '{}': {}", pattern, e);
+                Vec::new()
+            }
         }
     }
 

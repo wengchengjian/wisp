@@ -455,15 +455,9 @@ pub async fn fetch_page_inner(
     // 浏览器模式：通过 BrowserPool 复用实例（RAII 自动归还，无泄漏）
     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
         let solve_cf = mode == FetchMode::Stealth;
-        let fetch_method = match req.method {
-            crate::crawl::Method::Get => crate::fetcher::Method::Get,
-            crate::crawl::Method::Post => crate::fetcher::Method::Post,
-            crate::crawl::Method::Put => crate::fetcher::Method::Put,
-            crate::crawl::Method::Delete => crate::fetcher::Method::Delete,
-        };
         let fetch_req = crate::fetcher::Request {
             url: req.url.clone(),
-            method: fetch_method,
+            method: req.method,
             headers: req.headers.clone(),
             body: req.body.clone(),
             ..Default::default()

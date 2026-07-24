@@ -122,16 +122,21 @@ impl<'a> ChallengeSolver<'a> {
     }
 }
 
-/// Check if a response/page comes from Cloudflare (by checking headers or page content).
+/// Check if a response/page comes from Cloudflare (by checking challenge-specific markers).
+///
+/// 仅检测 CF 挑战页特有标识，避免对普通提及 Cloudflare 的页面误判。
 pub async fn is_cloudflare_page(page: &Page) -> Result<bool> {
     let js = r#"(() => {
-        // Check for CF-specific elements or headers
         const body = document.body ? document.body.innerHTML : '';
-        return body.includes('cloudflare') ||
-               body.includes('cf-browser-verification') ||
+        const title = document.title || '';
+        return body.includes('cf-browser-verification') ||
                body.includes('challenge-platform') ||
-               document.title.includes('Just a moment') ||
-               !!document.querySelector('[class*="cf-"]');
+               body.includes('cf-challenge-running') ||
+               body.includes('cf-chl-bypass') ||
+               title.includes('Just a moment') ||
+               title.includes('Attention Required') ||
+               !!document.querySelector('#challenge-running') ||
+               !!document.querySelector('.cf-turnstile');
     })()"#;
 
     let result = page.evaluate(js).await?;

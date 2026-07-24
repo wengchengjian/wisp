@@ -78,7 +78,7 @@ impl Browser {
         Ok(Self { session, process: child, user_data_dir, headless: options.headless })
     }
 
-    async fn wait_for_devtools_url(user_data_dir: &PathBuf) -> Result<String> {
+    async fn wait_for_devtools_url(user_data_dir: &std::path::Path) -> Result<String> {
         let port_file = user_data_dir.join("DevToolsActivePort");
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
 

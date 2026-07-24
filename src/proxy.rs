@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rand::RngExt;
 
 /// How to pick the next proxy from the pool.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RotationStrategy {
     /// Use proxies in order, cycling back to the start.
     Sequential,
@@ -41,7 +42,8 @@ impl ProxyPool {
 
         let idx = match self.strategy {
             RotationStrategy::Sequential => {
-                let i = self.index.fetch_add(1, Ordering::Relaxed) % self.proxies.len();
+                let len = self.proxies.len();
+                let i = self.index.fetch_add(1, Ordering::Relaxed).wrapping_rem(len);
                 i
             }
             RotationStrategy::Random => {

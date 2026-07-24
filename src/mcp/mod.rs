@@ -19,7 +19,7 @@ pub struct Tool {
     pub input_schema: Value,
 }
 
-/// 6 个工具覆盖核心场景
+/// 5 个工具覆盖核心场景
 // 注：计划原写 `pub const TOOLS: &[Tool]`，但 serde_json::json! 宏非 const fn，
 // 无法在 const 上下文求值。改用 std::sync::LazyLock（Rust 1.80+ 稳定）。
 pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| vec![

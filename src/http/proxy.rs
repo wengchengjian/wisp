@@ -1,7 +1,9 @@
 //! Proxy URL parsing and configuration for the fetch client.
 
+use std::fmt;
+
 /// Parsed proxy configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProxyConfig {
     /// Full proxy URL (e.g., "http://user:pass@host:port")
     pub url: String,
@@ -13,6 +15,24 @@ pub struct ProxyConfig {
     pub username: Option<String>,
     /// Optional password
     pub password: Option<String>,
+}
+
+impl fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // 脱敏：URL 和 password 可能包含凭据，不直接输出
+        let masked_url = if self.username.is_some() {
+            format!("{}://***@{}:{}", self.url.split("://").next().unwrap_or("http"), self.host, self.port)
+        } else {
+            self.url.clone()
+        };
+        f.debug_struct("ProxyConfig")
+            .field("url", &masked_url)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 impl ProxyConfig {

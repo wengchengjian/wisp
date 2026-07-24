@@ -109,7 +109,7 @@ pub trait Spider: Send + Sync + 'static {
 
     // === 终止条件（保留） ===
 
-    /// 终止条件。默认永不停止（由引擎 max_pages 兖底）。
+    /// 终止条件。默认永不停止（由引擎 max_pages 兜底）。
     fn until(&self) -> Arc<dyn StopCondition> {
         Arc::new(NeverStop)
     }
