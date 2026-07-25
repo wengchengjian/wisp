@@ -353,9 +353,20 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
                 // Auto 模式首次连接失败：连接层拦截（TLS reset/连接拒绝/超时）
                 // 无法被响应中间件（StealthUpgradeMiddleware）检测，此处主动升级
                 // Stealth 重试。不消耗 retry_count（属于模式升级，非错误重试）。
+                //
+                // 关键：只对 rule_engine 未学习的 URL 触发升级。已学习 Stealth 的 URL
+                // 走 resolve 缓存直接用 Stealth，此时失败是 Stealth 本身的问题（如无 Chrome），
+                // 不应重复"升级"（否则每个请求都会打印 AutoFallback 日志）。
                 if ctx.config.fetch_mode == FetchMode::Auto
                     && current_req.fetch_mode_override.is_none()
                     && current_req.retry_count == 0
+                    && ctx
+                        .shared
+                        .rule_engine
+                        .lock()
+                        .await
+                        .resolve(&current_req.url)
+                        != Some(FetchMode::Stealth)
                 {
                     ctx.shared
                         .rule_engine
@@ -1006,6 +1017,40 @@ mod tests {
             Some(FetchMode::Stealth),
             "Auto 模式首次失败后 rule_engine 应学到 Stealth，实际: {:?}",
             resolved
+        );
+    }
+
+    /// 已学习 Stealth 的 URL 不应重复触发 AutoFallback。
+    ///
+    /// 场景：rule_engine 已学习某 URL 需要 Stealth（如之前请求失败 learn 过）。
+    /// 后续请求走 resolve 缓存直接用 Stealth，如果 Stealth 也失败（如无 Chrome），
+    /// 不应再次触发 AutoFallback（否则每个请求都打印升级日志）。
+    #[tokio::test]
+    async fn fetch_dispatch_no_duplicate_autofallback_for_learned_url() {
+        let (ctx, _stats) = make_ctx_auto(0);
+
+        let url = "http://127.0.0.1:1/learned-url";
+
+        // 预先学习：模拟之前请求已 learn 过 Stealth
+        {
+            let mut rule_engine = ctx.shared.rule_engine.lock().await;
+            rule_engine.learn(url, FetchMode::Stealth);
+            assert_eq!(rule_engine.auto_rule_count(), 1);
+        }
+
+        let req = Request::get(url);
+        let (resp, err) = fetch_dispatch(&ctx, &req).await;
+
+        // Stealth 失败（browser pool 未配置），返回错误
+        assert!(resp.is_none(), "Stealth 失败时应返回 None");
+        assert!(err.is_some(), "应返回错误信息");
+
+        // 关键断言：不应重复 learn（auto_rule_count 仍为 1）
+        let rule_engine = ctx.shared.rule_engine.lock().await;
+        assert_eq!(
+            rule_engine.auto_rule_count(),
+            1,
+            "已学习 Stealth 的 URL 不应重复触发 AutoFallback learn"
         );
     }
 
