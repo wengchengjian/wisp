@@ -1,4 +1,4 @@
-﻿//! 中间件链架构 — Scrapy 风格的可组合请求/响应拦截器。
+//! 中间件链架构 — Scrapy 风格的可组合请求/响应拦截器。
 //!
 //! # 设计
 //!
@@ -194,7 +194,7 @@ impl MiddlewareChain {
     }
 
     /// 执行请求中间件链。返回 MwAction::Skip/Abort 时中断。
-    #[tracing::instrument(skip(self, req, ctx))]
+    #[tracing::instrument(level = "trace", skip(self, req, ctx))]
     pub(crate) async fn run_request_middlewares(
         &self,
         req: &mut Request,
@@ -210,7 +210,7 @@ impl MiddlewareChain {
     }
 
     /// 执行响应中间件链。
-    #[tracing::instrument(skip(self, resp, ctx))]
+    #[tracing::instrument(level = "trace", skip(self, resp, ctx))]
     pub(crate) async fn run_response_middlewares(
         &self,
         resp: &mut Response,

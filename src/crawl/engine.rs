@@ -120,7 +120,7 @@ async fn check_control_and_hook(ctx: &EngineContext, req: &Request) -> bool {
 /// 1. 控制状态 + Spider 钩子（基础设施）
 /// 2. 中间件请求链（域名/深度/robots/缓存/延迟/UA/代理 全部在此）
 /// 3. 域名信号量（并发控制）+ fetch
-#[tracing::instrument(skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
+#[tracing::instrument(level = "trace", skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
 pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option<Response> {
     // 1. 控制状态 + Spider 钩子
     if !check_control_and_hook(ctx, &req).await {
@@ -175,7 +175,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
 ///
 /// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
 /// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
-#[tracing::instrument(skip(ctx, resp), fields(status = resp.status))]
+#[tracing::instrument(level = "trace", skip(ctx, resp), fields(status = resp.status))]
 pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let spider = &ctx.state.spider;
     let stats = &ctx.state.stats;
@@ -323,7 +323,7 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
 ///
 /// 两套计数器独立：`retry_count` 跨多次 fetch 失败累加，`refetch_depth` 在单次
 /// process_response 内累加。互不干扰。
-#[tracing::instrument(skip(ctx, req))]
+#[tracing::instrument(level = "trace", skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
 async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>, Option<String>) {
     let stats = &ctx.state.stats;
     let max_retries = ctx.config.max_retries;
@@ -350,6 +350,27 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
                 return (Some(resp), None);
             }
             Err(e) => {
+                // Auto 模式首次连接失败：连接层拦截（TLS reset/连接拒绝/超时）
+                // 无法被响应中间件（StealthUpgradeMiddleware）检测，此处主动升级
+                // Stealth 重试。不消耗 retry_count（属于模式升级，非错误重试）。
+                if ctx.config.fetch_mode == FetchMode::Auto
+                    && current_req.fetch_mode_override.is_none()
+                    && current_req.retry_count == 0
+                {
+                    ctx.shared
+                        .rule_engine
+                        .lock()
+                        .await
+                        .learn(&current_req.url, FetchMode::Stealth);
+                    tracing::info!(
+                        "AutoFallback: '{}' 首次抓取失败 ({}), 升级 Stealth 重试",
+                        sanitize_url(&current_req.url),
+                        e
+                    );
+                    current_req.fetch_mode_override = Some(FetchMode::Stealth);
+                    continue;
+                }
+
                 // 调用错误中间件：只决定"是否重试"，不维护计数
                 let action = if !ctx.shared.middleware_chain.is_empty() {
                     let crawl_ctx = build_crawl_context(ctx);
@@ -904,6 +925,88 @@ mod tests {
             "max_retries=0 时不应重试"
         );
         assert_eq!(stats.errors.load(Ordering::SeqCst), 1, "应计入一次错误");
+    }
+
+    /// 构造 Auto 模式 EngineContext（max_concurrent_pages=0 禁用浏览器池，
+    /// Stealth 模式快速返回 "browser pool not configured" 错误）。
+    fn make_ctx_auto(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
+        let stats = Arc::new(SpiderStats::new());
+        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        let mut chain = middleware::MiddlewareChain::new();
+        chain
+            .middlewares
+            .push(Arc::new(middleware::builtin::RetryMiddleware::new(
+                std::time::Duration::ZERO,
+            )));
+
+        let fetch_config = crate::fetcher::FetchClientConfig {
+            max_concurrent_pages: 0, // 禁用浏览器池，Stealth 模式快速失败
+            ..Default::default()
+        };
+
+        let ctx = EngineContext {
+            config: EngineConfig {
+                client: Arc::new(
+                    crate::fetcher::FetchClient::new(fetch_config).expect("build fetch client"),
+                ),
+                fetch_mode: FetchMode::Auto,
+                max_concurrent: 8,
+                obey_robots: false,
+                engine_max_pages: 100,
+                max_refetch_rounds: 5,
+                max_retries,
+            },
+            shared: EngineShared {
+                sched: Arc::new(scheduler::Scheduler::new()),
+                follow_tx,
+                follow_rx: Arc::new(Mutex::new(follow_rx)),
+                proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+                control: Arc::new(control::EngineControl::new()),
+                work_notify: Arc::new(tokio::sync::Notify::new()),
+                middleware_chain: Arc::new(chain),
+                rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+            },
+            state: EngineState {
+                spider: Arc::new(DummySpider) as Arc<dyn Spider>,
+                stats: stats.clone(),
+                items: Arc::new(Mutex::new(Vec::new())),
+                abort_flag: Arc::new(AtomicBool::new(false)),
+                start: Instant::now(),
+                tx: None,
+                global_in_flight: Arc::new(AtomicUsize::new(0)),
+            },
+        };
+        (ctx, stats)
+    }
+
+    /// Auto 模式首次连接失败时，fetch_dispatch 应主动升级 Stealth 重试。
+    ///
+    /// 连接层拦截（TLS reset/连接拒绝）无法被响应中间件 StealthUpgradeMiddleware
+    /// 检测（因为没有 HTTP 响应）。fetch_dispatch 在错误处理中主动升级：
+    /// 1. HTTP 模式失败 → learn(rule_engine, Stealth) + set override + continue
+    /// 2. Stealth 模式失败（此处 browser pool 未配置）→ 走正常错误流程
+    ///
+    /// 验证：rule_engine 学到了该 URL 需要 Stealth（resolve 返回 Some）。
+    #[tokio::test]
+    async fn fetch_dispatch_auto_upgrades_to_stealth_on_first_failure() {
+        let (ctx, _stats) = make_ctx_auto(0);
+
+        let url = "http://127.0.0.1:1/auto-upgrade-test";
+        let req = Request::get(url);
+        let (resp, err) = fetch_dispatch(&ctx, &req).await;
+
+        // Stealth 模式也失败（browser pool 未配置），最终返回错误
+        assert!(resp.is_none(), "Stealth 也失败时应返回 None");
+        assert!(err.is_some(), "应返回错误信息");
+
+        // 关键断言：rule_engine 应学到该 URL 需要 Stealth
+        let resolved = ctx.shared.rule_engine.lock().await.resolve(url);
+        assert_eq!(
+            resolved,
+            Some(FetchMode::Stealth),
+            "Auto 模式首次失败后 rule_engine 应学到 Stealth，实际: {:?}",
+            resolved
+        );
     }
 
     // === ND-012-TEST：核心函数补充测试 ===
