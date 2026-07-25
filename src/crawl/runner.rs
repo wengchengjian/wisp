@@ -81,8 +81,8 @@ impl Engine {
             max_concurrent: 8,
             max_pages: 1000,
             max_refetch_rounds: 5,
-            cache_store: None,
-            checkpoint_store: None,
+            cache_store: Some(Arc::new(crate::storage::MemoryStore::default())),
+            checkpoint_store: Some(Arc::new(crate::storage::FileStore::default())),
             checkpoint_interval: 100,
             autoscale: None,
             // 引擎配置默认值（ND-031-ARCH：原 Spider trait 默认值）

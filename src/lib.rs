@@ -70,7 +70,7 @@ pub use error::{WispError, Result, BrowserError, NetworkError, ParseError, McpEr
 
 pub use parser::{Node, NodeList};
 pub use proxy::RotationStrategy;
-pub use storage::{Store, MemoryStore, SqliteStore, CachedResponse, ElementSnapshotRow};
+pub use storage::{Store, MemoryStore, FileStore, SqliteStore, CachedResponse, ElementSnapshotRow};
 
 // === 爬虫引擎 ===
 pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider};

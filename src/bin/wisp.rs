@@ -118,10 +118,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Mcp { cmd } => match cmd {
             McpCmd::Serve { db } => {
-                let store: Arc<dyn wisp::Store> = if db == ":memory:" {
-                    Arc::new(wisp::SqliteStore::open_in_memory()?)
-                } else {
-                    Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db))?)
+                let store: Arc<dyn wisp::Store> = {
+                    #[cfg(feature = "sqlite")]
+                    {
+                        if db != ":memory:" && !db.is_empty() {
+                            Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db))?)
+                        } else {
+                            Arc::new(wisp::FileStore::default())
+                        }
+                    }
+                    #[cfg(not(feature = "sqlite"))]
+                    {
+                        // sqlite feature 未启用时忽略 db 参数，使用 FileStore
+                        let _ = db;
+                        Arc::new(wisp::FileStore::default())
+                    }
                 };
                 wisp::mcp::serve(store).await?;
             }

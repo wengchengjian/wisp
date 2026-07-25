@@ -273,7 +273,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_adaptive_scrape_missing_args() {
-        let store: Arc<dyn Store> = Arc::new(crate::storage::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(crate::storage::MemoryStore::default());
         let args = json!({});
         let result = adaptive_scrape(args, &store).await;
         assert!(result.is_err());

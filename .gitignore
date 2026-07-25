@@ -2,3 +2,4 @@
 *.png
 .codegraph
 .qoder/
+wisp-data/

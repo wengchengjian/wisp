@@ -262,7 +262,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_tools_call_unknown_tool() {
-        let store: Arc<dyn Store> = Arc::new(crate::storage::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(crate::storage::MemoryStore::default());
         let engine = Engine::infra()
             .max_pages(100)
             .obey_robots(false)
