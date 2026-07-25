@@ -274,13 +274,13 @@ pub fn css_adaptive(
         if auto_save {
             let snap = ElementSnapshot::capture(&node);
             let now = chrono::Utc::now().timestamp();
-            let _ = store.save_element(url, key, &snap.to_row(now));
+            let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now));
         }
         return Some(node);
     }
 
     // 2. CSS failed - try relocate from saved snapshot
-    let saved_row = store.load_element(url, key).ok().flatten()?;
+    let saved_row = crate::storage::load_element(&*store, url, key).ok().flatten()?;
     let saved = ElementSnapshot::from_row(saved_row);
     let found = relocate_with_snapshot(doc, &saved, tolerance)?;
 
@@ -288,7 +288,7 @@ pub fn css_adaptive(
     if auto_save {
         let snap = ElementSnapshot::capture(&found);
         let now = chrono::Utc::now().timestamp();
-        let _ = store.save_element(url, key, &snap.to_row(now));
+        let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now));
     }
 
     Some(found)

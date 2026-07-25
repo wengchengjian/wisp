@@ -314,7 +314,7 @@ impl Middleware for CacheMiddleware {
 
     async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         let method_str = req.method.as_str();
-        match self.store.load_response(method_str, &req.url) {
+        match crate::storage::load_response(&*self.store, method_str, &req.url) {
             Ok(Some(cached)) => {
                 let resp = Response::from_parts(
                     cached.status,
@@ -346,7 +346,7 @@ impl Middleware for CacheMiddleware {
                 cached_at: chrono::Utc::now().timestamp(),
                 ttl: self.default_ttl,
             };
-            if let Err(e) = self.store.save_response(method_str, &resp.url, &cached) {
+            if let Err(e) = crate::storage::save_response(&*self.store, method_str, &resp.url, &cached) {
                 tracing::warn!("响应缓存写入失败: {}", e);
             }
         }

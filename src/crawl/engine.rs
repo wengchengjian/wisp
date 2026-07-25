@@ -494,11 +494,10 @@ pub(crate) fn snapshot_stats_for(
     }
 }
 
-/// Checkpoint 保存。
+/// Checkpoint 保存（从 sched + stats 序列化状态，调用底层 save_checkpoint）。
 ///
-/// ND-003-ERR：返回 `Result<()>` 让调用方感知失败，而非静默 warn。
-/// 调用方（`run_inner`）据此决定是否发送 `CrawlEvent::Error` 事件。
-pub(crate) async fn save_checkpoint(
+/// ND-003-ERR：返回 `Result<()>` 让调用方感知失败。
+pub(crate) async fn persist_spider_checkpoint(
     store: &dyn crate::storage::Store,
     spider_name: &str,
     sched: &scheduler::Scheduler,
@@ -524,13 +523,11 @@ pub(crate) async fn save_checkpoint(
             "checkpoint 序列化失败: {e}"
         )))
     })?;
-    store
-        .save_checkpoint(spider_name, &blob, state.saved_at.timestamp())
-        .map_err(|e| {
-            crate::error::WispError::Storage(crate::error::StorageError::General(format!(
-                "checkpoint 保存失败: {e}"
-            )))
-        })?;
+    crate::storage::save_checkpoint(store, spider_name, &blob).map_err(|e| {
+        crate::error::WispError::Storage(crate::error::StorageError::General(format!(
+            "checkpoint 保存失败: {e}"
+        )))
+    })?;
     Ok(())
 }
 
@@ -769,22 +766,21 @@ mod tests {
         );
     }
 
-    /// Task 3：验证 save_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
+    /// Task 3：验证 persist_spider_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
     #[tokio::test]
     async fn save_checkpoint_persists_seen_urls() {
-        let store = crate::storage::SqliteStore::open_in_memory().expect("open in-memory store");
+        let store = crate::storage::MemoryStore::default();
         let sched = scheduler::Scheduler::new();
         // push 两个 URL：进入 heap 与 seen 集合
         sched.push(Request::get("https://example.com/a")).await;
         sched.push(Request::get("https://example.com/b")).await;
 
         let stats = Arc::new(SpiderStats::new());
-        save_checkpoint(&store, "seen_persist_spider", &sched, &stats)
+        persist_spider_checkpoint(&store, "seen_persist_spider", &sched, &stats)
             .await
-            .expect("save_checkpoint should succeed");
+            .expect("persist_spider_checkpoint should succeed");
 
-        let blob = store
-            .load_checkpoint("seen_persist_spider")
+        let blob = crate::storage::load_checkpoint(&store, "seen_persist_spider")
             .expect("load checkpoint ok")
             .expect("checkpoint should exist");
         let state: CrawlState = bincode::deserialize(&blob).expect("deserialize state");
