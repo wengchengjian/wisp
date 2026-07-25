@@ -19,6 +19,7 @@ use std::collections::HashMap;
 /// - `/user/deadbeef-cafe-1234/posts` → `/user/[a-f0-9-]+/posts`
 /// - `/page/2` → `/page/\d+`
 /// - `/about` → `/about`（不变）
+/// - `/shuku/0-lastupdate-0-1.html` → `/shuku/\d+-lastupdate-\d+-\d+\.html`
 pub fn generalize_url(url: &str) -> String {
     let path = url::Url::parse(url)
         .map(|u| u.path().to_string())
@@ -38,12 +39,42 @@ pub fn generalize_url(url: &str) -> String {
             if is_uuid_or_hash(seg) {
                 return r"[a-f0-9-]+".to_string();
             }
+            // 混合段（含数字的字母数字段）：把连续数字序列替换为 \d+
+            // 例：0-lastupdate-0-1.html → \d+-lastupdate-\d+-\d+\.html
+            if seg.chars().any(|c| c.is_ascii_digit()) {
+                return generalize_mixed_segment(seg);
+            }
             // 保留字面量（转义正则特殊字符）
             regex::escape(seg)
         })
         .collect();
 
     segments.join("/")
+}
+
+/// 泛化混合段：把所有连续数字序列替换为 `\d+`，其余字符转义。
+///
+/// 例：`0-lastupdate-0-1.html` → `\d+-lastupdate-\d+-\d+\.html`
+///     `product123` → `product\d+`
+fn generalize_mixed_segment(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() {
+            // 跳过后续连续数字
+            while chars.peek().map_or(false, |c| c.is_ascii_digit()) {
+                chars.next();
+            }
+            result.push_str(r"\d+");
+        } else {
+            // 转义正则特殊字符
+            if "\\.+*?()|[]{}^$".contains(c) {
+                result.push('\\');
+            }
+            result.push(c);
+        }
+    }
+    result
 }
 
 /// 判断字符串是否像 UUID 或哈希值。
@@ -76,7 +107,10 @@ impl ModeRuleEngine {
     /// 用户添加规则（优先级最高）。
     pub fn add_user_rule(&mut self, pattern: &str, mode: FetchMode) -> Result<()> {
         let re = Regex::new(pattern).map_err(|e| {
-            WispError::Parse(crate::error::ParseError::Html(format!("invalid auto_rule regex '{}': {}", pattern, e)))
+            WispError::Parse(crate::error::ParseError::Html(format!(
+                "invalid auto_rule regex '{}': {}",
+                pattern, e
+            )))
         })?;
         self.user_rules.push((re, mode));
         Ok(())
@@ -214,6 +248,31 @@ mod tests {
         assert_eq!(generalize_url("https://shop.com/"), "/");
     }
 
+    #[test]
+    fn test_generalize_mixed_segment_pagenum() {
+        // banzhu-rs 实际场景：0-lastupdate-0-{N}.html
+        assert_eq!(
+            generalize_url("https://www.bz555555555.com/shuku/0-lastupdate-0-1.html"),
+            "/shuku/\\d+-lastupdate-\\d+-\\d+\\.html"
+        );
+    }
+
+    #[test]
+    fn test_generalize_mixed_segment_productid() {
+        assert_eq!(
+            generalize_url("https://shop.com/item/product123"),
+            "/item/product\\d+"
+        );
+    }
+
+    #[test]
+    fn test_generalize_mixed_segment_multi_pagenum() {
+        assert_eq!(
+            generalize_url("https://shop.com/page-2-of-10"),
+            "/page-\\d+-of-\\d+"
+        );
+    }
+
     // === 规则引擎测试 ===
 
     #[test]
@@ -243,6 +302,31 @@ mod tests {
         assert_eq!(
             engine.resolve("https://shop.com/products/999"),
             Some(FetchMode::Dynamic)
+        );
+    }
+
+    #[test]
+    fn test_auto_rule_matches_mixed_segment_pagenum() {
+        // banzhu-rs 实际场景：0-lastupdate-0-{N}.html
+        let mut engine = ModeRuleEngine::new();
+        engine.learn(
+            "https://www.bz555555555.com/shuku/0-lastupdate-0-1.html",
+            FetchMode::Stealth,
+        );
+
+        // 不同页码的同模板 URL 应命中
+        assert_eq!(
+            engine.resolve("https://www.bz555555555.com/shuku/0-lastupdate-0-2.html"),
+            Some(FetchMode::Stealth)
+        );
+        assert_eq!(
+            engine.resolve("https://www.bz555555555.com/shuku/0-lastupdate-0-50.html"),
+            Some(FetchMode::Stealth)
+        );
+        // 不同前缀数字也应命中
+        assert_eq!(
+            engine.resolve("https://www.bz555555555.com/shuku/1-lastupdate-0-1.html"),
+            Some(FetchMode::Stealth)
         );
     }
 
