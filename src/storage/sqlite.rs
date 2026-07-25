@@ -39,6 +39,19 @@ impl SqliteStore {
             .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         conn.execute_batch("PRAGMA synchronous=NORMAL;")
             .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+
+        // 旧 schema 检测：如果存在旧三表，打印 warning 提示数据已弃用
+        let has_old_table: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name IN ('element_snapshots', 'crawl_checkpoints', 'response_cache')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if has_old_table {
+            tracing::warn!("检测到旧 schema (element_snapshots/crawl_checkpoints/response_cache 三表)，与新版单表 kv 结构不兼容。旧数据已弃用，建议删除 db 文件重新开始。");
+        }
+
         conn.execute_batch(super::migrations::SCHEMA_V1)
             .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
         Ok(())
@@ -152,5 +165,37 @@ mod tests {
         store.set("ns2", "key", b"b").unwrap();
         assert_eq!(store.get("ns1", "key").unwrap().unwrap(), b"a");
         assert_eq!(store.get("ns2", "key").unwrap().unwrap(), b"b");
+    }
+
+    /// 旧 schema 检测：存在旧三表时不应破坏新 kv 表功能。
+    #[test]
+    fn old_schema_detection_does_not_break_new_store() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test_old_schema.db");
+
+        // 第一次打开：创建新 kv schema 并写入数据
+        {
+            let store = SqliteStore::open(&db_path).unwrap();
+            store.set("ns", "k", b"v").unwrap();
+        }
+
+        // 模拟旧 db：直接注入旧三表
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE element_snapshots (url TEXT, key TEXT);
+                 CREATE TABLE crawl_checkpoints (spider_name TEXT, state BLOB);
+                 CREATE TABLE response_cache (url TEXT, method TEXT);",
+            ).unwrap();
+        }
+
+        // 重新打开：应检测到旧 schema（打印 warning），但新 kv 表仍可用
+        let store = SqliteStore::open(&db_path).unwrap();
+        // 旧数据仍可读
+        assert_eq!(store.get("ns", "k").unwrap().unwrap(), b"v");
+        // 新写入仍可工作
+        store.set("ns", "k2", b"v2").unwrap();
+        assert_eq!(store.get("ns", "k2").unwrap().unwrap(), b"v2");
     }
 }

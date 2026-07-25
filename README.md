@@ -161,9 +161,35 @@ src/
     turnstile.rs    Cloudflare Turnstile solver
     human.rs        Human behavior simulation
   proxy.rs          Proxy pool with rotation strategies
-  storage/          SQLite storage (adaptive snapshots, checkpoints, cache)
+  storage/          Pluggable storage (MemoryStore + FileStore + optional SqliteStore)
   mcp/              MCP server for AI-assisted scraping
 ```
+
+## 存储后端
+
+wisp 支持三种可插拔存储后端，通过 `Store` trait 抽象（仅 4 个底层 KV 原语：`set`/`get`/`delete`/`set_with_ttl`）：
+
+| 后端 | feature 开关 | 默认用途 | 持久化 |
+|------|-------------|---------|--------|
+| `MemoryStore` | 始终启用 | 响应缓存（cache_store 默认） | 否（进程退出丢失） |
+| `FileStore` | 始终启用 | 断点续爬（checkpoint_store 默认） | 是（`./wisp-data/`） |
+| `SqliteStore` | `sqlite` feature | 用户显式选择 | 是（`.db` 文件） |
+
+默认不启用 sqlite，使用 FileStore + MemoryStore 组合：
+
+```toml
+[dependencies]
+wisp = { path = "../wisp" }
+```
+
+启用 sqlite：
+
+```toml
+[dependencies]
+wisp = { path = "../wisp", features = ["sqlite"] }
+```
+
+业务层 API（`save_checkpoint`/`load_response`/`save_element` 等）以自由函数形式提供，调用底层 `Store` trait 原语并处理序列化。自定义存储后端：实现 `Store` trait 的 4 个原语，通过 `EngineBuilder::cache_store(...)` / `.checkpoint_store(...)` 注入。
 
 ## Builder Options
 

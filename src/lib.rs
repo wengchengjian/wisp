@@ -23,7 +23,7 @@
 //! - `stealth` - Anti-detection patches + Cloudflare challenge solver + human simulation
 //! - `http` - HTTP client with TLS fingerprint emulation (wreq)
 //! - `proxy` - Proxy pool management with rotation strategies
-//! - `storage` - SQLite persistence (adaptive snapshots, checkpoints, cache)
+//! - `storage` - Pluggable storage (MemoryStore + FileStore default, SqliteStore optional)
 //! - `mcp` - MCP server for AI-assisted scraping (stdio JSON-RPC)
 //! - `config` - Browser launch options and proxy configuration
 //! - `config_file` - TOML configuration file parsing
