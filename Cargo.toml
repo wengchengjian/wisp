@@ -5,6 +5,11 @@ edition = "2021"
 description = "Lightweight undetected browser automation for Rust - built for scraping"
 license = "Apache-2.0"
 
+[features]
+default = []
+# 启用 SQLite 存储后端（默认禁用，使用 FileStore）
+sqlite = ["dep:rusqlite"]
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -33,8 +38,8 @@ wreq-util = "=3.0.0-rc.14"
 toml = "1"
 regex = "1"
 aho-corasick = "1"
-# SQLite 统一存储（阶段 1：adaptive + checkpoint）
-rusqlite = { version = "0.40", features = ["bundled"] }
+# SQLite 存储后端（可选，启用 sqlite feature）
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 # checkpoint blob 序列化（bincode 3.0.0 停维，2.x 不兼容 serde_json::Value，锁定 1.3.3 稳定版）
 bincode = "1.3.3"
 # 流式输出（阶段 1 内部用，阶段 3 对外暴露）

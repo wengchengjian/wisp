@@ -5,17 +5,18 @@
 //! - Element Snapshot（自适应定位）：`save_element` / `load_element`
 //! - Response Cache（HTTP 响应缓存，带 per-entry TTL）：`save_response` / `load_response` / `delete_response`
 
+#[cfg(feature = "sqlite")]
 pub mod migrations;
 
 mod memory;
 mod file;
+#[cfg(feature = "sqlite")]
 mod sqlite;
 
 pub use memory::MemoryStore;
 pub use file::FileStore;
+#[cfg(feature = "sqlite")]
 pub use sqlite::SqliteStore;
-
-// 注：Task 3 会把 SqliteStore 和 migrations 改为 #[cfg(feature = "sqlite")] 条件编译
 
 use std::time::Duration;
 use serde::{Deserialize, Serialize};

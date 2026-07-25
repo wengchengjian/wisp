@@ -70,7 +70,17 @@ pub use error::{WispError, Result, BrowserError, NetworkError, ParseError, McpEr
 
 pub use parser::{Node, NodeList};
 pub use proxy::RotationStrategy;
-pub use storage::{Store, MemoryStore, FileStore, SqliteStore, CachedResponse, ElementSnapshotRow};
+pub use storage::{Store, MemoryStore, FileStore, CachedResponse, ElementSnapshotRow};
+
+// 自由函数导出（业务层 API）
+pub use storage::{
+    save_checkpoint, load_checkpoint, delete_checkpoint,
+    save_element, load_element,
+    save_response, load_response, delete_response,
+};
+
+#[cfg(feature = "sqlite")]
+pub use storage::SqliteStore;
 
 // === 爬虫引擎 ===
 pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider};
