@@ -1,12 +1,14 @@
 //! 随机值生成工具。
 
-use rand::RngExt;
+use rand::rngs::{SmallRng, SysRng};
+use rand::{RngExt, SeedableRng};
 
 /// 生成短随机后缀（用于唯一临时目录名等场景）。
 ///
 /// 基于 `rand` crate 生成随机 u64 的十六进制字符串，碰撞概率极低（2^-64）。
 pub fn rand_suffix() -> String {
-    let val: u64 = rand::rng().random();
+    let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
+    let val: u64 = rng.random();
     format!("{:x}", val)
 }
 

@@ -1,7 +1,10 @@
+//! DOM 元素操作：点击、填充、等待、文本提取。
+
 use crate::error::{WispError, Result, BrowserError};
 use crate::browser::page::Page;
 use crate::browser::page::do_evaluate as evaluate;
 
+/// 点击匹配选择器的元素。
 pub async fn click(page: &Page, selector: &str) -> Result<()> {
     let js = format!(
         r#"(() => {{ const el = document.querySelector({}); if (!el) throw new Error('Element not found: {}'); el.click(); return true; }})()"#,
@@ -17,6 +20,7 @@ pub async fn click(page: &Page, selector: &str) -> Result<()> {
     Ok(())
 }
 
+/// 向匹配选择器的输入框填充文本（触发 input/change 事件）。
 pub async fn fill(page: &Page, selector: &str, value: &str) -> Result<()> {
     let js = format!(
         r#"(() => {{ const el = document.querySelector({}); if (!el) throw new Error('Element not found: {}'); el.focus(); el.value = {}; el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return true; }})()"#,
@@ -33,6 +37,7 @@ pub async fn fill(page: &Page, selector: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// 等待匹配选择器的元素出现（轮询检测，超时返回错误）。
 pub async fn wait_for_selector(page: &Page, selector: &str, timeout_ms: u64) -> Result<()> {
     let js = format!(
         r#"(async () => {{ const deadline = Date.now() + {}; while (Date.now() < deadline) {{ if (document.querySelector({})) return true; await new Promise(r => setTimeout(r, 100)); }} throw new Error('Timeout waiting for: {}'); }})()"#,
@@ -49,6 +54,7 @@ pub async fn wait_for_selector(page: &Page, selector: &str, timeout_ms: u64) -> 
     Ok(())
 }
 
+/// 获取匹配选择器元素的 textContent。
 pub async fn text_content(page: &Page, selector: &str) -> Result<String> {
     let js = format!(
         r#"(() => {{ const el = document.querySelector({}); if (!el) throw new Error('Element not found: {}'); return el.textContent || ''; }})()"#,

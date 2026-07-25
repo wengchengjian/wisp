@@ -1,7 +1,6 @@
 //! Proxy pool management with rotation strategies.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use rand::RngExt;
 
 /// How to pick the next proxy from the pool.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
@@ -29,8 +28,10 @@ impl ProxyPool {
     ///
     /// Sticky 模式初始索引随机化，避免所有实例都固定到第一个代理。
     pub fn new(proxies: Vec<String>, strategy: RotationStrategy) -> Self {
+        use rand::rngs::{SmallRng, SysRng};
+        use rand::{RngExt, SeedableRng};
         let initial = if strategy == RotationStrategy::Sticky && !proxies.is_empty() {
-            rand::rng().random_range(0..proxies.len())
+            SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed").random_range(0..proxies.len())
         } else {
             0
         };
@@ -54,7 +55,9 @@ impl ProxyPool {
                 i
             }
             RotationStrategy::Random => {
-                rand::rng().random_range(0..self.proxies.len())
+                use rand::rngs::{SmallRng, SysRng};
+                use rand::{RngExt, SeedableRng};
+                SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed").random_range(0..self.proxies.len())
             }
             RotationStrategy::Sticky => {
                 self.index.load(Ordering::Relaxed) % self.proxies.len()
@@ -69,6 +72,7 @@ impl ProxyPool {
         self.proxies.len()
     }
 
+    /// 代理池是否为空。
     pub fn is_empty(&self) -> bool {
         self.proxies.is_empty()
     }

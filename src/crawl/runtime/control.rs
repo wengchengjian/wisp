@@ -36,6 +36,7 @@ pub struct EngineControl {
 }
 
 impl EngineControl {
+    /// 创建新的引擎控制器。
     pub fn new() -> Self {
         let (tx, _rx) = watch::channel(0u64);
         Self {
@@ -96,10 +97,12 @@ impl EngineControl {
         self.bump();
     }
 
+    /// 检查 URL 是否已被取消。
     pub async fn is_cancelled(&self, url: &str) -> bool {
         self.cancelled_urls.read().await.contains(url)
     }
 
+    /// 检查是否已请求关闭。
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::SeqCst)
     }

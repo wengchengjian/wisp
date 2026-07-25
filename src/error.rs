@@ -18,24 +18,34 @@ use thiserror::Error;
 /// 浏览器生命周期和 CDP 通信相关错误。
 #[derive(Debug, Error)]
 pub enum BrowserError {
+    /// 浏览器启动失败（找不到可执行文件、进程启动失败等）。
     #[error("Browser launch failed: {0}")]
     LaunchFailed(String),
 
+    /// CDP WebSocket 连接失败。
     #[error("CDP connection error: {0}")]
     CdpConnection(String),
 
+    /// CDP 协议错误（命令执行失败）。
     #[error("CDP protocol error: {0}")]
     CdpProtocol(String),
 
+    /// 页面导航失败。
     #[error("Navigation failed: {0}")]
     NavigationFailed(String),
 
+    /// 元素未找到。
     #[error("Element not found: {selector}")]
-    ElementNotFound { selector: String },
+    ElementNotFound {
+        /// CSS 选择器。
+        selector: String,
+    },
 
+    /// JavaScript 执行错误。
     #[error("JS evaluation error: {0}")]
     EvalError(String),
 
+    /// 其他浏览器错误。
     #[error("Browser error: {0}")]
     Other(String),
 }
@@ -47,34 +57,65 @@ pub enum BrowserError {
 /// HTTP 请求和网络连接相关错误（支持按类别差异化重试/降级策略）。
 #[derive(Debug, Error)]
 pub enum NetworkError {
+    /// 通用 HTTP 错误。
     #[error("HTTP error: {0}")]
     Http(String),
 
-    /// DNS 解析失败（域名不存在或解析超时）
+    /// DNS 解析失败（域名不存在或解析超时）。
     #[error("DNS resolution failed for {host}: {detail}")]
-    DnsFailed { host: String, detail: String },
+    DnsFailed {
+        /// 目标主机名。
+        host: String,
+        /// 错误详情。
+        detail: String,
+    },
 
-    /// TCP 连接失败（拒绝/超时/网络不可达）
+    /// TCP 连接失败（拒绝/超时/网络不可达）。
     #[error("Connection failed to {host}: {detail}")]
-    ConnectionFailed { host: String, detail: String },
+    ConnectionFailed {
+        /// 目标主机名。
+        host: String,
+        /// 错误详情。
+        detail: String,
+    },
 
-    /// TLS 握手失败（证书无效/协议不匹配）
+    /// TLS 握手失败（证书无效/协议不匹配）。
     #[error("TLS handshake failed with {host}: {detail}")]
-    TlsFailed { host: String, detail: String },
+    TlsFailed {
+        /// 目标主机名。
+        host: String,
+        /// 错误详情。
+        detail: String,
+    },
 
-    /// HTTP 请求超时（连接或读取阶段）
+    /// HTTP 请求超时（连接或读取阶段）。
     #[error("Request to {url} timed out after {timeout_secs}s")]
-    RequestTimedOut { url: String, timeout_secs: u64 },
+    RequestTimedOut {
+        /// 请求 URL。
+        url: String,
+        /// 超时时间（秒）。
+        timeout_secs: u64,
+    },
 
-    /// 代理连接/认证失败
+    /// 代理连接/认证失败。
     #[error("Proxy error: {detail}")]
-    ProxyFailed { detail: String },
+    ProxyFailed {
+        /// 错误详情。
+        detail: String,
+    },
 
-    /// 响应体超过大小限制
+    /// 响应体超过大小限制。
     #[error("Response body too large: {actual} bytes (limit: {limit} bytes) for {url}")]
-    ResponseBodyTooLarge { url: String, actual: usize, limit: usize },
+    ResponseBodyTooLarge {
+        /// 请求 URL。
+        url: String,
+        /// 实际大小（字节）。
+        actual: usize,
+        /// 限制大小（字节）。
+        limit: usize,
+    },
 
-    /// URL 解析失败
+    /// URL 解析失败。
     #[error("URL parse error: {0}")]
     UrlParse(String),
 }
@@ -86,15 +127,19 @@ pub enum NetworkError {
 /// HTML 解析、JSON 处理、序列化相关错误。
 #[derive(Debug, Error)]
 pub enum ParseError {
+    /// HTML 解析错误。
     #[error("Parse error: {0}")]
     Html(String),
 
+    /// JSON 处理错误。
     #[error("JSON error: {0}")]
     Json(String),
 
+    /// 序列化错误。
     #[error("Serialize error: {0}")]
     Serialize(String),
 
+    /// 自适应重定位失败。
     #[error("Adaptive relocation failed: {0}")]
     Adaptive(String),
 }
@@ -106,9 +151,11 @@ pub enum ParseError {
 /// MCP Server JSON-RPC 交互相关错误。
 #[derive(Debug, Error)]
 pub enum McpError {
+    /// 通用 MCP 错误。
     #[error("MCP error: {0}")]
     General(String),
 
+    /// 未知工具。
     #[error("MCP unknown tool: {0}")]
     UnknownTool(String),
 }
@@ -120,6 +167,7 @@ pub enum McpError {
 /// SQLite / 持久化存储相关错误。
 #[derive(Debug, Error)]
 pub enum StorageError {
+    /// 通用存储错误。
     #[error("Storage error: {0}")]
     General(String),
 }
@@ -175,4 +223,5 @@ pub enum WispError {
     Io(#[from] std::io::Error),
 }
 
+/// Wisp 统一结果类型。
 pub type Result<T> = std::result::Result<T, WispError>;

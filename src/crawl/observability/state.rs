@@ -11,19 +11,27 @@ use crate::crawl::{Request, CrawlStats};
 /// Serializable crawl state for checkpoint persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrawlState {
+    /// Spider 名称。
     pub spider_name: String,
+    /// 待处理 URL 列表。
     pub pending_urls: Vec<Request>,
+    /// 已访问 URL 集合。
     pub seen_urls: HashSet<String>,
+    /// 已爬取 item 数。
     pub items_scraped: usize,
+    /// 已爬取页面数。
     pub pages_crawled: usize,
+    /// 错误数。
     pub errors: usize,
     /// 爬取累计时长（毫秒）。`std::time::Duration` 不实现 serde，
     /// 用 u128 毫秒往返（足够精度，无溢出风险）。
     pub duration_ms: u128,
+    /// 保存时间。
     pub saved_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl CrawlState {
+    /// 创建新的爬取状态。
     pub fn new(spider_name: String) -> Self {
         Self {
             spider_name,

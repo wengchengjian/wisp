@@ -8,3 +8,4 @@ pub mod human;
 
 pub use challenge::{ChallengeSolver, ChallengeType, is_cloudflare_page};
 pub use human::HumanBehavior;
+pub use turnstile::TurnstileConfig;

@@ -59,9 +59,12 @@ impl UaRotator {
 
     /// Pick a random UA from the pool.
     pub fn next(&self) -> &str {
+        use rand::rngs::{SmallRng, SysRng};
+        use rand::SeedableRng;
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
         match &self.pool {
-            UaPool::Static(pool) => pool.choose(&mut rand::rng()).copied().unwrap_or(""),
-            UaPool::Owned(pool) => pool.choose(&mut rand::rng()).map(|s| s.as_str()).unwrap_or(""),
+            UaPool::Static(pool) => pool.choose(&mut rng).copied().unwrap_or(""),
+            UaPool::Owned(pool) => pool.choose(&mut rng).map(|s| s.as_str()).unwrap_or(""),
         }
     }
 }

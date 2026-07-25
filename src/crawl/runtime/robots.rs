@@ -61,6 +61,7 @@ pub struct RobotsCache {
 }
 
 impl RobotsCache {
+    /// 创建新的 Robots 缓存。
     pub fn new() -> Self {
         Self {
             cache: DashMap::new(),

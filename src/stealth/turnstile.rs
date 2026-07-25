@@ -10,23 +10,61 @@ use serde_json::{json, Value};
 use crate::error::{WispError, Result};
 use crate::browser::page::Page;
 
-/// Solve a Cloudflare Turnstile challenge on the given page.
+/// Turnstile 解决器可调参数。
 ///
-/// Strategy (from banzhu-rs, proven effective):
-/// 1. Passive wait for JS challenge phase (2s)
-/// 2. Every 2s: CDP pierce shadow DOM -> find iframe -> get coords -> click checkbox
-/// 3. Check for cf_clearance cookie or page content change
-/// 4. Timeout after `timeout` duration
+/// 用户可根据网络环境和 CF 策略调整这些参数以优化速度/成功率。
+#[derive(Debug, Clone)]
+pub struct TurnstileConfig {
+    /// 首次点击前的被动等待（等 Turnstile widget 加载）。
+    /// 默认 500ms。网络慢可调高，快可调低。
+    pub passive_wait_ms: u64,
+    /// 点击间隔（第一次点击失败后重试间隔）。
+    /// 默认 2000ms。
+    pub click_interval_ms: u64,
+    /// 循环检测间隔（检查挑战是否通过）。
+    /// 默认 200ms。调低可更快检测到 bypass。
+    pub poll_interval_ms: u64,
+    /// 鼠标移动步数（模拟人类轨迹）。
+    /// 默认 5。调低更快但可能被检测。
+    pub mouse_steps: u32,
+    /// 每步鼠标移动延迟 (ms)。
+    /// 默认 15ms。
+    pub mouse_step_delay_ms: u64,
+    /// 鼠标按下到释放的延迟 (ms)。
+    /// 默认 60ms。
+    pub click_hold_ms: u64,
+    /// DOM 查询深度（pierce shadow DOM）。
+    /// 默认 10。调低更快但可能找不到 iframe。
+    pub dom_depth: u32,
+}
+
+impl Default for TurnstileConfig {
+    fn default() -> Self {
+        Self {
+            passive_wait_ms: 200,
+            click_interval_ms: 1500,
+            poll_interval_ms: 100,
+            mouse_steps: 3,
+            mouse_step_delay_ms: 5,
+            click_hold_ms: 30,
+            dom_depth: 10,
+        }
+    }
+}
+
+/// Solve a Cloudflare Turnstile challenge on the given page.
 pub async fn solve_turnstile(page: &Page, timeout: Duration) -> Result<()> {
+    solve_turnstile_with_config(page, timeout, &TurnstileConfig::default()).await
+}
+
+/// 使用自定义配置解决 Turnstile 挑战。
+pub async fn solve_turnstile_with_config(page: &Page, timeout: Duration, cfg: &TurnstileConfig) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
-    let passive_wait = Duration::from_secs(3);
-    let click_interval = Duration::from_secs(2);
+    let passive_wait = Duration::from_millis(cfg.passive_wait_ms);
+    let click_interval = Duration::from_millis(cfg.click_interval_ms);
     let mut click_count: u32 = 0;
     let mut last_click = tokio::time::Instant::now();
     let start = tokio::time::Instant::now();
-
-    // Enable DOM domain for pierce operations
-    let _ = page.cmd("DOM.enable", json!({})).await;
 
     loop {
         let elapsed = start.elapsed();
@@ -38,68 +76,122 @@ pub async fn solve_turnstile(page: &Page, timeout: Duration) -> Result<()> {
             )));
         }
 
-        // Check if challenge is already passed (cf_clearance cookie or content change)
-        if check_bypassed(page).await? {
-            tracing::info!("Turnstile passed after {:.0}s, {} clicks", elapsed.as_secs_f64(), click_count);
-            // Wait a moment for page to finish redirecting
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            return Ok(());
+        // Check if challenge is already passed
+        let t0 = tokio::time::Instant::now();
+        match check_bypassed(page).await {
+            Ok(true) => {
+                println!("[turnstile] {:.1}s: bypassed detected (check took {:.0}ms), {} clicks",
+                    elapsed.as_secs_f64(), t0.elapsed().as_millis(), click_count);
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(e) => {
+                println!("[turnstile] {:.1}s: check error: {}", elapsed.as_secs_f64(), e);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if check_bypassed(page).await.unwrap_or(false) {
+                    println!("[turnstile] {:.1}s: bypassed after retry", start.elapsed().as_secs_f64());
+                    return Ok(());
+                }
+            }
         }
 
         // After passive wait, try clicking every click_interval
         if elapsed > passive_wait && last_click.elapsed() >= click_interval {
             click_count += 1;
-            let clicked = try_click_turnstile_cdp(page, click_count).await;
-            if clicked {
-                tracing::debug!("[click #{}] Turnstile click dispatched", click_count);
-            } else if click_count <= 3 || click_count % 5 == 0 {
-                tracing::debug!("[click #{}] Turnstile iframe not found", click_count);
-            }
+            let t1 = tokio::time::Instant::now();
+            let clicked = try_click_turnstile_cdp(page, click_count, cfg).await;
+            println!("[turnstile] {:.1}s: click #{} {} ({:.0}ms)",
+                elapsed.as_secs_f64(), click_count,
+                if clicked { "OK" } else { "iframe not found" },
+                t1.elapsed().as_millis());
             last_click = tokio::time::Instant::now();
         }
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(cfg.poll_interval_ms)).await;
     }
 }
 
 /// Check if the CF challenge has been bypassed.
 ///
-/// 关键：不能仅凭 `cf_clearance` cookie 就判定挑战已通过。
-/// Turnstile 通过后，CF 服务器需要时间响应并跳转到真实页面，此时：
-/// - `cf_clearance` cookie 已存在
-/// - 但页面 title 仍是 "Just a moment..."
-/// - body 仍是挑战页内容
-///
-/// 必须确认页面已经跳转到真实内容（title 不含挑战标识且 body 不含挑战元素）。
+/// 快速检测策略：
+/// 1. cf_clearance cookie 存在 + 标题非挑战页 = 立即返回 true
+/// 2. 页面内容检查作为备用
 async fn check_bypassed(page: &Page) -> Result<bool> {
-    // 唯一判据：页面内容是否已经脱离挑战页状态
-    // （cf_clearance cookie 存在不代表页面已跳转完成）
-    let content_check = page.evaluate(r#"(() => {
-        const body = document.body ? document.body.innerHTML : '';
-        const title = document.title || '';
-        // 挑战页特征（title 或 body 含 CF 挑战标识）
-        const onChallenge = title.includes('Just a moment') ||
-                            title.includes('\u8bf7\u7a0d\u5019') ||
-                            title.includes('Attention Required') ||
-                            body.includes('cf-chl-widget') ||
-                            body.includes('challenge-platform') ||
-                            body.includes('cf-browser-verification') ||
-                            body.includes('cf-challenge-running');
-        // 页面已跳转到真实内容：不在挑战页且 body 有足够内容
-        return !onChallenge && body.length > 1000;
-    })()"#).await?;
+    // 检查 cf_clearance cookie
+    let cookies_result = page.cmd("Network.getCookies", json!({})).await;
+    let has_cf_clearance = if let Ok(cookies) = cookies_result {
+        cookies.pointer("/cookies")
+            .and_then(|c| c.as_array())
+            .map(|arr| arr.iter().any(|c| {
+                c.get("name").and_then(|n| n.as_str()) == Some("cf_clearance")
+            }))
+            .unwrap_or(false)
+    } else {
+        false
+    };
 
-    Ok(content_check.as_bool().unwrap_or(false))
+    // 获取 frame tree
+    let frame_tree = page.cmd("Page.getFrameTree", json!({})).await?;
+    let frame_id = frame_tree.pointer("/frameTree/frame/id")
+        .and_then(|id| id.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if frame_id.is_empty() {
+        return Ok(has_cf_clearance);
+    }
+
+    // 创建 isolated world 检查标题
+    let world = page.cmd("Page.createIsolatedWorld", json!({
+        "frameId": frame_id,
+        "grantUniveralAccess": true,
+        "worldName": "cf_check"
+    })).await;
+
+    let context_id = match world {
+        Ok(w) => w.get("executionContextId").and_then(|id| id.as_u64()),
+        Err(_) => None,
+    };
+
+    match context_id {
+        Some(ctx_id) => {
+            // 只检查标题（快速，不依赖 body 加载完成）
+            let check_js = r#"(() => {
+                const title = document.title || '';
+                const onChallenge = title.includes('Just a moment') ||
+                                    title.includes('请稍候') ||
+                                    title.includes('请稍後') ||
+                                    title.includes('Attention Required') ||
+                                    title === '';
+                return !onChallenge;
+            })()"#;
+
+            let result = page.cmd("Runtime.evaluate", json!({
+                "expression": check_js,
+                "contextId": ctx_id,
+                "returnByValue": true,
+                "awaitPromise": false
+            })).await;
+
+            match result {
+                Ok(r) => {
+                    let title_ok = r.pointer("/result/value").and_then(|v| v.as_bool()).unwrap_or(false);
+                    // cf_clearance + 标题非挑战页 = 确认绕过
+                    // 无 cf_clearance 但标题非挑战页 = 也绕过
+                    Ok(title_ok)
+                }
+                Err(_) => Ok(has_cf_clearance),
+            }
+        }
+        None => Ok(has_cf_clearance),
+    }
 }
 
 /// Use CDP to pierce shadow DOM, find Turnstile iframe, and click it.
-///
-/// This is the core technique: JS cannot access closed shadow roots,
-/// but CDP DOM.getDocument(pierce=true) can traverse them.
-async fn try_click_turnstile_cdp(page: &Page, round: u32) -> bool {
+async fn try_click_turnstile_cdp(page: &Page, round: u32, cfg: &TurnstileConfig) -> bool {
     // Step 1: Get full DOM tree with shadow DOM piercing
     let doc = match page.cmd("DOM.getDocument", json!({
-        "depth": 200,
+        "depth": cfg.dom_depth,
         "pierce": true
     })).await {
         Ok(r) => r,
@@ -140,9 +232,16 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32) -> bool {
     let iframe_h = quad[5].as_f64().unwrap_or(65.0) - iframe_y;
 
     // Turnstile checkbox is at left ~32px, vertically centered
-    // Add small per-round jitter to avoid detection
-    let cx = iframe_x + 32.0 + ((round as f64 % 5.0) - 2.0) * 3.0;
-    let cy = iframe_y + iframe_h / 2.0 + ((round as f64 % 3.0) - 1.0) * 2.0;
+    // Try multiple positions to account for different widget sizes
+    let positions: Vec<(f64, f64)> = vec![
+        (iframe_x + 32.0, iframe_y + iframe_h / 2.0),   // standard checkbox position
+        (iframe_x + 28.0, iframe_y + iframe_h / 2.0),   // slightly left
+        (iframe_x + 36.0, iframe_y + iframe_h / 2.0),   // slightly right
+        (iframe_x + 32.0, iframe_y + iframe_h * 0.4),   // slightly up
+        (iframe_x + 32.0, iframe_y + iframe_h * 0.6),   // slightly down
+    ];
+    let pos_idx = (round as usize) % positions.len();
+    let (cx, cy) = positions[pos_idx];
 
     if round <= 3 {
         tracing::debug!(
@@ -152,13 +251,13 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32) -> bool {
     }
 
     // Step 4: Simulate mouse movement (ease-out deceleration)
-    let steps = 10;
+    let steps = cfg.mouse_steps;
     let sx = cx - 50.0 + ((round as f64 % 7.0) - 3.0) * 15.0;
     let sy = cy - 40.0 + ((round as f64 % 5.0) - 2.0) * 12.0;
 
     for i in 0..=steps {
         let t = i as f64 / steps as f64;
-        let ease = 1.0 - (1.0 - t) * (1.0 - t); // ease-out
+        let ease = 1.0 - (1.0 - t) * (1.0 - t);
         let mx = sx + (cx - sx) * ease;
         let my = sy + (cy - sy) * ease;
 
@@ -170,7 +269,7 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32) -> bool {
             "buttons": 0
         })).await;
 
-        tokio::time::sleep(Duration::from_millis(10 + (i as u64 * 5).min(40))).await;
+        tokio::time::sleep(Duration::from_millis(cfg.mouse_step_delay_ms)).await;
     }
 
     // Step 5: Click (press + release)
@@ -181,10 +280,10 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32) -> bool {
         "button": "left",
         "clickCount": 1,
         "modifiers": 0,
-        "buttons": 0
+        "buttons": 1
     })).await;
 
-    tokio::time::sleep(Duration::from_millis(60 + (round as u64 * 13) % 50)).await;
+    tokio::time::sleep(Duration::from_millis(cfg.click_hold_ms)).await;
 
     let _ = page.cmd("Input.dispatchMouseEvent", json!({
         "type": "mouseReleased",

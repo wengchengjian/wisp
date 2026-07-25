@@ -402,21 +402,27 @@ pub struct NodeList {
 }
 
 impl NodeList {
+    /// 创建节点列表。
     pub fn new(nodes: Vec<Node>) -> Self {
         Self { nodes }
     }
+    /// 节点数量。
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
+    /// 是否为空。
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
+    /// 获取第一个节点。
     pub fn first(&self) -> Option<&Node> {
         self.nodes.first()
     }
+    /// 获取最后一个节点。
     pub fn last(&self) -> Option<&Node> {
         self.nodes.last()
     }
+    /// 按索引获取节点。
     pub fn get(&self, index: usize) -> Option<&Node> {
         self.nodes.get(index)
     }
@@ -457,6 +463,7 @@ impl NodeList {
         }
     }
 
+    /// 返回节点迭代器。
     pub fn iter(&self) -> impl Iterator<Item = &Node> {
         self.nodes.iter()
     }

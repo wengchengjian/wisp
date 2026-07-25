@@ -10,9 +10,13 @@ pub struct Items {
 }
 
 impl Items {
+    /// 创建 Items 集合。
     pub fn new(items: Vec<Value>) -> Self { Self { items } }
+    /// Item 数量。
     pub fn len(&self) -> usize { self.items.len() }
+    /// 是否为空。
     pub fn is_empty(&self) -> bool { self.items.is_empty() }
+    /// 返回迭代器。
     pub fn iter(&self) -> impl Iterator<Item = &Value> { self.items.iter() }
 
     /// 导出为 JSON 字符串（pretty）
@@ -70,10 +74,12 @@ pub struct JsonlWriter {
 }
 
 impl JsonlWriter {
+    /// 创建 JSONL 写入器。
     pub fn new(path: &Path) -> Result<Self> {
         Ok(Self { file: std::fs::File::create(path)? })
     }
 
+    /// 写入单个 item。
     pub fn write(&mut self, item: &Value) -> Result<()> {
         use std::io::Write;
         let line = serde_json::to_string(item)
@@ -82,6 +88,7 @@ impl JsonlWriter {
         Ok(())
     }
 
+    /// 刷新缓冲区。
     pub fn flush(&mut self) -> Result<()> {
         use std::io::Write;
         self.file.flush()?;

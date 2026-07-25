@@ -22,10 +22,15 @@ use crate::fetcher::{Method as FetchMethod, Request as FetchRequest, Response as
 /// HTTP client configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// 请求超时。
     pub timeout: Duration,
+    /// 自定义 User-Agent。
     pub user_agent: Option<String>,
+    /// 默认请求头。
     pub headers: HashMap<String, String>,
+    /// 代理地址。
     pub proxy: Option<String>,
+    /// 最大重定向次数。
     pub max_redirects: usize,
     /// 浏览器 TLS 指纹模拟（默认 Chrome136，覆盖最广）
     pub emulation: Option<Profile>,
@@ -72,29 +77,35 @@ impl Default for ClientBuilder {
 }
 
 impl ClientBuilder {
+    /// 创建新的构建器。
     pub fn new() -> Self {
         Self {
             config: Config::default(),
         }
     }
+    /// 设置请求超时。
     pub fn timeout(mut self, d: Duration) -> Self {
         self.config.timeout = d;
         self
     }
+    /// 设置 User-Agent。
     pub fn user_agent(mut self, ua: &str) -> Self {
         self.config.user_agent = Some(ua.to_string());
         self
     }
+    /// 设置代理。
     pub fn proxy(mut self, url: &str) -> Self {
         self.config.proxy = Some(url.to_string());
         self
     }
+    /// 添加默认请求头。
     pub fn header(mut self, key: &str, value: &str) -> Self {
         self.config
             .headers
             .insert(key.to_string(), value.to_string());
         self
     }
+    /// 设置最大重定向次数。
     pub fn max_redirects(mut self, n: usize) -> Self {
         self.config.max_redirects = n;
         self
@@ -147,6 +158,7 @@ impl ClientBuilder {
         &self.config
     }
 
+    /// 构建 HTTP 客户端。
     pub fn build(self) -> Result<Client> {
         let mut builder = wreq::Client::builder()
             .timeout(self.config.timeout)
@@ -188,6 +200,7 @@ pub struct Client {
 }
 
 impl Client {
+    /// 创建客户端构建器。
     pub fn builder() -> ClientBuilder {
         ClientBuilder::new()
     }

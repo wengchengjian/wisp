@@ -1,11 +1,18 @@
 //! Browser process management. Launches Chrome directly with stealth args.
 
+/// 浏览器可执行文件查找与启动参数构建。
 pub mod launch;
+/// 页面操作（导航、JS 执行、截图等）。
 pub mod page;
+/// CDP WebSocket 会话管理。
 pub mod cdp;
+/// 反检测 JS 补丁注入。
 pub mod patches;
+/// DOM 元素封装。
 pub mod element;
+/// 浏览器实例池（复用 + 并发控制）。
 pub mod pool;
+/// Chrome for Testing 自动下载安装。
 pub mod installer;
 
 pub use page::Page;
@@ -23,6 +30,10 @@ use crate::config::LaunchOptions;
 use crate::error::{WispError, Result, BrowserError};
 
 
+/// 浏览器实例：封装 Chrome 进程 + CDP 会话。
+///
+/// 通过 [`Browser::launch`] 启动，使用 [`Browser::new_page`] 创建页面，
+/// 最后调用 [`Browser::close`] 关闭。
 pub struct Browser {
     session: Arc<CdpSession>,
     process: Child,

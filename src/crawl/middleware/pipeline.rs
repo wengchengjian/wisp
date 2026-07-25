@@ -17,6 +17,7 @@ pub struct JsonlWriterPipeline {
 }
 
 impl JsonlWriterPipeline {
+    /// 创建 JSONL 写入管道。
     pub fn new(path: &str) -> Self {
         Self { path: path.to_string(), file: Mutex::new(None) }
     }
@@ -61,6 +62,7 @@ pub struct FilterFieldsPipeline {
 }
 
 impl FilterFieldsPipeline {
+    /// 创建字段过滤管道。
     pub fn new(fields: Vec<&str>) -> Self {
         Self { fields: fields.into_iter().map(|s| s.to_string()).collect() }
     }

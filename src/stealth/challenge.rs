@@ -28,6 +28,7 @@ pub struct ChallengeSolver<'a> {
 }
 
 impl<'a> ChallengeSolver<'a> {
+    /// 创建挑战解决器。
     pub fn new(page: &'a Page) -> Self {
         Self { page }
     }
@@ -94,6 +95,11 @@ impl<'a> ChallengeSolver<'a> {
     /// Detect and automatically solve any Cloudflare challenge.
     /// Loops: re-detects challenge type and handles transitions (e.g., JS shield -> Turnstile).
     pub async fn solve(&self, timeout: Duration) -> Result<()> {
+        self.solve_with_config(timeout, &super::TurnstileConfig::default()).await
+    }
+
+    /// 使用自定义 Turnstile 配置解决挑战。
+    pub async fn solve_with_config(&self, timeout: Duration, turnstile_cfg: &super::TurnstileConfig) -> Result<()> {
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
@@ -105,16 +111,13 @@ impl<'a> ChallengeSolver<'a> {
             match challenge {
                 ChallengeType::None => return Ok(()),
                 ChallengeType::JsChallenge => {
-                    // JS challenge: wait a bit, it may auto-solve or transition to Turnstile
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
                 ChallengeType::Turnstile => {
-                    // Turnstile: use CDP pierce + click solver
                     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                    return turnstile::solve_turnstile(self.page, remaining).await;
+                    return turnstile::solve_turnstile_with_config(self.page, remaining, turnstile_cfg).await;
                 }
                 ChallengeType::ManagedChallenge => {
-                    // Managed: wait, may transition to Turnstile
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }

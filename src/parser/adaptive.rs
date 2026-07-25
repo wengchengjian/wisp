@@ -15,13 +15,21 @@ use crate::storage::{Store, ElementSnapshotRow};
 /// Stage 2 will rewrite capture() to use Node::ancestors()/parent().
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElementSnapshot {
+    /// 元素标签名。
     pub tag: String,
+    /// 元素属性映射。
     pub attrs: HashMap<String, String>,
-    pub text_preview: String,        // 前 200 字符
-    pub ancestor_path: Vec<String>,  // ["html", "body", "div.main", "ul.products", "li"]
-    pub sibling_tags: Vec<String>,   // 兄弟节点标签序列
+    /// 文本预览（前 200 字符）。
+    pub text_preview: String,
+    /// 祖先路径（如 ["html", "body", "div.main"]）。
+    pub ancestor_path: Vec<String>,
+    /// 兄弟节点标签序列。
+    pub sibling_tags: Vec<String>,
+    /// 在父节点中的位置。
     pub position_in_parent: usize,
+    /// 父节点标签名。
     pub parent_tag: String,
+    /// 父节点属性映射。
     pub parent_attrs: HashMap<String, String>,
 }
 

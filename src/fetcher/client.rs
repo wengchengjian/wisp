@@ -57,6 +57,8 @@ pub struct FetchClientConfig {
     /// ND-011-SEC：是否禁用 TLS 证书验证（危险！仅用于测试或自签名证书内部站点）。
     /// 默认 false（启用验证）。设为 true 等价于 curl -k，存在中间人攻击风险。
     pub danger_accept_invalid_certs: bool,
+    /// Turnstile 解决器参数配置。
+    pub turnstile: crate::stealth::TurnstileConfig,
 }
 
 impl Default for FetchClientConfig {
@@ -79,6 +81,7 @@ impl Default for FetchClientConfig {
             max_concurrent_pages: 4,
             max_response_size: 64 * 1024 * 1024, // 64MB
             danger_accept_invalid_certs: false,
+            turnstile: crate::stealth::TurnstileConfig::default(),
         }
     }
 }
@@ -93,10 +96,9 @@ pub struct FetchClient {
     browser_pool: Option<Arc<BrowserPool>>,
     config: FetchClientConfig,
     /// CF cookie jar：按域名保存 cookie，复用 CF 挑战结果。
-    ///
-    /// 关键：每次请求使用独立 tab，关闭 tab 后 session cookie 丢失。
-    /// 通过 cookie jar 在 tab 间共享 CF cookie，避免每次请求都重新挑战。
     cf_cookie_jar: Arc<tokio::sync::Mutex<HashMap<String, Vec<serde_json::Value>>>>,
+    /// CF UA jar：按域名保存浏览器实际 UA，HTTP 复用时必须匹配。
+    cf_ua_jar: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl FetchClient {
@@ -109,6 +111,7 @@ impl FetchClient {
             browser_pool,
             config,
             cf_cookie_jar: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            cf_ua_jar: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -130,6 +133,46 @@ impl FetchClient {
     /// 获取配置引用。
     pub fn config(&self) -> &FetchClientConfig {
         &self.config
+    }
+
+    /// 检查指定 URL 的域名是否有缓存的 CF cookie。
+    pub async fn has_cf_cookies(&self, url: &str) -> bool {
+        let domain = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()));
+        if let Some(domain) = domain {
+            let jar = self.cf_cookie_jar.lock().await;
+            jar.get(&domain).map(|c| !c.is_empty()).unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// 获取指定 URL 的 CF cookie 头字符串（用于 HTTP 请求）。
+    pub async fn get_cf_cookie_header(&self, url: &str) -> Option<String> {
+        let domain = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()))?;
+        let jar = self.cf_cookie_jar.lock().await;
+        let cookies = jar.get(&domain)?;
+        if cookies.is_empty() {
+            return None;
+        }
+        let pairs: Vec<String> = cookies.iter().filter_map(|c| {
+            let name = c.get("name")?.as_str()?;
+            let value = c.get("value")?.as_str()?;
+            Some(format!("{}={}", name, value))
+        }).collect();
+        if pairs.is_empty() { None } else { Some(pairs.join("; ")) }
+    }
+
+    /// 获取指定 URL 域名的浏览器实际 UA（CF 挑战解决时捕获）。
+    pub async fn get_cf_ua(&self, url: &str) -> Option<String> {
+        let domain = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()))?;
+        let jar = self.cf_ua_jar.lock().await;
+        jar.get(&domain).cloned()
     }
 
     /// HTTP 请求（共享 Client，连接复用）。直接返回统一 Response，无中间类型转换。
@@ -240,15 +283,16 @@ impl FetchClient {
             }
         }
 
+        let t_nav = std::time::Instant::now();
         tracing::info!("BrowserWork[{solve_label}]: {url} 导航");
         if let Err(e) = page.goto(&req.url).await {
             tracing::warn!("BrowserWork[{solve_label}]: {url} goto 失败: {e}");
             return Err(e);
         }
-        tracing::info!("BrowserWork[{solve_label}]: {url} 导航完成");
+        println!("[timing] goto: {:.0}ms", t_nav.elapsed().as_millis());
 
         // 从事件流中捕获导航请求的真实 HTTP 状态码。
-        // 失败立即报错：不再 fallback 到脆弱的 <title> 文本匹配。
+        let t_status = std::time::Instant::now();
         let mut nav_status = match self.recv_navigation_status(&mut event_rx, &sid).await {
             Ok(s) => s,
             Err(e) => {
@@ -258,13 +302,14 @@ impl FetchClient {
                 return Err(e);
             }
         };
-        tracing::info!("BrowserWork[{solve_label}]: {url} 状态码={nav_status}");
+        println!("[timing] recv_status: {:.0}ms, code={}", t_status.elapsed().as_millis(), nav_status);
 
         if solve_cf {
-            tracing::info!("BrowserWork[{solve_label}]: {url} 解决 CF 挑战");
+            let t_cf = std::time::Instant::now();
             // 检测并解决 Cloudflare 挑战
             let solver = ChallengeSolver::new(page);
-            solver.solve(self.config.challenge_timeout).await?;
+            solver.solve_with_config(self.config.challenge_timeout, &self.config.turnstile).await?;
+            println!("[timing] solve_cf: {:.0}ms", t_cf.elapsed().as_millis());
             // CF 挑战解决后，浏览器显示的是真实页面内容。
             // nav_status 捕获的是首次 goto 时的状态码（通常是 403/503 挑战页），
             // 不能反映挑战解决后的最终页面状态。修正为 200 以反映真实结果。
@@ -287,8 +332,15 @@ impl FetchClient {
                 human.random_delay(300, 800).await?;
             }
 
-            // CF 挑战解决后，保存 cookie 到 cookie jar（复用给后续请求）
+            // CF 挑战解决后，保存 cookie + 浏览器实际 UA 到 jar（复用给后续 HTTP 请求）
             if let Some(ref domain) = domain {
+                // 捕获浏览器实际 UA
+                if let Ok(ua_val) = page.evaluate("navigator.userAgent").await {
+                    if let Some(ua_str) = ua_val.as_str() {
+                        let mut ua_jar = self.cf_ua_jar.lock().await;
+                        ua_jar.insert(domain.clone(), ua_str.to_string());
+                    }
+                }
                 if let Ok(resp) = page.cmd("Network.getCookies", serde_json::json!({})).await {
                     if let Some(cookies) = resp.pointer("/cookies").and_then(|c| c.as_array()) {
                         let cookies_to_save: Vec<serde_json::Value> = cookies

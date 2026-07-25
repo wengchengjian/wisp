@@ -7,8 +7,11 @@
 /// A match block: a[a_start..a_start+size] == b[b_start..b_start+size].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match {
+    /// 序列 a 中的起始位置。
     pub a_start: usize,
+    /// 序列 b 中的起始位置。
     pub b_start: usize,
+    /// 匹配块大小。
     pub size: usize,
 }
 

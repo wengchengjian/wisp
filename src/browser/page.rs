@@ -8,6 +8,10 @@ use crate::browser::cdp::CdpSession;
 use crate::error::{WispError, Result, BrowserError};
 use base64::Engine;
 
+/// 浏览器页面（tab）：封装导航、JS 执行、截图等操作。
+///
+/// 通过 [`Browser::new_page`](crate::Browser::new_page) 创建，
+/// 使用完毕后调用 [`Page::close`] 关闭。
 pub struct Page {
     pub(crate) session: Arc<CdpSession>,
     pub(crate) session_id: String,
@@ -101,13 +105,17 @@ impl Page {
 
     // --- Public API: Navigation ---
 
+    /// 导航到指定 URL。
     pub async fn goto(&mut self, url: &str) -> Result<()> { do_goto(self, url).await }
+    /// 重新加载当前页面。
     pub async fn reload(&self) -> Result<()> { do_reload(self).await }
+    /// 后退（历史记录）。
     pub async fn go_back(&self) -> Result<()> {
         self.cmd("Page.navigate", json!({"url": "javascript:history.back()"})).await?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         Ok(())
     }
+    /// 前进（历史记录）。
     pub async fn go_forward(&self) -> Result<()> {
         self.cmd("Page.navigate", json!({"url": "javascript:history.forward()"})).await?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -140,7 +148,9 @@ impl Page {
 
     // --- Public API: JavaScript ---
 
+    /// 执行 JavaScript 表达式，返回 JSON 值。
     pub async fn evaluate(&self, expression: &str) -> Result<Value> { do_evaluate(self, expression).await }
+    /// 执行 JavaScript 表达式，返回字符串结果。
     pub async fn evaluate_as_string(&self, expression: &str) -> Result<String> {
         let value = self.evaluate(expression).await?;
         Ok(match value { Value::String(s) => s, Value::Null => "null".to_string(), other => other.to_string() })
@@ -179,9 +189,13 @@ impl Page {
 
     // --- Public API: Elements ---
 
+    /// 点击匹配选择器的元素。
     pub async fn click(&self, selector: &str) -> Result<()> { crate::browser::element::click(self, selector).await }
+    /// 向匹配选择器的输入框填充文本。
     pub async fn fill(&self, selector: &str, value: &str) -> Result<()> { crate::browser::element::fill(self, selector, value).await }
+    /// 等待匹配选择器的元素出现。
     pub async fn wait_for_selector(&self, selector: &str, timeout_ms: u64) -> Result<()> { crate::browser::element::wait_for_selector(self, selector, timeout_ms).await }
+    /// 获取匹配选择器元素的文本内容。
     pub async fn text_content(&self, selector: &str) -> Result<String> { crate::browser::element::text_content(self, selector).await }
 
     /// Get inner text of an element.
@@ -289,7 +303,9 @@ impl Page {
 
     // --- Public API: Output ---
 
+    /// 截图并保存到文件。
     pub async fn screenshot(&self, path: &str) -> Result<()> { do_screenshot(self, path).await }
+    /// 截图并返回 PNG 字节数据。
     pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> { do_screenshot_bytes(self).await }
 
     /// Generate a PDF (headless only).
@@ -372,6 +388,7 @@ impl Drop for Page {
 
 
 
+/// 在隔离世界中执行 JS（无需 Runtime.enable，避免被检测）。
 pub async fn do_evaluate(page: &Page, expression: &str) -> Result<Value> {
     // Create isolated world (avoids Runtime.enable detection)
     let world = page.cmd("Page.createIsolatedWorld", json!({
@@ -401,6 +418,7 @@ pub async fn do_evaluate(page: &Page, expression: &str) -> Result<Value> {
 // === navigate (inlined) ===
 
 
+/// 导航到 URL 并等待页面加载完成。
 pub async fn do_goto(page: &mut Page, url: &str) -> Result<()> {
     page.cmd("Page.navigate", json!({ "url": url })).await?;
     // Wait for page load using lifecycle event or timeout
@@ -410,6 +428,7 @@ pub async fn do_goto(page: &mut Page, url: &str) -> Result<()> {
     Ok(())
 }
 
+/// 重新加载页面并等待加载完成。
 pub async fn do_reload(page: &Page) -> Result<()> {
     page.cmd("Page.reload", json!({})).await?;
     wait_for_load(page).await
@@ -464,6 +483,7 @@ async fn wait_for_load(page: &Page) -> Result<()> {
 // === screenshot (inlined) ===
 
 
+/// 截图并保存到指定路径。
 pub async fn do_screenshot(page: &Page, path: &str) -> Result<()> {
     let bytes = do_screenshot_bytes(page).await?;
     tokio::fs::write(path, &bytes).await
@@ -471,6 +491,7 @@ pub async fn do_screenshot(page: &Page, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// 截图并返回 PNG 格式的字节数据。
 pub async fn do_screenshot_bytes(page: &Page) -> Result<Vec<u8>> {
     let result = page.cmd("Page.captureScreenshot", json!({"format": "png"})).await?;
     let data = result.get("data").and_then(|d| d.as_str())

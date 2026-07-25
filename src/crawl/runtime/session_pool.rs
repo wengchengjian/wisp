@@ -43,14 +43,23 @@ impl Default for SessionConfig {
 /// 单个会话：绑定 proxy + UA + cookies + 健康状态。
 #[derive(Debug, Clone)]
 pub struct Session {
+    /// 会话 ID。
     pub id: String,
+    /// 代理地址。
     pub proxy: Option<String>,
+    /// Cookie 映射。
     pub cookies: HashMap<String, String>,
+    /// User-Agent。
     pub user_agent: String,
+    /// 错误分数（越高越不健康）。
     pub error_score: f64,
+    /// 使用次数。
     pub usage_count: u32,
+    /// 最大使用次数。
     pub max_usage: u32,
+    /// 创建时间。
     pub created_at: Instant,
+    /// 最大生命周期。
     pub max_lifetime: Duration,
     max_error_score: f64,
     error_score_increment: f64,
@@ -199,9 +208,11 @@ impl SessionPool {
 
 /// Session 获取守卫（包含 Session 快照）。
 pub struct SessionGuard {
+    /// 会话快照。
     pub session: Session,
     #[allow(dead_code)]
     pool_sessions: usize,
+    /// 会话 ID。
     pub session_id: String,
 }
 

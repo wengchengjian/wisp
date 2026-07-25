@@ -67,9 +67,13 @@ pub trait Store: Send + Sync {
 /// `cached_at` + `ttl` 配对决定过期时间。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedResponse {
+    /// HTTP 状态码。
     pub status: u16,
+    /// 响应头。
     pub headers: std::collections::HashMap<String, String>,
+    /// 响应体。
     pub body: Vec<u8>,
+    /// 内容类型。
     pub content_type: String,
     /// 缓存时刻（Unix 秒）。
     pub cached_at: i64,
@@ -93,14 +97,23 @@ impl CachedResponse {
 /// Element snapshot 行（存储层不感知 `parser::Node`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElementSnapshotRow {
+    /// 元素标签名。
     pub tag: String,
+    /// 元素属性。
     pub attrs: serde_json::Value,
+    /// 文本预览。
     pub text_preview: String,
+    /// 祖先路径。
     pub ancestor_path: serde_json::Value,
+    /// 兄弟标签。
     pub sibling_tags: serde_json::Value,
+    /// 在父节点中的位置。
     pub position_in_parent: i64,
+    /// 父节点标签。
     pub parent_tag: String,
+    /// 父节点属性。
     pub parent_attrs: serde_json::Value,
+    /// 捕获时间（Unix 秒）。
     pub captured_at: i64,
 }
 
@@ -114,20 +127,24 @@ const NS_RESPONSE: &str = "response";
 
 // === Checkpoint ===
 
+/// 保存检查点。
 pub fn save_checkpoint(store: &dyn Store, name: &str, state: &[u8]) -> Result<()> {
     store.set(NS_CHECKPOINT, name, state)
 }
 
+/// 加载检查点。
 pub fn load_checkpoint(store: &dyn Store, name: &str) -> Result<Option<Vec<u8>>> {
     store.get(NS_CHECKPOINT, name)
 }
 
+/// 删除检查点。
 pub fn delete_checkpoint(store: &dyn Store, name: &str) -> Result<()> {
     store.delete(NS_CHECKPOINT, name)
 }
 
 // === Element Snapshot ===
 
+/// 保存元素快照。
 pub fn save_element(
     store: &dyn Store,
     url: &str,
@@ -140,6 +157,7 @@ pub fn save_element(
     store.set(NS_ELEMENT, &composite, &bytes)
 }
 
+/// 加载元素快照。
 pub fn load_element(
     store: &dyn Store,
     url: &str,
@@ -155,6 +173,7 @@ pub fn load_element(
 
 // === Response Cache ===
 
+/// 保存响应缓存。
 pub fn save_response(
     store: &dyn Store,
     method: &str,
@@ -167,6 +186,7 @@ pub fn save_response(
     store.set_with_ttl(NS_RESPONSE, &composite, &bytes, resp.ttl)
 }
 
+/// 加载响应缓存。
 pub fn load_response(
     store: &dyn Store,
     method: &str,
@@ -180,6 +200,7 @@ pub fn load_response(
         .map_err(|e| WispError::Storage(StorageError::General(format!("parse response: {e}"))))
 }
 
+/// 删除响应缓存。
 pub fn delete_response(store: &dyn Store, method: &str, url: &str) -> Result<()> {
     let composite = format!("{method}|{url}");
     store.delete(NS_RESPONSE, &composite)

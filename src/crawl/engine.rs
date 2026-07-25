@@ -69,6 +69,9 @@ pub(crate) struct EngineShared {
     pub work_notify: Arc<tokio::sync::Notify>,
     pub middleware_chain: Arc<middleware::MiddlewareChain>,
     pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
+    /// 域名级 CF 挑战锁：防止初始并发请求全部走浏览器。
+    /// 第一个请求获取锁并解决 CF，其他请求等待后复用 cookie。
+    pub cf_domain_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// per-run 可变状态。
@@ -356,6 +359,7 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
             ctx.config.fetch_mode,
             &ctx.shared.rule_engine,
             &ctx.shared.proxy_clients,
+            &ctx.shared.cf_domain_locks,
         )
         .await
         {
@@ -590,20 +594,102 @@ pub async fn fetch_page(
     mode: FetchMode,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
     proxy_clients: &moka::sync::Cache<String, Arc<Client>>,
+    cf_domain_locks: &dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 ) -> Result<Response> {
     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
     if let Some(override_mode) = req.fetch_mode_override {
+        // Stealth 覆盖 + 域名锁：防止并发请求全部走浏览器
+        if override_mode == FetchMode::Stealth {
+            let domain = url::Url::parse(&req.url)
+                .ok()
+                .and_then(|u| u.host_str().map(|s| s.to_string()))
+                .unwrap_or_default();
+
+            // 双重检测：先检查 cookie 是否已存在（其他请求可能已解决 CF）
+            if fetch_client.has_cf_cookies(&req.url).await {
+                let mut http_req = req.clone();
+                if let Some(cookie_header) = fetch_client.get_cf_cookie_header(&req.url).await {
+                    http_req.headers.insert("Cookie".to_string(), cookie_header);
+                }
+                if let Some(ua) = fetch_client.get_cf_ua(&req.url).await {
+                    http_req.headers.insert("User-Agent".to_string(), ua);
+                }
+                http_req.fetch_mode_override = Some(FetchMode::Http);
+                let resp = fetch_page_inner(fetch_client, &http_req, proxy_url, FetchMode::Http, proxy_clients).await?;
+                if !auto::is_blocked_response(resp.status, &resp.body, &resp.headers) {
+                    tracing::info!("AutoMode: 域名锁双重检测 - cookie已存在，HTTP成功 (status={})", resp.status);
+                    let mut final_resp = resp;
+                    final_resp.request.fetch_mode_override = Some(FetchMode::Http);
+                    return Ok(final_resp);
+                }
+            }
+
+            // 获取域名锁，等待其他请求解决 CF
+            let lock = cf_domain_locks.entry(domain).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone();
+            let _guard = lock.lock().await;
+
+            // 双重检测：等待期间其他请求可能已解决 CF
+            if fetch_client.has_cf_cookies(&req.url).await {
+                let mut http_req = req.clone();
+                if let Some(cookie_header) = fetch_client.get_cf_cookie_header(&req.url).await {
+                    http_req.headers.insert("Cookie".to_string(), cookie_header);
+                }
+                if let Some(ua) = fetch_client.get_cf_ua(&req.url).await {
+                    http_req.headers.insert("User-Agent".to_string(), ua);
+                }
+                http_req.fetch_mode_override = Some(FetchMode::Http);
+                let resp = fetch_page_inner(fetch_client, &http_req, proxy_url, FetchMode::Http, proxy_clients).await?;
+                if !auto::is_blocked_response(resp.status, &resp.body, &resp.headers) {
+                    tracing::info!("AutoMode: 域名锁等待后 - HTTP+cookie 成功 (status={})", resp.status);
+                    let mut final_resp = resp;
+                    final_resp.request.fetch_mode_override = Some(FetchMode::Http);
+                    return Ok(final_resp);
+                }
+            }
+
+            // 无 cookie，执行 Stealth（持锁期间其他请求会等待）
+            return fetch_page_inner(fetch_client, req, proxy_url, FetchMode::Stealth, proxy_clients).await;
+        }
         return fetch_page_inner(fetch_client, req, proxy_url, override_mode, proxy_clients).await;
     }
 
-    // 2. Auto 模式：rule_engine 缓存 → HTTP 先行，blocked 检测由 StealthUpgradeMiddleware 承担
+    // 2. Auto 模式：始终先尝试 HTTP（带 CF cookie），失败后由中间件升级
     if mode == FetchMode::Auto {
+        // 检查是否有 CF cookie 可用（若有则 HTTP 可能直接成功）
+        let has_cf_cookies = fetch_client.has_cf_cookies(&req.url).await;
+
+        if has_cf_cookies {
+            // 有 CF cookie：先尝试 HTTP（快速路径，注入 cookie + 浏览器实际 UA）
+            let mut http_req = req.clone();
+            if let Some(cookie_header) = fetch_client.get_cf_cookie_header(&req.url).await {
+                http_req.headers.insert("Cookie".to_string(), cookie_header);
+            }
+            // 使用浏览器实际 UA（CF 验证 cookie 时检查 UA 一致性）
+            if let Some(ua) = fetch_client.get_cf_ua(&req.url).await {
+                http_req.headers.insert("User-Agent".to_string(), ua);
+            }
+            let resp = fetch_page_inner(fetch_client, &http_req, proxy_url, FetchMode::Http, proxy_clients).await?;
+            // status=200 且非 CF 挑战标题 = 成功（不检查 body，避免误判）
+            if resp.status == 200 && !is_cf_challenge_title(&resp) {
+                tracing::info!("AutoMode: HTTP+cookie 成功 (status={}), 跳过浏览器", resp.status);
+                // 标记为 HTTP 模式，阻止 DynamicUpgradeMiddleware 误升级
+                let mut final_resp = resp;
+                final_resp.request.fetch_mode_override = Some(FetchMode::Http);
+                return Ok(final_resp);
+            }
+            // HTTP 被拦截，回退到 Stealth
+            tracing::info!("AutoMode: HTTP+cookie 被拦截 (status={}), 回退 Stealth", resp.status);
+            let mut stealth_req = req.clone();
+            stealth_req.fetch_mode_override = Some(FetchMode::Stealth);
+            return fetch_page_inner(fetch_client, &stealth_req, proxy_url, FetchMode::Stealth, proxy_clients).await;
+        }
+
+        // 无 CF cookie：检查 rule_engine 缓存
         let resolved = { rule_engine.lock().await.resolve(&req.url) };
         if let Some(cached_mode) = resolved {
-            return fetch_page_inner(fetch_client, req, proxy_url, cached_mode, proxy_clients)
-                .await;
+            return fetch_page_inner(fetch_client, req, proxy_url, cached_mode, proxy_clients).await;
         }
-        // HTTP 先行（升级由 DynamicUpgradeMiddleware 中间件通过 Refetch 触发）
+        // HTTP 先行（升级由 StealthUpgradeMiddleware 通过 Refetch 触发）
         let resp =
             fetch_page_inner(fetch_client, req, proxy_url, FetchMode::Http, proxy_clients).await?;
         return Ok(resp);

@@ -22,20 +22,24 @@ pub struct StopContext {
 
 /// 终止策略 trait。返回 true 表示该 Spider 停止派发新请求。
 pub trait StopCondition: Send + Sync {
+    /// 检查是否应停止。
     fn should_stop(&self, ctx: &StopContext) -> bool;
 
+    /// 逻辑与组合。
     fn and<C: StopCondition + 'static>(self, other: C) -> Arc<dyn StopCondition>
     where
         Self: Sized + 'static,
     {
         Arc::new(And { a: Arc::new(self), b: Arc::new(other) })
     }
+    /// 逻辑或组合。
     fn or<C: StopCondition + 'static>(self, other: C) -> Arc<dyn StopCondition>
     where
         Self: Sized + 'static,
     {
         Arc::new(Or { a: Arc::new(self), b: Arc::new(other) })
     }
+    /// 逻辑非。
     fn not(self) -> Arc<dyn StopCondition>
     where
         Self: Sized + 'static,

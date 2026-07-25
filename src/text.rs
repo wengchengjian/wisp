@@ -15,6 +15,7 @@ static RE_HTML_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").un
 pub struct Text<'a>(pub &'a str);
 
 impl<'a> Text<'a> {
+    /// 创建文本处理器。
     pub fn new(s: &'a str) -> Self {
         Self(s)
     }
@@ -69,26 +70,32 @@ impl<'a> Text<'a> {
 pub struct Attrs(pub HashMap<String, String>);
 
 impl Attrs {
+    /// 创建空属性映射。
     pub fn new() -> Self {
         Self(HashMap::new())
     }
 
+    /// 获取属性值。
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0.get(name).map(|s| s.as_str())
     }
 
+    /// 插入属性。
     pub fn insert(&mut self, key: String, value: String) {
         self.0.insert(key, value);
     }
 
+    /// 转换为 JSON 对象。
     pub fn to_json(&self) -> Value {
         serde_json::to_value(&self.0).unwrap_or(Value::Null)
     }
 
+    /// 属性数量。
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// 是否为空。
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

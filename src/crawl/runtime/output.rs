@@ -11,9 +11,13 @@ use crate::utils::{status_text, url_to_filename};
 /// Output format enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
+    /// JSON 格式。
     Json,
+    /// JSONL 格式（每行一个 JSON）。
     Jsonl,
+    /// Markdown 格式。
     Markdown,
+    /// WARC 归档格式。
     Warc,
 }
 
@@ -64,10 +68,12 @@ pub struct WarcWriter {
 }
 
 impl WarcWriter {
+    /// 创建 WARC 写入器。
     pub fn new(path: &Path) -> Result<Self> {
         Ok(Self { file: std::fs::File::create(path)? })
     }
 
+    /// 写入响应记录。
     pub fn write_response(&mut self, url: &str, status: u16, headers: &HashMap<String, String>, body: &[u8]) -> Result<()> {
         use std::io::Write;
         let record = to_warc_record(url, status, headers, body);
@@ -75,6 +81,7 @@ impl WarcWriter {
         Ok(())
     }
 
+    /// 刷新缓冲区。
     pub fn flush(&mut self) -> Result<()> {
         use std::io::Write;
         self.file.flush()?;
@@ -89,6 +96,7 @@ pub struct MarkdownWriter {
 }
 
 impl MarkdownWriter {
+    /// 创建 Markdown 写入器。
     pub fn new(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         Ok(Self { dir: dir.to_path_buf(), counter: 0 })

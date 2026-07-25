@@ -8,20 +8,30 @@ use dashmap::DashMap;
 
 /// 单个 Spider 的运行时统计。引擎为每个 Spider 持有一个实例。
 pub struct SpiderStats {
+    /// 已爬取页面数。
     pub pages: AtomicUsize,
+    /// 已爬取 item 数。
     pub items: AtomicUsize,
+    /// 错误数。
     pub errors: AtomicUsize,
+    /// 被拦截数。
     pub blocked: AtomicUsize,
+    /// 重试数。
     pub retries: AtomicUsize,
+    /// 站外请求数。
     pub offsite: AtomicUsize,
+    /// 缓存命中数。
     pub cache_hits: AtomicUsize,
     /// 在飞请求数。使用 Arc 以便 InFlightGuard 克隆。
     pub in_flight: Arc<AtomicUsize>,
+    /// 状态码计数。
     pub status_codes: DashMap<u16, AtomicUsize>,
+    /// 开始时间。
     pub start: Instant,
 }
 
 impl SpiderStats {
+    /// 创建新的统计实例。
     pub fn new() -> Self {
         Self {
             pages: AtomicUsize::new(0),
@@ -37,10 +47,15 @@ impl SpiderStats {
         }
     }
 
+    /// 已爬取页面数。
     pub fn pages(&self) -> usize { self.pages.load(Ordering::SeqCst) }
+    /// 已爬取 item 数。
     pub fn items(&self) -> usize { self.items.load(Ordering::SeqCst) }
+    /// 错误数。
     pub fn errors(&self) -> usize { self.errors.load(Ordering::SeqCst) }
+    /// 在飞请求数。
     pub fn in_flight(&self) -> usize { self.in_flight.load(Ordering::SeqCst) }
+    /// 已耗时。
     pub fn elapsed(&self) -> Duration { self.start.elapsed() }
 
     /// 无锁快照状态码计数为 HashMap<u16, usize>。

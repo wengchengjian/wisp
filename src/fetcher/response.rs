@@ -34,9 +34,13 @@ pub(crate) mod meta_serde {
 /// HTTP 方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Method {
+    /// GET 请求。
     Get,
+    /// POST 请求。
     Post,
+    /// PUT 请求。
     Put,
+    /// DELETE 请求。
     Delete,
 }
 
@@ -55,9 +59,13 @@ impl Method {
 /// 统一请求类型（Fetcher + Spider 共用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
+    /// 请求 URL。
     pub url: String,
+    /// HTTP 方法。
     pub method: Method,
+    /// 请求头。
     pub headers: HashMap<String, String>,
+    /// 请求体（POST/PUT 用）。
     pub body: Option<String>,
     /// 用户自定义元数据（Spider 场景传递深度、回调等）
     #[serde(with = "meta_serde")]

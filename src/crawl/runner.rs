@@ -308,6 +308,7 @@ impl Engine {
                     Arc::new(chain)
                 },
                 rule_engine,
+                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
             },
             state: engine::EngineState {
                 spider: spider.clone(),
@@ -522,10 +523,12 @@ impl Engine {
 }
 
 impl EngineBuilder {
+    /// 设置最大并发数。
     pub fn max_concurrent(mut self, n: usize) -> Self {
         self.max_concurrent = n;
         self
     }
+    /// 设置最大爬取页数。
     pub fn max_pages(mut self, n: usize) -> Self {
         self.max_pages = n;
         self
@@ -551,6 +554,7 @@ impl EngineBuilder {
         self.cache_store = Some(store);
         self
     }
+    /// 设置检查点存储（定期保存爬取进度）。
     pub fn checkpoint(mut self, s: Arc<dyn crate::storage::Store>, interval: usize) -> Self {
         self.checkpoint_store = Some(s);
         self.checkpoint_interval = interval;
@@ -625,6 +629,7 @@ impl EngineBuilder {
         self
     }
 
+    /// 构建引擎实例。
     pub fn build(self) -> Result<Engine> {
         let fetch_client = Arc::new(FetchClient::new(self.fetch_client_config)?);
         Ok(Engine {

@@ -2,7 +2,8 @@
 //!
 //! Uses CDP Input domain for realistic interactions that bypass behavioral detection.
 
-use rand::RngExt;
+use rand::rngs::{SmallRng, SysRng};
+use rand::{RngExt, SeedableRng};
 use serde_json::json;
 use std::time::Duration;
 
@@ -15,13 +16,14 @@ pub struct HumanBehavior<'a> {
 }
 
 impl<'a> HumanBehavior<'a> {
+    /// 创建人类行为模拟器。
     pub fn new(page: &'a Page) -> Self {
         Self { page }
     }
 
     /// Random delay with gaussian-like distribution between min and max.
     pub async fn random_delay(&self, min_ms: u64, max_ms: u64) -> Result<()> {
-        let delay = rand::rng().random_range(min_ms..=max_ms);
+        let delay = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed").random_range(min_ms..=max_ms);
         tokio::time::sleep(Duration::from_millis(delay)).await;
         Ok(())
     }
@@ -48,7 +50,7 @@ impl<'a> HumanBehavior<'a> {
         let (target_x, target_y) = self.get_element_center(selector).await?;
 
         // Start from a random position
-        let mut rng = rand::rng();
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
         let start_x = rng.random_range(0.0..400.0);
         let start_y = rng.random_range(0.0..300.0);
 
@@ -83,7 +85,7 @@ impl<'a> HumanBehavior<'a> {
         self.move_mouse_to(selector).await?;
         let (x, y) = self.get_element_center(selector).await?;
 
-        let mut rng = rand::rng();
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
         // Small offset to avoid clicking exact center every time
         let x = x + rng.random_range(-2.0..2.0);
         let y = y + rng.random_range(-2.0..2.0);
@@ -119,7 +121,7 @@ impl<'a> HumanBehavior<'a> {
         self.human_click(selector).await?;
         self.random_delay(200, 500).await?;
 
-        let mut rng = rand::rng();
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
         for ch in text.chars() {
             self.page.cmd("Input.dispatchKeyEvent", json!({
                 "type": "keyDown",
@@ -149,22 +151,23 @@ impl<'a> HumanBehavior<'a> {
 
         for _ in 0..steps {
             self.page.evaluate(&format!("window.scrollBy(0, {})", step_size)).await?;
-            tokio::time::sleep(Duration::from_millis(rand::rng().random_range(10..=40))).await;
+            tokio::time::sleep(Duration::from_millis(SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed").random_range(10..=40))).await;
         }
         Ok(())
     }
 
     /// Random scroll (up or down, random amount).
     pub async fn random_scroll(&self) -> Result<()> {
-        let pixels: i32 = rand::rng().random_range(100..600);
-        let direction: i32 = if rand::rng().random_range(0..10) < 7 { 1 } else { -1 };
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
+        let pixels: i32 = rng.random_range(100..600);
+        let direction: i32 = if rng.random_range(0..10) < 7 { 1 } else { -1 };
         self.scroll(pixels * direction).await
     }
 
     /// Simulate browsing behavior: random scrolls + pauses over a duration.
     pub async fn browse(&self, duration: Duration) -> Result<()> {
         let start = tokio::time::Instant::now();
-        let mut rng = rand::rng();
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
 
         while start.elapsed() < duration {
             // Random action: scroll (70%), pause (20%), mouse move (10%)

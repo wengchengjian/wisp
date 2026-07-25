@@ -201,6 +201,12 @@ impl FetcherBuilder {
         self
     }
 
+    /// 设置 Turnstile 解决器参数。
+    pub fn turnstile_config(mut self, cfg: crate::stealth::TurnstileConfig) -> Self {
+        self.config.turnstile = cfg;
+        self
+    }
+
     /// 等待特定 CSS 选择器出现（浏览器模式）。
     pub fn wait_for(mut self, selector: &str) -> Self {
         self.config.wait_for = Some(selector.to_string());

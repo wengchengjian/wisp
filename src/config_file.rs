@@ -34,9 +34,13 @@ use crate::proxy::RotationStrategy;
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct WispConfig {
+    /// 引擎级配置。
     pub engine: EngineConfig,
+    /// 代理配置。
     pub proxy: ProxyConfig,
+    /// HTTP 客户端配置。
     pub http: HttpConfig,
+    /// Stealth 模式配置。
     pub stealth: StealthConfig,
 }
 
@@ -44,9 +48,13 @@ pub struct WispConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
+    /// 最大并发数。
     pub max_concurrent: usize,
+    /// 最大爬取页数。
     pub max_pages: usize,
+    /// 最大重取轮数。
     pub max_refetch_rounds: usize,
+    /// 请求超时（秒）。
     pub timeout_secs: u64,
 }
 
@@ -84,6 +92,7 @@ impl Default for ProxyConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct HttpConfig {
+    /// 自定义 User-Agent。
     pub user_agent: Option<String>,
     /// TLS 指纹模拟：chrome136 | firefox128 | safari18
     pub emulation: Option<String>,
@@ -102,8 +111,11 @@ impl Default for HttpConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct StealthConfig {
+    /// 是否无头模式。
     pub headless: bool,
+    /// CF 挑战超时（秒）。
     pub challenge_timeout_secs: u64,
+    /// 是否启用人类行为模拟。
     pub human_mode: bool,
 }
 

@@ -106,6 +106,7 @@ impl DomainBlocker {
         self.blocked.len()
     }
 
+    /// 拦截列表是否为空。
     pub fn is_empty(&self) -> bool {
         self.blocked.is_empty()
     }

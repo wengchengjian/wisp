@@ -97,6 +97,7 @@ pub struct ModeRuleEngine {
 }
 
 impl ModeRuleEngine {
+    /// 创建空的规则引擎。
     pub fn new() -> Self {
         Self {
             user_rules: Vec::new(),

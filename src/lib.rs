@@ -44,24 +44,39 @@
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::doc_markdown)]
 
+/// 浏览器进程管理：启动 Chrome、CDP 会话、页面操作。
 pub mod browser;
+/// 浏览器启动选项和代理配置。
 pub mod config;
+/// TOML 配置文件解析。
 pub mod config_file;
+/// 分类错误体系（Browser / Network / Parse / Mcp / Storage）。
 pub mod error;
+/// 反检测补丁 + Cloudflare 挑战解决 + 人类行为模拟。
 pub mod stealth;
+/// 代理池管理与轮换策略。
 pub mod proxy;
+/// 文本和属性处理工具。
 pub mod text;
+/// 内部辅助工具（URL 解析、随机后缀）。
 pub mod utils;
+/// HTML 解析：CSS/XPath 选择器 + 自适应重定位。
 pub mod parser;
+/// HTTP 客户端（TLS 指纹模拟，基于 wreq）。
 pub mod http;
+/// 统一 Fetcher API（Http / Dynamic / Stealth / Auto 模式）。
 pub mod fetcher;
+/// Spider 爬虫引擎（调度器、检查点、流式处理）。
 pub mod crawl;
+/// 可插拔存储（MemoryStore + FileStore，可选 SqliteStore）。
 pub mod storage;
+/// MCP Server（AI 辅助爬取，stdio JSON-RPC）。
 pub mod mcp;
 
 // === 统一入口 ===
 pub use fetcher::{FetchClient, FetchClientConfig, Fetcher, FetchMode, FetcherBuilder};
 pub use fetcher::{Response, Request, Method};
+pub use stealth::TurnstileConfig;
 
 // === 核心类型 ===
 pub use browser::{Browser, Page};

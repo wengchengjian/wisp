@@ -112,6 +112,7 @@ pub struct ProxyInjectionMiddleware {
 }
 
 impl ProxyInjectionMiddleware {
+    /// 创建代理注入中间件。
     pub fn new(pool: Arc<crate::proxy::ProxyPool>) -> Self {
         Self { pool }
     }
@@ -139,6 +140,7 @@ pub struct HeadersMiddleware {
 }
 
 impl HeadersMiddleware {
+    /// 创建请求头注入中间件。
     pub fn new(headers: Vec<(String, String)>) -> Self {
         Self { headers }
     }
@@ -173,6 +175,7 @@ pub struct CookieChallengeMiddleware {
 }
 
 impl CookieChallengeMiddleware {
+    /// 创建 Cookie 挑战中间件。
     pub fn new(max_rounds: usize) -> Self {
         Self { max_rounds }
     }
@@ -271,6 +274,7 @@ pub struct DepthLimitMiddleware {
 }
 
 impl DepthLimitMiddleware {
+    /// 创建深度限制中间件。
     pub fn new(max_depth: u32) -> Self {
         Self { max_depth }
     }
@@ -364,6 +368,7 @@ pub struct RobotsMiddleware {
 }
 
 impl RobotsMiddleware {
+    /// 创建 Robots.txt 检查中间件。
     pub fn new(robots_cache: Arc<RobotsCache>, client: Arc<Client>) -> Self {
         Self {
             robots_cache,
@@ -394,6 +399,7 @@ pub struct DelayMiddleware {
 }
 
 impl DelayMiddleware {
+    /// 创建下载延迟中间件。
     pub fn new(delay: Duration) -> Self {
         Self { delay }
     }
@@ -428,6 +434,7 @@ pub struct StealthUpgradeMiddleware {
 }
 
 impl StealthUpgradeMiddleware {
+    /// 创建 Stealth 升级中间件。
     pub fn new(rule_engine: Arc<Mutex<ModeRuleEngine>>) -> Self {
         Self { rule_engine }
     }
@@ -513,6 +520,7 @@ impl Default for DynamicUpgradeMiddleware {
 }
 
 impl DynamicUpgradeMiddleware {
+    /// 创建 Dynamic 升级中间件。
     pub fn new() -> Self {
         Self {
             spa_matcher: aho_corasick::AhoCorasick::new(SPA_FRAMEWORK_MARKERS)
@@ -588,6 +596,7 @@ pub struct BlockedRetryMiddleware {
 }
 
 impl BlockedRetryMiddleware {
+    /// 创建阻塞重试中间件。
     pub fn new(retry_delay: Duration) -> Self {
         Self { retry_delay }
     }

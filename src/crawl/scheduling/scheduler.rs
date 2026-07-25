@@ -75,6 +75,7 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    /// 创建默认调度器（精确去重）。
     pub fn new() -> Self {
         Self::with_strategy(DedupStrategy::Exact)
     }
@@ -163,6 +164,7 @@ impl Scheduler {
         self.heap.lock().await.heap.len()
     }
 
+    /// 队列是否为空。
     pub async fn is_empty(&self) -> bool {
         self.heap.lock().await.heap.is_empty()
     }

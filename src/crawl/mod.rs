@@ -68,21 +68,29 @@ pub enum RequestAction {
 #[async_trait]
 pub trait Spider: Send + Sync + 'static {
     // Required
+    /// Spider 名称（用于日志和统计）。
     fn name(&self) -> &str;
+    /// 起始 URL 列表。
     fn start_urls(&self) -> Vec<String>;
     /// 请求分发入口。Engine 调用此方法处理响应，返回 (items, follows)。
     async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>);
 
     // Optional with defaults — 业务逻辑（保留在 Spider）
+    /// 允许的域名集合（空表示不限制）。
     fn allowed_domains(&self) -> HashSet<String> {
         HashSet::new()
     }
+    /// 爬取开始时的钩子。
     async fn on_start(&self) {}
+    /// 爬取结束时的钩子。
     async fn on_close(&self) {}
+    /// 请求失败时的钩子。
     async fn on_error(&self, _req: &Request, _err: &str) {}
+    /// Item 处理钩子（可过滤/转换）。
     async fn on_item(&self, item: Value) -> Option<Value> {
         Some(item)
     }
+    /// 判断响应是否被拦截（默认检查状态码）。
     fn is_blocked(&self, resp: &Response) -> bool {
         BLOCKED_STATUS_CODES.contains(&resp.status)
     }
@@ -122,21 +130,34 @@ pub const BLOCKED_STATUS_CODES: &[u16] = &[401, 403, 407, 429, 444, 500, 502, 50
 /// Crawling statistics.
 #[derive(Debug, Clone, Default)]
 pub struct CrawlStats {
+    /// 已爬取 item 数。
     pub items_scraped: usize,
+    /// 已爬取页面数。
     pub pages_crawled: usize,
+    /// 错误数。
     pub errors: usize,
+    /// 总耗时。
     pub duration: Duration,
+    /// 下载字节数。
     pub bytes_downloaded: u64,
+    /// 平均响应时间。
     pub avg_response_time: Duration,
+    /// 每域名请求数。
     pub domain_counts: HashMap<String, usize>,
+    /// 被拦截请求数。
     pub blocked_requests: usize,
+    /// 重试次数。
     pub retry_count: usize,
+    /// 状态码分布。
     pub status_code_counts: HashMap<u16, usize>,
+    /// 站外请求数。
     pub offsite_requests_count: usize,
+    /// 缓存命中数。
     pub cache_hits: usize,
 }
 
 impl CrawlStats {
+    /// 生成摘要字符串。
     pub fn summary(&self) -> String {
         format!(
             "爬取完成: {} 页 / {} items / {} 错误 / 耗时 {:?} / {:.1} KB / 平均响应 {:?}",
@@ -153,12 +174,35 @@ impl CrawlStats {
 /// 爬取过程中的事件流
 #[derive(Debug, Clone)]
 pub enum CrawlEvent {
+    /// 爬取到的 item。
     Item(Value),
-    PageScraped { url: String, stats: CrawlStats },
-    Error { url: String, error: String },
+    /// 页面爬取完成。
+    PageScraped {
+        /// 页面 URL。
+        url: String,
+        /// 当前统计。
+        stats: CrawlStats,
+    },
+    /// 错误发生。
+    Error {
+        /// 请求 URL。
+        url: String,
+        /// 错误信息。
+        error: String,
+    },
     /// ND-001-ERR：重试事件，让 stream 消费者感知重试发生。
     /// `attempt` 为当前重试次数（从 1 开始），`max` 为上限，`error` 为失败原因。
-    Retry { url: String, attempt: u32, max: u32, error: String },
+    Retry {
+        /// 请求 URL。
+        url: String,
+        /// 当前重试次数。
+        attempt: u32,
+        /// 最大重试次数。
+        max: u32,
+        /// 错误信息。
+        error: String,
+    },
+    /// 爬取完成。
     Done(CrawlStats),
 }
 
@@ -168,6 +212,7 @@ pub struct CrawlStream {
 }
 
 impl CrawlStream {
+    /// 过滤出 item 流。
     pub fn items(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Value>>> {
         use futures::StreamExt;
         Box::pin(self.inner.filter_map(|e| async move {
@@ -177,6 +222,7 @@ impl CrawlStream {
             }
         }))
     }
+    /// 获取完整事件流。
     pub fn events(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = CrawlEvent>>> {
         self.inner
     }

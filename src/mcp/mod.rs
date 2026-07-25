@@ -14,8 +14,11 @@ use crate::crawl::Engine;
 
 /// MCP 工具定义
 pub struct Tool {
+    /// 工具名称。
     pub name: &'static str,
+    /// 工具描述。
     pub description: &'static str,
+    /// 输入参数 JSON Schema。
     pub input_schema: Value,
 }
 

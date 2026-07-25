@@ -18,8 +18,11 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// A CDP event received from Chrome.
 #[derive(Debug, Clone)]
 pub struct CdpEvent {
+    /// 事件方法名（如 `Page.loadEventFired`）。
     pub method: String,
+    /// 事件参数。
     pub params: Value,
+    /// 关联的 session ID（多 tab 场景区分来源）。
     pub session_id: Option<String>,
 }
 
