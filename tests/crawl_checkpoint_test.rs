@@ -1,12 +1,12 @@
 //! Verify checkpoint save/load round-trip.
 
 use wisp::crawl::{CrawlState, Request, CrawlStats};
-use wisp::storage::{Store, SqliteStore};
+use wisp::storage::{Store, MemoryStore};
 use std::collections::HashSet;
 
 #[test]
 fn test_checkpoint_save_load_roundtrip() {
-    let store = SqliteStore::open_in_memory().unwrap();
+    let store = MemoryStore::default();
 
     let stats = CrawlStats {
         items_scraped: 100,
@@ -19,9 +19,9 @@ fn test_checkpoint_save_load_roundtrip() {
     let state = CrawlState::from_stats("test-spider".to_string(), &stats, pending);
 
     let blob = bincode::serialize(&state).unwrap();
-    store.save_checkpoint("test-spider", &blob, state.saved_at.timestamp()).unwrap();
+    wisp::storage::save_checkpoint(&store, "test-spider", &blob).unwrap();
 
-    let loaded = store.load_checkpoint("test-spider").unwrap().expect("should be saved");
+    let loaded = wisp::storage::load_checkpoint(&store, "test-spider").unwrap().expect("should be saved");
     let restored: CrawlState = bincode::deserialize(&loaded).unwrap();
 
     assert_eq!(restored.spider_name, "test-spider");
@@ -40,20 +40,20 @@ fn test_checkpoint_save_load_roundtrip() {
 
 #[test]
 fn test_checkpoint_delete() {
-    let store = SqliteStore::open_in_memory().unwrap();
+    let store = MemoryStore::default();
     let state = CrawlState::new("s2".to_string());
     let blob = bincode::serialize(&state).unwrap();
-    store.save_checkpoint("s2", &blob, 0).unwrap();
-    assert!(store.load_checkpoint("s2").unwrap().is_some());
+    wisp::storage::save_checkpoint(&store, "s2", &blob).unwrap();
+    assert!(wisp::storage::load_checkpoint(&store, "s2").unwrap().is_some());
 
-    store.delete_checkpoint("s2").unwrap();
-    assert!(store.load_checkpoint("s2").unwrap().is_none());
+    wisp::storage::delete_checkpoint(&store, "s2").unwrap();
+    assert!(wisp::storage::load_checkpoint(&store, "s2").unwrap().is_none());
 }
 
 #[test]
 fn test_checkpoint_load_missing_returns_none() {
-    let store = SqliteStore::open_in_memory().unwrap();
-    assert!(store.load_checkpoint("nonexistent").unwrap().is_none());
+    let store = MemoryStore::default();
+    assert!(wisp::storage::load_checkpoint(&store, "nonexistent").unwrap().is_none());
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn test_crawl_state_new_defaults() {
 /// 由 engine.rs 内部 lib 测试 `save_checkpoint_persists_seen_urls` 覆盖。
 #[tokio::test]
 async fn checkpoint_restore_preserves_seen_urls() {
-    let store = SqliteStore::open_in_memory().unwrap();
+    let store = MemoryStore::default();
     // 模拟 save_checkpoint 写入：构造含 seen_urls 的 CrawlState
     let mut state = CrawlState::new("test_spider".into());
     state.pending_urls = vec![Request::get("https://example.com/pending")];
@@ -84,10 +84,10 @@ async fn checkpoint_restore_preserves_seen_urls() {
         "https://example.com/already-crawled".to_string(),
     ]);
     let blob = bincode::serialize(&state).unwrap();
-    store.save_checkpoint("test_spider", &blob, 0).unwrap();
+    wisp::storage::save_checkpoint(&store, "test_spider", &blob).unwrap();
 
     // 加载并验证 seen_urls 被持久化
-    let loaded = store.load_checkpoint("test_spider").unwrap().unwrap();
+    let loaded = wisp::storage::load_checkpoint(&store, "test_spider").unwrap().unwrap();
     let restored: CrawlState = bincode::deserialize(&loaded).unwrap();
     assert!(restored.seen_urls.contains("https://example.com/already-crawled"),
         "seen_urls 必须被持久化与恢复");

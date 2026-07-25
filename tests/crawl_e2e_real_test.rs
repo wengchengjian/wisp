@@ -20,7 +20,7 @@ use wisp::crawl::{
     CrawlEvent, CrawlStats, Engine, JsonlWriter, Spider, Request, Response,
 };
 use wisp::http::Client;
-use wisp::storage::{Store, SqliteStore};
+use wisp::storage::{Store, MemoryStore};
 
 /// 探测 httpbin.org 是否可达且未被 Cloudflare 拦截。
 ///
@@ -433,7 +433,7 @@ async fn test_e2e_development_mode_cache_replay() {
         );
         return;
     }
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let store: Arc<dyn wisp::storage::Store> = Arc::new(MemoryStore::default());
 
     // 第一次运行：发网络请求，保存缓存
     let engine = Engine::infra()
@@ -446,8 +446,7 @@ async fn test_e2e_development_mode_cache_replay() {
     assert_eq!(stats1.cache_hits, 0, "第一次无命中");
 
     // 验证缓存已保存
-    let cached = store
-        .load_response("GET", "https://httpbin.org/get")
+    let cached = wisp::storage::load_response(&*store, "GET", "https://httpbin.org/get")
         .unwrap();
     assert!(cached.is_some(), "响应应已缓存");
 

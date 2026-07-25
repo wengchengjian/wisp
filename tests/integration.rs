@@ -121,7 +121,7 @@ async fn test_screenshot_creates_file() {
 /// Adaptive + crawl integration tests (no network required).
 mod adaptive_test {
     use wisp::parser::Node;
-    use wisp::storage::{Store, SqliteStore};
+    use wisp::storage::{Store, MemoryStore};
 
     const PRODUCT_HTML: &str = r#"
     <html><body>
@@ -147,7 +147,7 @@ mod adaptive_test {
 
     #[test]
     fn test_end_to_end_adaptive_relocation() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let store = MemoryStore::default();
         let url = "https://shop.example.com/products";
 
         // Phase 1: capture snapshot
@@ -166,7 +166,7 @@ mod adaptive_test {
     #[test]
     fn test_dom_navigation_with_adaptive_snapshot() {
         // 验证 Node 重构后 adaptive 仍正常工作，且 capture 用了导航 API
-        let store = SqliteStore::open_in_memory().unwrap();
+        let store = MemoryStore::default();
         let url = "https://shop.example.com/products";
 
         let html = r#"
@@ -185,7 +185,7 @@ mod adaptive_test {
         assert_eq!(node.unwrap().text(), "Widget");
 
         // 验证 capture 用了导航 API：检查 snapshot 的 ancestor_path 包含 "div.products"
-        let saved = store.load_element(url, "product-title").unwrap().expect("snapshot should be saved");
+        let saved = wisp::storage::load_element(&store, url, "product-title").unwrap().expect("snapshot should be saved");
         let snapshot = wisp::parser::ElementSnapshot::from_row(saved);
         assert!(snapshot.ancestor_path.iter().any(|p| p.contains("products")));
     }

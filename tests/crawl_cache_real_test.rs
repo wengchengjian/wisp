@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use wisp::crawl::{Engine, Spider, Request, Response};
-use wisp::storage::{SqliteStore, Store};
+use wisp::storage::{MemoryStore, Store};
 
 struct CacheSpider;
 #[async_trait]
@@ -28,7 +28,7 @@ impl Spider for CacheSpider {
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_development_mode_caches_response() {
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let store: Arc<dyn wisp::storage::Store> = Arc::new(MemoryStore::default());
 
     // 第一次运行：发网络请求，保存缓存
     let engine = Engine::infra()
@@ -41,8 +41,7 @@ async fn test_development_mode_caches_response() {
     assert_eq!(stats1.cache_hits, 0, "第一次运行不应有缓存命中");
 
     // 验证缓存已保存
-    let cached = store
-        .load_response("GET", "https://httpbin.org/get")
+    let cached = wisp::storage::load_response(&*store, "GET", "https://httpbin.org/get")
         .unwrap();
     assert!(cached.is_some(), "响应应已缓存");
 

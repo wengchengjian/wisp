@@ -19,7 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::crawl::{CrawlEvent, Request, Response, Spider};
 use wisp::fetcher::FetchMode;
-use wisp::storage::{SqliteStore, Store};
+use wisp::storage::{MemoryStore, Store};
 use wisp::Engine;
 
 /// 最小 Spider：handle 返回空，不产出 items/follows。
@@ -180,7 +180,7 @@ async fn run_stops_at_max_pages() {
 #[tokio::test]
 async fn run_clears_checkpoint_on_successful_completion() {
     let url = spawn_html_server("<html><body>ok</body></html>").await;
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let store: Arc<dyn wisp::storage::Store> = Arc::new(MemoryStore::default());
 
     let engine = Engine::infra()
         .max_pages(1)
@@ -200,7 +200,7 @@ async fn run_clears_checkpoint_on_successful_completion() {
     assert_eq!(items.len(), 1, "应产出 1 个 item");
 
     // 爬取成功完成后 checkpoint 应被清理
-    let ckpt = store.load_checkpoint("ckpt-clear-test").unwrap();
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-clear-test").unwrap();
     assert!(
         ckpt.is_none(),
         "爬取成功完成后 checkpoint 应被清理，但仍然存在"
@@ -213,7 +213,7 @@ async fn run_clears_checkpoint_on_successful_completion() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_clears_checkpoint_on_shutdown_interrupt() {
     let url = spawn_html_server("<html><body>ok</body></html>").await;
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let store: Arc<dyn wisp::storage::Store> = Arc::new(MemoryStore::default());
 
     let engine = Engine::infra()
         .max_pages(100) // 大 max_pages，确保 shutdown 前不自然结束
@@ -242,7 +242,7 @@ async fn run_clears_checkpoint_on_shutdown_interrupt() {
     let _ = engine.run(spider).await;
 
     // run 结束（shutdown 中断）后 checkpoint 也被清理
-    let ckpt = store.load_checkpoint("ckpt-shutdown-test").unwrap();
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-shutdown-test").unwrap();
     assert!(
         ckpt.is_none(),
         "run_inner 结束时总是清理 checkpoint（当前设计），实际: {:?}",

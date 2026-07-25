@@ -1,0 +1,1519 @@
+=== git log --oneline 55619a3..HEAD ===
+9b84b20 refactor(storage): trait 缩小为底层 KV 原语 + 新增 FileStore + 自由函数迁移
+
+=== git diff --stat 55619a3..HEAD ===
+ src/crawl/engine.rs             |  30 +--
+ src/crawl/middleware/builtin.rs |   4 +-
+ src/crawl/runner.rs             |   6 +-
+ src/parser/adaptive.rs          |   6 +-
+ src/storage/file.rs             | 239 +++++++++++++++++
+ src/storage/memory.rs           |  90 +++++++
+ src/storage/migrations.rs       |  46 +---
+ src/storage/mod.rs              | 556 ++++++++++++++--------------------------
+ src/storage/sqlite.rs           | 156 +++++++++++
+ 9 files changed, 702 insertions(+), 431 deletions(-)
+
+=== git diff -U10 55619a3..HEAD ===
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index 9cbd787..8873633 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -487,25 +487,24 @@ pub(crate) fn snapshot_stats_for(
+         duration: start.elapsed(),
+         blocked_requests: stats.blocked.load(Ordering::SeqCst),
+         retry_count: stats.retries.load(Ordering::SeqCst),
+         status_code_counts: status_codes,
+         offsite_requests_count: stats.offsite.load(Ordering::SeqCst),
+         cache_hits: stats.cache_hits.load(Ordering::SeqCst),
+         ..Default::default()
+     }
+ }
+ 
+-/// Checkpoint 保存。
++/// Checkpoint 保存（从 sched + stats 序列化状态，调用底层 save_checkpoint）。
+ ///
+-/// ND-003-ERR：返回 `Result<()>` 让调用方感知失败，而非静默 warn。
+-/// 调用方（`run_inner`）据此决定是否发送 `CrawlEvent::Error` 事件。
+-pub(crate) async fn save_checkpoint(
++/// ND-003-ERR：返回 `Result<()>` 让调用方感知失败。
++pub(crate) async fn persist_spider_checkpoint(
+     store: &dyn crate::storage::Store,
+     spider_name: &str,
+     sched: &scheduler::Scheduler,
+     stats: &Arc<SpiderStats>,
+ ) -> Result<()> {
+     let pending = sched.pending_urls().await;
+     let seen = sched.seen_urls().await; // 持久化 seen 去重集合
+     let snapshot = snapshot_stats_for(stats, HashMap::new(), stats.start);
+     // 手动构造 CrawlState 填入 seen_urls；
+     // `CrawlState::from_stats` 硬编码 seen_urls 为空，不能直接用。
+@@ -517,27 +516,25 @@ pub(crate) async fn save_checkpoint(
+         pages_crawled: snapshot.pages_crawled,
+         errors: snapshot.errors,
+         duration_ms: snapshot.duration.as_millis(),
+         saved_at: chrono::Utc::now(),
+     };
+     let blob = bincode::serialize(&state).map_err(|e| {
+         crate::error::WispError::Storage(crate::error::StorageError::General(format!(
+             "checkpoint 序列化失败: {e}"
+         )))
+     })?;
+-    store
+-        .save_checkpoint(spider_name, &blob, state.saved_at.timestamp())
+-        .map_err(|e| {
+-            crate::error::WispError::Storage(crate::error::StorageError::General(format!(
+-                "checkpoint 保存失败: {e}"
+-            )))
+-        })?;
++    crate::storage::save_checkpoint(store, spider_name, &blob).map_err(|e| {
++        crate::error::WispError::Storage(crate::error::StorageError::General(format!(
++            "checkpoint 保存失败: {e}"
++        )))
++    })?;
+     Ok(())
+ }
+ 
+ // === fetch_page（模式分发）===
+ 
+ #[doc(hidden)]
+ pub async fn fetch_page(
+     fetch_client: &crate::fetcher::FetchClient,
+     req: &Request,
+     proxy_url: Option<&str>,
+@@ -762,36 +759,35 @@ mod tests {
+         let (ctx, stats) = make_ctx();
+         let resp = make_resp(false);
+         process_response(&ctx, resp).await;
+         assert_eq!(
+             stats.pages.load(Ordering::SeqCst),
+             1,
+             "非缓存响应 pages 应递增到 1"
+         );
+     }
+ 
+-    /// Task 3：验证 save_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
++    /// Task 3：验证 persist_spider_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
+     #[tokio::test]
+     async fn save_checkpoint_persists_seen_urls() {
+-        let store = crate::storage::SqliteStore::open_in_memory().expect("open in-memory store");
++        let store = crate::storage::MemoryStore::default();
+         let sched = scheduler::Scheduler::new();
+         // push 两个 URL：进入 heap 与 seen 集合
+         sched.push(Request::get("https://example.com/a")).await;
+         sched.push(Request::get("https://example.com/b")).await;
+ 
+         let stats = Arc::new(SpiderStats::new());
+-        save_checkpoint(&store, "seen_persist_spider", &sched, &stats)
++        persist_spider_checkpoint(&store, "seen_persist_spider", &sched, &stats)
+             .await
+-            .expect("save_checkpoint should succeed");
++            .expect("persist_spider_checkpoint should succeed");
+ 
+-        let blob = store
+-            .load_checkpoint("seen_persist_spider")
++        let blob = crate::storage::load_checkpoint(&store, "seen_persist_spider")
+             .expect("load checkpoint ok")
+             .expect("checkpoint should exist");
+         let state: CrawlState = bincode::deserialize(&blob).expect("deserialize state");
+         assert!(
+             state.seen_urls.contains("https://example.com/a"),
+             "seen_urls 必须包含已爬 URL a，当前 seen = {:?}",
+             state.seen_urls
+         );
+         assert!(
+             state.seen_urls.contains("https://example.com/b"),
+diff --git a/src/crawl/middleware/builtin.rs b/src/crawl/middleware/builtin.rs
+index fe441b2..bc02bd1 100644
+--- a/src/crawl/middleware/builtin.rs
++++ b/src/crawl/middleware/builtin.rs
+@@ -307,21 +307,21 @@ impl CacheMiddleware {
+ }
+ 
+ #[async_trait]
+ impl Middleware for CacheMiddleware {
+     fn priority(&self) -> u32 {
+         3
+     }
+ 
+     async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
+         let method_str = req.method.as_str();
+-        match self.store.load_response(method_str, &req.url) {
++        match crate::storage::load_response(&*self.store, method_str, &req.url) {
+             Ok(Some(cached)) => {
+                 let resp = Response::from_parts(
+                     cached.status,
+                     req.url.clone(),
+                     cached.headers,
+                     cached.body,
+                     None,
+                     Vec::new(),
+                     req.clone(),
+                     cached.content_type,
+@@ -339,21 +339,21 @@ impl Middleware for CacheMiddleware {
+         if resp.status >= 200 && resp.status < 400 && !resp.from_cache {
+             let method_str = resp.request.method.as_str();
+             let cached = CachedResponse {
+                 status: resp.status,
+                 headers: resp.headers.clone(),
+                 body: resp.body.clone(),
+                 content_type: resp.content_type.clone(),
+                 cached_at: chrono::Utc::now().timestamp(),
+                 ttl: self.default_ttl,
+             };
+-            if let Err(e) = self.store.save_response(method_str, &resp.url, &cached) {
++            if let Err(e) = crate::storage::save_response(&*self.store, method_str, &resp.url, &cached) {
+                 tracing::warn!("响应缓存写入失败: {}", e);
+             }
+         }
+         MwAction::Continue
+     }
+ }
+ 
+ /// Robots.txt 检查中间件：请求前检查目标 URL 是否被 robots.txt 禁止。
+ ///
+ /// `RobotsCache` 内部用 `DashMap` 实现无锁读 + fetch 时不持锁，
+diff --git a/src/crawl/runner.rs b/src/crawl/runner.rs
+index 75f431a..a346052 100644
+--- a/src/crawl/runner.rs
++++ b/src/crawl/runner.rs
+@@ -224,21 +224,21 @@ impl Engine {
+         let fetch_client = self.fetch_client.clone();
+ 
+         let sched = Arc::new(scheduler::Scheduler::new());
+         let robots_cache = Arc::new(robots::RobotsCache::new());
+         let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+ 
+         // checkpoint 恢复（单 Spider）
+         let spider_name = spider.name().to_string();
+         let mut restored_pending = false;
+         if let Some(ref store) = self.checkpoint_store {
+-            if let Some(blob) = store.load_checkpoint(&spider_name)? {
++            if let Some(blob) = crate::storage::load_checkpoint(&**store, &spider_name)? {
+                 match bincode::deserialize::<CrawlState>(&blob) {
+                     Ok(state) => {
+                         if !state.pending_urls.is_empty() {
+                             let n = state.pending_urls.len();
+                             // 用 restore 一次性恢复 pending + seen 去重集合，
+                             // 避免逐个 push 时已爬 URL 因 seen 丢失被重新入队。
+                             let seen = state.seen_urls.clone();
+                             sched.restore(state.pending_urls, seen).await;
+                             tracing::info!(
+                                 "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs (含 {} seen)",
+@@ -456,21 +456,21 @@ impl Engine {
+         };
+ 
+         // 驱动流 + 定期 checkpoint
+         tokio::pin!(stream);
+         let mut pages_since_checkpoint = 0usize;
+         while stream.next().await.is_some() {
+             pages_since_checkpoint += 1;
+             if pages_since_checkpoint >= self.checkpoint_interval {
+                 if let Some(ref store) = self.checkpoint_store {
+                     // ND-003-ERR：save_checkpoint 失败时发送 Error 事件，不静默吞掉
+-                    if let Err(e) = engine::save_checkpoint(
++                    if let Err(e) = engine::persist_spider_checkpoint(
+                         store.as_ref(),
+                         &spider_name,
+                         &sched,
+                         &ctx.state.stats,
+                     )
+                     .await
+                     {
+                         tracing::warn!("checkpoint 失败: {}", e);
+                         if let Some(ref tx) = ctx.state.tx {
+                             let _ = tx.try_send(CrawlEvent::Error {
+@@ -494,21 +494,21 @@ impl Engine {
+             let crawl_ctx = engine::build_crawl_context(&ctx);
+             ctx.shared
+                 .middleware_chain
+                 .run_pipelines_close(&crawl_ctx)
+                 .await;
+         }
+ 
+         spider.on_close().await;
+ 
+         if let Some(ref store) = self.checkpoint_store {
+-            if let Err(e) = store.delete_checkpoint(&spider_name) {
++            if let Err(e) = crate::storage::delete_checkpoint(&**store, &spider_name) {
+                 tracing::warn!("删除 checkpoint 失败: {}", e);
+             }
+         }
+ 
+         let status_codes = ctx.state.stats.status_codes_snapshot();
+         Ok(engine::snapshot_stats_for(
+             &ctx.state.stats,
+             status_codes,
+             ctx.state.start,
+         ))
+diff --git a/src/parser/adaptive.rs b/src/parser/adaptive.rs
+index d1b8bdb..4de69d5 100644
+--- a/src/parser/adaptive.rs
++++ b/src/parser/adaptive.rs
+@@ -267,35 +267,35 @@ pub fn css_adaptive(
+     store: &dyn Store,
+     auto_save: bool,
+     tolerance: f64,
+ ) -> Option<Node> {
+     // 1. Try CSS first
+     if let Some(node) = doc.select_one(selector) {
+         // Refresh snapshot if requested (site markup unchanged)
+         if auto_save {
+             let snap = ElementSnapshot::capture(&node);
+             let now = chrono::Utc::now().timestamp();
+-            let _ = store.save_element(url, key, &snap.to_row(now));
++            let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now));
+         }
+         return Some(node);
+     }
+ 
+     // 2. CSS failed - try relocate from saved snapshot
+-    let saved_row = store.load_element(url, key).ok().flatten()?;
++    let saved_row = crate::storage::load_element(&*store, url, key).ok().flatten()?;
+     let saved = ElementSnapshot::from_row(saved_row);
+     let found = relocate_with_snapshot(doc, &saved, tolerance)?;
+ 
+     // 3. Auto-save new snapshot if relocated
+     if auto_save {
+         let snap = ElementSnapshot::capture(&found);
+         let now = chrono::Utc::now().timestamp();
+-        let _ = store.save_element(url, key, &snap.to_row(now));
++        let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now));
+     }
+ 
+     Some(found)
+ }
+ 
+ // ===== Helpers (stage 2: use Node navigation API, no HTML re-parsing) =====
+ //
+ // 旧实现对每个候选节点调用 4 个 helper，每个 helper 都 outer_html() + Html::parse_document()
+ // 重新解析 HTML，导致 similarity() 每次调用解析 4 次。现在改用 Node 的导航 API
+ // (tag/ancestors/parent/children/attrs)，与 ElementSnapshot::capture() 一致，零次重解析。
+diff --git a/src/storage/file.rs b/src/storage/file.rs
+new file mode 100644
+index 0000000..c8985e9
+--- /dev/null
++++ b/src/storage/file.rs
+@@ -0,0 +1,239 @@
++//! 文件系统存储后端。每条 entry 一个文件，子目录隔离 namespace。
++
++use std::fs;
++use std::io::Read;
++use std::path::PathBuf;
++use std::time::{Duration, SystemTime, UNIX_EPOCH};
++
++use parking_lot::Mutex;
++
++use crate::error::{Result, WispError, StorageError};
++use super::Store;
++
++/// 将任意 key sanitize 为安全文件名组件。
++///
++/// 替换文件系统非法字符（`/` `\` `:` `*` `?` `"` `<` `>` `|`）为 `_`，
++/// 处理 Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）加 `wisp_` 前缀。
++/// 截断至 200 字符防止文件名过长。
++fn sanitize_key(key: &str) -> String {
++    let s: String = key
++        .chars()
++        .map(|c| match c {
++            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
++            _ => c,
++        })
++        .collect();
++    let upper = s.to_uppercase();
++    let is_reserved = matches!(
++        upper.as_str(),
++        "CON" | "PRN" | "AUX" | "NUL"
++        | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
++        | "COM6" | "COM7" | "COM8" | "COM9"
++        | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5"
++        | "LPT6" | "LPT7" | "LPT8" | "LPT9"
++    );
++    let base = if is_reserved { format!("wisp_{s}") } else { s };
++    base.chars().take(200).collect()
++}
++
++/// 文件系统存储后端。
++///
++/// 目录结构：
++/// ```text
++/// <root>/
++/// ├── checkpoint/<sanitized_key>
++/// ├── element/<sanitized_key>
++/// └── response/<sanitized_key>
++/// ```
++///
++/// TTL 实现：在文件内容前缀附 8 字节 `expires_at`（Unix 秒，big-endian）。
++/// `get` 时检查过期，过期则删除文件并返回 `None`。
++///
++/// 线程安全：单 `parking_lot::Mutex<()>` 保护并发写（文件级互斥简化实现）。
++/// 性能：每条 entry 一个文件，适合 checkpoint/element（数据量小）；
++///       response cache 不建议使用 FileStore（Engine 默认用 MemoryStore）。
++pub struct FileStore {
++    root: PathBuf,
++    /// 全局写锁（简化实现；可优化为 per-namespace 锁）。
++    write_lock: Mutex<()>,
++}
++
++impl FileStore {
++    /// 自定义根目录。会自动创建。
++    pub fn with_dir(root: PathBuf) -> Self {
++        let _ = fs::create_dir_all(&root);  // 容忍已存在
++        Self { root, write_lock: Mutex::new(()) }
++    }
++
++    fn path_for(&self, namespace: &str, key: &str) -> PathBuf {
++        let sanitized = sanitize_key(key);
++        self.root.join(namespace).join(sanitized)
++    }
++}
++
++impl Default for FileStore {
++    /// 默认根目录 `./wisp-data/`（相对当前工作目录）。
++    fn default() -> Self {
++        Self::with_dir(PathBuf::from("./wisp-data"))
++    }
++}
++
++/// 序列化带 TTL 的 entry：`[expires_at: 8 bytes BE i64][value...]`。
++/// `expires_at == 0` 表示永不过期；非零为 Unix 毫秒时间戳。
++fn pack_with_ttl(value: &[u8], ttl: Option<Duration>) -> Vec<u8> {
++    let expires_at: i64 = match ttl {
++        None => 0,
++        Some(d) => {
++            let now = SystemTime::now().duration_since(UNIX_EPOCH)
++                .map(|n| n.as_millis() as i64)
++                .unwrap_or(0);
++            now + d.as_millis() as i64
++        }
++    };
++    let mut buf = expires_at.to_be_bytes().to_vec();
++    buf.extend_from_slice(value);
++    buf
++}
++
++/// 反序列化，返回 `(value, expired)`。文件损坏返回 `None`。
++fn unpack_and_check(data: &[u8]) -> Option<Vec<u8>> {
++    if data.len() < 8 {
++        return None;
++    }
++    let expires_at = i64::from_be_bytes([
++        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
++    ]);
++    if expires_at == 0 {
++        return Some(data[8..].to_vec());
++    }
++    let now = SystemTime::now().duration_since(UNIX_EPOCH)
++        .map(|n| n.as_millis() as i64)
++        .unwrap_or(0);
++    if now > expires_at {
++        return None;  // 已过期
++    }
++    Some(data[8..].to_vec())
++}
++
++impl Store for FileStore {
++    fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
++        let _guard = self.write_lock.lock();
++        let path = self.path_for(namespace, key);
++        if let Some(parent) = path.parent() {
++            fs::create_dir_all(parent)
++                .map_err(|e| WispError::Storage(StorageError::General(format!("mkdir: {e}"))))?;
++        }
++        let packed = pack_with_ttl(value, None);
++        fs::write(&path, packed)
++            .map_err(|e| WispError::Storage(StorageError::General(format!("write: {e}"))))?;
++        Ok(())
++    }
++
++    fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
++        let path = self.path_for(namespace, key);
++        let mut file = match fs::File::open(&path) {
++            Ok(f) => f,
++            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
++            Err(e) => return Err(WispError::Storage(StorageError::General(format!("open: {e}")))),
++        };
++        let mut buf = Vec::new();
++        file.read_to_end(&mut buf)
++            .map_err(|e| WispError::Storage(StorageError::General(format!("read: {e}"))))?;
++        match unpack_and_check(&buf) {
++            Some(v) => Ok(Some(v)),
++            None => {
++                // 过期或损坏：惰性删除
++                let _ = fs::remove_file(&path);
++                Ok(None)
++            }
++        }
++    }
++
++    fn delete(&self, namespace: &str, key: &str) -> Result<()> {
++        let path = self.path_for(namespace, key);
++        match fs::remove_file(&path) {
++            Ok(_) => Ok(()),
++            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
++            Err(e) => Err(WispError::Storage(StorageError::General(format!("delete: {e}")))),
++        }
++    }
++
++    fn set_with_ttl(
++        &self,
++        namespace: &str,
++        key: &str,
++        value: &[u8],
++        ttl: Option<Duration>,
++    ) -> Result<()> {
++        let _guard = self.write_lock.lock();
++        let path = self.path_for(namespace, key);
++        if let Some(parent) = path.parent() {
++            fs::create_dir_all(parent)
++                .map_err(|e| WispError::Storage(StorageError::General(format!("mkdir: {e}"))))?;
++        }
++        let packed = pack_with_ttl(value, ttl);
++        fs::write(&path, packed)
++            .map_err(|e| WispError::Storage(StorageError::General(format!("write: {e}"))))?;
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use tempfile::tempdir;
++
++    fn make_store() -> (FileStore, tempfile::TempDir) {
++        let dir = tempdir().unwrap();
++        let store = FileStore::with_dir(dir.path().to_path_buf());
++        (store, dir)
++    }
++
++    #[test]
++    fn checkpoint_roundtrip() {
++        let (store, _d) = make_store();
++        store.set("checkpoint", "spider1", b"state").unwrap();
++        assert_eq!(store.get("checkpoint", "spider1").unwrap().unwrap(), b"state");
++        store.delete("checkpoint", "spider1").unwrap();
++        assert!(store.get("checkpoint", "spider1").unwrap().is_none());
++    }
++
++    #[test]
++    fn ttl_expiry() {
++        let (store, _d) = make_store();
++        store.set_with_ttl("ns", "k", b"v", Some(Duration::from_millis(1))).unwrap();
++        std::thread::sleep(Duration::from_millis(10));
++        assert!(store.get("ns", "k").unwrap().is_none());
++    }
++
++    #[test]
++    fn ttl_none_never_expires() {
++        let (store, _d) = make_store();
++        store.set_with_ttl("ns", "k", b"forever", None).unwrap();
++        assert_eq!(store.get("ns", "k").unwrap().unwrap(), b"forever");
++    }
++
++    #[test]
++    fn delete_missing_is_ok() {
++        let (store, _d) = make_store();
++        store.delete("ns", "nonexistent").unwrap();
++    }
++
++    #[test]
++    fn namespace_isolation() {
++        let (store, _d) = make_store();
++        store.set("ns1", "key", b"a").unwrap();
++        store.set("ns2", "key", b"b").unwrap();
++        assert_eq!(store.get("ns1", "key").unwrap().unwrap(), b"a");
++        assert_eq!(store.get("ns2", "key").unwrap().unwrap(), b"b");
++    }
++
++    #[test]
++    fn sanitize_key_replaces_separators() {
++        assert!(sanitize_key("a/b").contains('_'));
++        assert!(sanitize_key("a\\b").contains('_'));
++        assert!(sanitize_key("a:b").contains('_'));
++        // Windows 保留名加前缀
++        assert!(sanitize_key("CON").starts_with("wisp_"));
++    }
++}
+diff --git a/src/storage/memory.rs b/src/storage/memory.rs
+new file mode 100644
+index 0000000..3c6704d
+--- /dev/null
++++ b/src/storage/memory.rs
+@@ -0,0 +1,90 @@
++//! 内存存储后端。单 moka 实例，per-entry TTL 原生支持。
++
++use std::time::{Duration, Instant};
++use moka::sync::Cache as MokaCache;
++use moka::Expiry;
++
++use crate::error::Result;
++use super::Store;
++
++/// entry 包装：value + 可选过期时间。
++#[derive(Clone, Debug)]
++struct Entry {
++    value: Vec<u8>,
++    /// 绝对过期时刻。`None` 表示永不过期。
++    expires_at: Option<Instant>,
++}
++
++/// per-entry TTL 策略：从 Entry.expires_at 读取。
++struct EntryExpiry;
++
++impl Expiry<(String, String), Entry> for EntryExpiry {
++    fn expire_after_create(
++        &self,
++        _key: &(String, String),
++        entry: &Entry,
++        _now: Instant,
++    ) -> Option<Duration> {
++        entry.expires_at
++            .map(|at| at.saturating_duration_since(_now))
++    }
++}
++
++/// 内存存储后端。
++///
++/// 单 moka 实例，capacity 限制总 entry 数（默认 100_000）。
++/// TTL 通过 `set_with_ttl` 写入 entry 的 `expires_at` 字段，moka 在过期时自动淘汰。
++pub struct MemoryStore {
++    inner: MokaCache<(String, String), Entry>,
++}
++
++impl MemoryStore {
++    /// 创建内存存储。`capacity` 限制总 entry 数。
++    pub fn new(capacity: u64) -> Self {
++        Self {
++            inner: MokaCache::builder()
++                .max_capacity(capacity)
++                .expire_after(EntryExpiry)
++                .build(),
++        }
++    }
++}
++
++impl Default for MemoryStore {
++    /// 默认容量 100_000。
++    fn default() -> Self {
++        Self::new(100_000)
++    }
++}
++
++impl Store for MemoryStore {
++    fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
++        let entry = Entry { value: value.to_vec(), expires_at: None };
++        self.inner.insert((namespace.to_string(), key.to_string()), entry);
++        Ok(())
++    }
++
++    fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
++        Ok(self.inner
++            .get(&(namespace.to_string(), key.to_string()))
++            .map(|e| e.value))
++    }
++
++    fn delete(&self, namespace: &str, key: &str) -> Result<()> {
++        self.inner.invalidate(&(namespace.to_string(), key.to_string()));
++        Ok(())
++    }
++
++    fn set_with_ttl(
++        &self,
++        namespace: &str,
++        key: &str,
++        value: &[u8],
++        ttl: Option<Duration>,
++    ) -> Result<()> {
++        let expires_at = ttl.map(|d| Instant::now() + d);
++        let entry = Entry { value: value.to_vec(), expires_at };
++        self.inner.insert((namespace.to_string(), key.to_string()), entry);
++        Ok(())
++    }
++}
+diff --git a/src/storage/migrations.rs b/src/storage/migrations.rs
+index e14637c..926fa3e 100644
+--- a/src/storage/migrations.rs
++++ b/src/storage/migrations.rs
+@@ -1,40 +1,14 @@
+-//! SQLite schema migrations for the unified storage layer.
++//! SQLite schema migrations for the unified KV store.
+ 
+-/// SQL statements to create all tables for schema v1.
+-///
+-/// 包含：element_snapshots（自适应定位）、crawl_checkpoints（断点续爬）、
+-/// response_cache（HTTP 响应缓存，带 per-entry TTL）。
++/// 单表 KV schema。所有命名空间共享一张表。
+ pub const SCHEMA_V1: &str = r#"
+-CREATE TABLE IF NOT EXISTS element_snapshots (
+-    url TEXT NOT NULL,
+-    key TEXT NOT NULL,
+-    tag TEXT,
+-    attrs TEXT,
+-    text_preview TEXT,
+-    ancestor_path TEXT,
+-    sibling_tags TEXT,
+-    position_in_parent INTEGER,
+-    parent_tag TEXT,
+-    parent_attrs TEXT,
+-    captured_at INTEGER,
+-    PRIMARY KEY (url, key)
+-);
+-
+-CREATE TABLE IF NOT EXISTS crawl_checkpoints (
+-    spider_name TEXT PRIMARY KEY,
+-    state BLOB NOT NULL,
+-    saved_at INTEGER NOT NULL
+-);
+-
+-CREATE TABLE IF NOT EXISTS response_cache (
+-    url TEXT NOT NULL,
+-    method TEXT NOT NULL,
+-    status INTEGER,
+-    headers TEXT,            -- JSON
+-    body BLOB,
+-    content_type TEXT,
+-    cached_at INTEGER NOT NULL,
+-    ttl_secs INTEGER,        -- NULL = 永不过期
+-    PRIMARY KEY (url, method)
++CREATE TABLE IF NOT EXISTS kv (
++    namespace  TEXT NOT NULL,
++    key        TEXT NOT NULL,
++    value      BLOB NOT NULL,
++    ttl_secs   INTEGER,                -- NULL = 永不过期
++    cached_at  INTEGER NOT NULL,       -- Unix 秒，写入时刻
++    PRIMARY KEY (namespace, key)
+ );
++CREATE INDEX IF NOT EXISTS idx_kv_namespace ON kv(namespace);
+ "#;
+diff --git a/src/storage/mod.rs b/src/storage/mod.rs
+index c952059..679bf4c 100644
+--- a/src/storage/mod.rs
++++ b/src/storage/mod.rs
+@@ -1,85 +1,80 @@
+-//! 统一存储层：可插拔的持久化后端 trait + Memory/SQLite 实现。
++//! 统一存储层：可插拔的持久化后端 trait + Memory/File/SQLite 实现。
+ //!
+-//! 三类用途：
+-//! - Checkpoint（断点续爬）：`save/load/delete_checkpoint`
+-//! - Element Snapshot（自适应定位）：`save/load_element`
+-//! - Response Cache（HTTP 响应缓存，带 per-entry TTL）：`save/load/delete_response`
++//! 三类用途（通过自由函数实现，trait 仅提供底层 KV 原语）：
++//! - Checkpoint（断点续爬）：`save_checkpoint` / `load_checkpoint` / `delete_checkpoint`
++//! - Element Snapshot（自适应定位）：`save_element` / `load_element`
++//! - Response Cache（HTTP 响应缓存，带 per-entry TTL）：`save_response` / `load_response` / `delete_response`
+ 
+ pub mod migrations;
+ 
+-use std::collections::HashMap;
+-use std::path::Path;
+-use std::time::{Duration, Instant};
++mod memory;
++mod file;
++mod sqlite;
+ 
+-use parking_lot::Mutex;
+-use moka::sync::Cache as MokaCache;
+-use moka::Expiry;
+-use rusqlite::{params, Connection};
+-use serde::{Deserialize, Serialize};
++pub use memory::MemoryStore;
++pub use file::FileStore;
++pub use sqlite::SqliteStore;
++
++// 注：Task 3 会把 SqliteStore 和 migrations 改为 #[cfg(feature = "sqlite")] 条件编译
+ 
++use std::time::Duration;
++use serde::{Deserialize, Serialize};
+ use crate::error::{Result, WispError, StorageError};
+ 
+ // ============================================================================
+-// 辅助函数
++// Store trait：仅底层 KV 原语
+ // ============================================================================
+ 
+-/// ND-010-CORR：解析 JSON 字符串，失败时返回 `StorageError` 而非静默吞掉。
++/// 存储后端 trait。仅提供底层 KV 原语。
+ ///
+-/// 空字符串视为合法的 `Value::Null`（兼容旧数据），其他解析错误返回错误。
+-pub(crate) fn parse_json_or_err<T: serde::de::DeserializeOwned>(
+-    s: &str,
+-    field: &str,
+-) -> Result<T> {
+-    if s.is_empty() {
+-        return serde_json::from_str("null")
+-            .map_err(|e| WispError::Storage(StorageError::General(format!("parse {field}: {e}"))));
+-    }
+-    serde_json::from_str(s)
+-        .map_err(|e| WispError::Storage(StorageError::General(format!("parse {field}: {e}"))))
+-}
+-
+-// ============================================================================
+-// Trait 定义
+-// ============================================================================
+-
+-/// 存储后端 trait。所有方法同步——SQLite/HashMap 操作足够快，无需 async。
++/// 实现者保证线程安全（`Send + Sync`）。所有方法同步——
++/// SQLite/HashMap/文件 IO 操作足够快，无需 async。
+ ///
+-/// 实现者保证线程安全（`Send + Sync`），内部用 `parking_lot::Mutex` 或 moka 保护。
++/// 业务方法（`save_checkpoint` / `load_response` 等）作为自由函数实现，
++/// 调用 `set`/`get`/`delete` 并处理序列化。
+ pub trait Store: Send + Sync {
+-    // === Checkpoint ===
+-    fn save_checkpoint(&self, spider_name: &str, state_bytes: &[u8], saved_at: i64) -> Result<()>;
+-    fn load_checkpoint(&self, spider_name: &str) -> Result<Option<Vec<u8>>>;
+-    fn delete_checkpoint(&self, spider_name: &str) -> Result<()>;
+-
+-    // === Element Snapshot ===
+-    fn save_element(&self, url: &str, key: &str, row: &ElementSnapshotRow) -> Result<()>;
+-    fn load_element(&self, url: &str, key: &str) -> Result<Option<ElementSnapshotRow>>;
+-
+-    // === Response Cache ===
+-    fn save_response(&self, method: &str, url: &str, resp: &CachedResponse) -> Result<()>;
+-    fn load_response(&self, method: &str, url: &str) -> Result<Option<CachedResponse>>;
+-    fn delete_response(&self, method: &str, url: &str) -> Result<()>;
++    /// 写入一个 entry。
++    fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()>;
++
++    /// 读取一个 entry。返回 `None` 表示不存在或已过期。
++    fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>>;
++
++    /// 删除一个 entry。key 不存在不算错误。
++    fn delete(&self, namespace: &str, key: &str) -> Result<()>;
++
++    /// 带 TTL 的写入。`ttl = None` 表示永不过期。
++    ///
++    /// 默认实现忽略 TTL（适用于不支持的存储）。
++    fn set_with_ttl(
++        &self,
++        namespace: &str,
++        key: &str,
++        value: &[u8],
++        _ttl: Option<Duration>,
++    ) -> Result<()> {
++        self.set(namespace, key, value)
++    }
+ }
+ 
+ // ============================================================================
+-// 公共数据类型
++// 公共数据类型（保留不变）
+ // ============================================================================
+ 
+ /// 可缓存的响应数据（`Response` 的可序列化子集）。
+ ///
+ /// 不含 `request` 字段——命中时由 `CacheMiddleware` 用当前请求重建完整 `Response`。
+ /// `cached_at` + `ttl` 配对决定过期时间。
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct CachedResponse {
+     pub status: u16,
+-    pub headers: HashMap<String, String>,
++    pub headers: std::collections::HashMap<String, String>,
+     pub body: Vec<u8>,
+     pub content_type: String,
+     /// 缓存时刻（Unix 秒）。
+     pub cached_at: i64,
+     /// 有效期。`None` 表示永不过期。
+     pub ttl: Option<Duration>,
+ }
+ 
+ impl CachedResponse {
+     /// 是否已过期（基于 `cached_at` + `ttl` 与当前时间比较）。
+@@ -102,394 +97,215 @@ pub struct ElementSnapshotRow {
+     pub text_preview: String,
+     pub ancestor_path: serde_json::Value,
+     pub sibling_tags: serde_json::Value,
+     pub position_in_parent: i64,
+     pub parent_tag: String,
+     pub parent_attrs: serde_json::Value,
+     pub captured_at: i64,
+ }
+ 
+ // ============================================================================
+-// SqliteStore
++// 业务层自由函数
+ // ============================================================================
+ 
+-/// SQLite 存储后端。线程安全（`parking_lot::Mutex<Connection>`，无 poison）。
+-pub struct SqliteStore {
+-    conn: Mutex<Connection>,
+-}
+-
+-impl SqliteStore {
+-    /// 打开或创建数据库文件。
+-    pub fn open(path: &Path) -> Result<Self> {
+-        let conn = Connection::open(path).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        let store = Self { conn: Mutex::new(conn) };
+-        store.init_schema()?;
+-        Ok(store)
+-    }
++const NS_CHECKPOINT: &str = "checkpoint";
++const NS_ELEMENT: &str = "element";
++const NS_RESPONSE: &str = "response";
+ 
+-    /// 内存数据库（测试用）。
+-    pub fn open_in_memory() -> Result<Self> {
+-        let conn = Connection::open_in_memory().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        let store = Self { conn: Mutex::new(conn) };
+-        store.init_schema()?;
+-        Ok(store)
+-    }
++// === Checkpoint ===
+ 
+-    fn init_schema(&self) -> Result<()> {
+-        let conn = self.conn.lock();
+-        conn.execute_batch("PRAGMA journal_mode=WAL;")
+-            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        conn.execute_batch("PRAGMA synchronous=NORMAL;")
+-            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        conn.execute_batch(migrations::SCHEMA_V1)
+-            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        Ok(())
+-    }
++pub fn save_checkpoint(store: &dyn Store, name: &str, state: &[u8]) -> Result<()> {
++    store.set(NS_CHECKPOINT, name, state)
+ }
+ 
+-impl Store for SqliteStore {
+-    fn save_checkpoint(&self, spider_name: &str, state_bytes: &[u8], saved_at: i64) -> Result<()> {
+-        let conn = self.conn.lock();
+-        conn.execute(
+-            "INSERT OR REPLACE INTO crawl_checkpoints (spider_name, state, saved_at) VALUES (?1, ?2, ?3)",
+-            params![spider_name, state_bytes, saved_at],
+-        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        Ok(())
+-    }
+-
+-    fn load_checkpoint(&self, spider_name: &str) -> Result<Option<Vec<u8>>> {
+-        let conn = self.conn.lock();
+-        let mut stmt = conn.prepare("SELECT state FROM crawl_checkpoints WHERE spider_name = ?1")
+-            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        let mut rows = stmt.query(params![spider_name]).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        if let Some(row) = rows.next().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))? {
+-            let blob: Vec<u8> = row.get(0).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-            Ok(Some(blob))
+-        } else {
+-            Ok(None)
+-        }
+-    }
+-
+-    fn delete_checkpoint(&self, spider_name: &str) -> Result<()> {
+-        let conn = self.conn.lock();
+-        conn.execute("DELETE FROM crawl_checkpoints WHERE spider_name = ?1", params![spider_name])
+-            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        Ok(())
+-    }
+-
+-    fn save_element(&self, url: &str, key: &str, row: &ElementSnapshotRow) -> Result<()> {
+-        let conn = self.conn.lock();
+-        conn.execute(
+-            "INSERT OR REPLACE INTO element_snapshots
+-             (url, key, tag, attrs, text_preview, ancestor_path, sibling_tags,
+-              position_in_parent, parent_tag, parent_attrs, captured_at)
+-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+-            params![
+-                url, key, row.tag,
+-                row.attrs.to_string(), row.text_preview,
+-                row.ancestor_path.to_string(), row.sibling_tags.to_string(),
+-                row.position_in_parent, row.parent_tag, row.parent_attrs.to_string(),
+-                row.captured_at,
+-            ],
+-        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        Ok(())
+-    }
+-
+-    fn load_element(&self, url: &str, key: &str) -> Result<Option<ElementSnapshotRow>> {
+-        let conn = self.conn.lock();
+-        let mut stmt = conn.prepare(
+-            "SELECT tag, attrs, text_preview, ancestor_path, sibling_tags,
+-                    position_in_parent, parent_tag, parent_attrs, captured_at
+-             FROM element_snapshots WHERE url = ?1 AND key = ?2"
+-        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        let mut rows = stmt.query(params![url, key]).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        if let Some(row) = rows.next().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))? {
+-            // ND-010-CORR：JSON 解析失败返回错误，不再静默吞掉返回 Null。
+-            // 这样调用方能区分"字段为空"和"数据损坏"。
+-            let attrs_str: String = row.get::<_, String>(1).unwrap_or_default();
+-            let ancestor_path_str: String = row.get::<_, String>(3).unwrap_or_default();
+-            let sibling_tags_str: String = row.get::<_, String>(4).unwrap_or_default();
+-            let parent_attrs_str: String = row.get::<_, String>(7).unwrap_or_default();
+-            Ok(Some(ElementSnapshotRow {
+-                tag: row.get(0).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
+-                attrs: parse_json_or_err(&attrs_str, "attrs")?,
+-                text_preview: row.get(2).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
+-                ancestor_path: parse_json_or_err(&ancestor_path_str, "ancestor_path")?,
+-                sibling_tags: parse_json_or_err(&sibling_tags_str, "sibling_tags")?,
+-                position_in_parent: row.get(5).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
+-                parent_tag: row.get(6).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
+-                parent_attrs: parse_json_or_err(&parent_attrs_str, "parent_attrs")?,
+-                captured_at: row.get(8).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?,
+-            }))
+-        } else {
+-            Ok(None)
+-        }
+-    }
+-
+-    fn save_response(&self, method: &str, url: &str, resp: &CachedResponse) -> Result<()> {
+-        let conn = self.conn.lock();
+-        let ttl_secs = resp.ttl.map(|d| d.as_secs() as i64);
+-        conn.execute(
+-            "INSERT OR REPLACE INTO response_cache
+-             (url, method, status, headers, body, content_type, cached_at, ttl_secs)
+-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+-            params![
+-                url, method, resp.status,
+-                serde_json::to_string(&resp.headers).unwrap_or_default(),
+-                resp.body, resp.content_type, resp.cached_at, ttl_secs,
+-            ],
+-        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        Ok(())
+-    }
+-
+-    fn load_response(&self, method: &str, url: &str) -> Result<Option<CachedResponse>> {
+-        let conn = self.conn.lock();
+-        // SQL 层过滤过期 entry：ttl_secs IS NULL 表示永不过期。
+-        // 注意：strftime('%s','now') 返回 TEXT，而 cached_at + ttl_secs 是 INTEGER，
+-        // SQLite 类型比较规则下 INTEGER < TEXT 恒成立，必须 CAST 为 INTEGER 才能正确比较。
+-        let mut stmt = conn.prepare(
+-            "SELECT status, headers, body, content_type, cached_at, ttl_secs
+-             FROM response_cache
+-             WHERE url = ?1 AND method = ?2
+-               AND (ttl_secs IS NULL OR cached_at + ttl_secs >= CAST(strftime('%s','now') AS INTEGER))"
+-        ).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        let mut rows = stmt.query(params![url, method]).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        if let Some(row) = rows.next().map_err(|e| WispError::Storage(StorageError::General(e.to_string())))? {
+-            let status: i64 = row.get(0).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-            let headers_str: String = row.get(1).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-            let body: Vec<u8> = row.get(2).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-            let content_type: String = row.get(3).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-            let cached_at: i64 = row.get(4).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-            let ttl_secs: Option<i64> = row.get(5).map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-            Ok(Some(CachedResponse {
+-                status: status as u16,
+-                headers: parse_json_or_err(&headers_str, "headers")?,
+-                body,
+-                content_type,
+-                cached_at,
+-                ttl: ttl_secs.map(|s| Duration::from_secs(s as u64)),
+-            }))
+-        } else {
+-            Ok(None)
+-        }
+-    }
+-
+-    fn delete_response(&self, method: &str, url: &str) -> Result<()> {
+-        let conn = self.conn.lock();
+-        conn.execute("DELETE FROM response_cache WHERE url = ?1 AND method = ?2", params![url, method])
+-            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
+-        Ok(())
+-    }
++pub fn load_checkpoint(store: &dyn Store, name: &str) -> Result<Option<Vec<u8>>> {
++    store.get(NS_CHECKPOINT, name)
+ }
+ 
+-// ============================================================================
+-// MemoryStore
+-// ============================================================================
+-
+-/// per-entry TTL 过期策略：从 `CachedResponse.ttl` 读取有效期。
+-struct ResponseExpiry;
+-
+-impl Expiry<(String, String), CachedResponse> for ResponseExpiry {
+-    fn expire_after_create(
+-        &self,
+-        _key: &(String, String),
+-        value: &CachedResponse,
+-        _created_at: Instant,
+-    ) -> Option<Duration> {
+-        value.ttl
+-    }
+-
+-    fn expire_after_update(
+-        &self,
+-        key: &(String, String),
+-        value: &CachedResponse,
+-        updated_at: Instant,
+-        _prev: Option<Duration>,
+-    ) -> Option<Duration> {
+-        self.expire_after_create(key, value, updated_at)
+-    }
++pub fn delete_checkpoint(store: &dyn Store, name: &str) -> Result<()> {
++    store.delete(NS_CHECKPOINT, name)
+ }
+ 
+-/// 内存存储后端（测试用，零 IO）。
+-///
+-/// checkpoint/element 用 `parking_lot::Mutex<HashMap>`，
+-/// response 缓存用 `moka::sync::Cache`（支持 per-entry TTL + 容量淘汰）。
+-pub struct MemoryStore {
+-    checkpoints: Mutex<HashMap<String, Vec<u8>>>,
+-    elements: Mutex<HashMap<(String, String), ElementSnapshotRow>>,
+-    responses: MokaCache<(String, String), CachedResponse>,
++// === Element Snapshot ===
++
++pub fn save_element(
++    store: &dyn Store,
++    url: &str,
++    key: &str,
++    row: &ElementSnapshotRow,
++) -> Result<()> {
++    let composite = format!("{url}|{key}");
++    let bytes = serde_json::to_vec(row)
++        .map_err(|e| WispError::Storage(StorageError::General(format!("serialize element: {e}"))))?;
++    store.set(NS_ELEMENT, &composite, &bytes)
+ }
+ 
+-impl MemoryStore {
+-    /// 创建内存存储。`max_response_entries` 限制响应缓存条目数（默认 10000）。
+-    pub fn new(max_response_entries: u64) -> Self {
+-        Self {
+-            checkpoints: Mutex::new(HashMap::new()),
+-            elements: Mutex::new(HashMap::new()),
+-            responses: MokaCache::builder()
+-                .max_capacity(max_response_entries)
+-                .expire_after(ResponseExpiry)
+-                .build(),
+-        }
+-    }
++pub fn load_element(
++    store: &dyn Store,
++    url: &str,
++    key: &str,
++) -> Result<Option<ElementSnapshotRow>> {
++    let composite = format!("{url}|{key}");
++    store
++        .get(NS_ELEMENT, &composite)?
++        .map(|v| serde_json::from_slice(&v))
++        .transpose()
++        .map_err(|e| WispError::Storage(StorageError::General(format!("parse element: {e}"))))
+ }
+ 
+-impl Default for MemoryStore {
+-    fn default() -> Self {
+-        Self::new(10000)
+-    }
++// === Response Cache ===
++
++pub fn save_response(
++    store: &dyn Store,
++    method: &str,
++    url: &str,
++    resp: &CachedResponse,
++) -> Result<()> {
++    let composite = format!("{method}|{url}");
++    let bytes = serde_json::to_vec(resp)
++        .map_err(|e| WispError::Storage(StorageError::General(format!("serialize response: {e}"))))?;
++    store.set_with_ttl(NS_RESPONSE, &composite, &bytes, resp.ttl)
+ }
+ 
+-impl Store for MemoryStore {
+-    fn save_checkpoint(&self, spider_name: &str, state_bytes: &[u8], _saved_at: i64) -> Result<()> {
+-        self.checkpoints.lock().insert(spider_name.to_string(), state_bytes.to_vec());
+-        Ok(())
+-    }
++pub fn load_response(
++    store: &dyn Store,
++    method: &str,
++    url: &str,
++) -> Result<Option<CachedResponse>> {
++    let composite = format!("{method}|{url}");
++    store
++        .get(NS_RESPONSE, &composite)?
++        .map(|v| serde_json::from_slice(&v))
++        .transpose()
++        .map_err(|e| WispError::Storage(StorageError::General(format!("parse response: {e}"))))
++}
+ 
+-    fn load_checkpoint(&self, spider_name: &str) -> Result<Option<Vec<u8>>> {
+-        Ok(self.checkpoints.lock().get(spider_name).cloned())
+-    }
++pub fn delete_response(store: &dyn Store, method: &str, url: &str) -> Result<()> {
++    let composite = format!("{method}|{url}");
++    store.delete(NS_RESPONSE, &composite)
++}
+ 
+-    fn delete_checkpoint(&self, spider_name: &str) -> Result<()> {
+-        self.checkpoints.lock().remove(spider_name);
+-        Ok(())
+-    }
++// ============================================================================
++// 测试：自由函数 + MockStore
++// ============================================================================
+ 
+-    fn save_element(&self, url: &str, key: &str, row: &ElementSnapshotRow) -> Result<()> {
+-        self.elements.lock().insert((url.to_string(), key.to_string()), row.clone());
+-        Ok(())
+-    }
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::collections::HashMap;
++    use parking_lot::Mutex;
+ 
+-    fn load_element(&self, url: &str, key: &str) -> Result<Option<ElementSnapshotRow>> {
+-        Ok(self.elements.lock().get(&(url.to_string(), key.to_string())).cloned())
++    /// 测试用 MockStore：基于 HashMap，支持 TTL 检查。
++    struct MockStore {
++        data: Mutex<HashMap<(String, String), (Vec<u8>, Option<Instant>)>>,
+     }
+ 
+-    fn save_response(&self, method: &str, url: &str, resp: &CachedResponse) -> Result<()> {
+-        self.responses.insert((method.to_string(), url.to_string()), resp.clone());
+-        Ok(())
++    impl MockStore {
++        fn new() -> Self {
++            Self { data: Mutex::new(HashMap::new()) }
++        }
+     }
+ 
+-    fn load_response(&self, method: &str, url: &str) -> Result<Option<CachedResponse>> {
+-        Ok(self.responses.get(&(method.to_string(), url.to_string())))
+-    }
++    use std::time::Instant;
+ 
+-    fn delete_response(&self, method: &str, url: &str) -> Result<()> {
+-        self.responses.invalidate(&(method.to_string(), url.to_string()));
+-        Ok(())
++    impl Store for MockStore {
++        fn set(&self, ns: &str, key: &str, value: &[u8]) -> Result<()> {
++            self.data.lock().insert((ns.into(), key.into()), (value.to_vec(), None));
++            Ok(())
++        }
++        fn get(&self, ns: &str, key: &str) -> Result<Option<Vec<u8>>> {
++            let now = Instant::now();
++            let g = self.data.lock();
++            if let Some((v, exp)) = g.get(&(ns.into(), key.into())) {
++                if let Some(exp) = exp {
++                    if now > *exp { return Ok(None); }
++                }
++                Ok(Some(v.clone()))
++            } else { Ok(None) }
++        }
++        fn delete(&self, ns: &str, key: &str) -> Result<()> {
++            self.data.lock().remove(&(ns.into(), key.into()));
++            Ok(())
++        }
++        fn set_with_ttl(&self, ns: &str, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<()> {
++            let exp = ttl.map(|d| Instant::now() + d);
++            self.data.lock().insert((ns.into(), key.into()), (value.to_vec(), exp));
++            Ok(())
++        }
+     }
+-}
+-
+-// ============================================================================
+-// 测试
+-// ============================================================================
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+ 
+     fn make_cached(status: u16, body: &[u8], ttl: Option<Duration>) -> CachedResponse {
+         CachedResponse {
+             status,
+             headers: HashMap::new(),
+             body: body.to_vec(),
+             content_type: "text/html".to_string(),
+             cached_at: chrono::Utc::now().timestamp(),
+             ttl,
+         }
+     }
+ 
+-    // --- SqliteStore ---
+-
+     #[test]
+-    fn sqlite_checkpoint_roundtrip() {
+-        let store = SqliteStore::open_in_memory().unwrap();
+-        store.save_checkpoint("spider1", b"state-bytes", 1234567890).unwrap();
+-        let loaded = store.load_checkpoint("spider1").unwrap().unwrap();
++    fn checkpoint_roundtrip_via_free_fn() {
++        let store = MockStore::new();
++        save_checkpoint(&store, "spider1", b"state-bytes").unwrap();
++        let loaded = load_checkpoint(&store, "spider1").unwrap().unwrap();
+         assert_eq!(loaded, b"state-bytes");
+-        store.delete_checkpoint("spider1").unwrap();
+-        assert!(store.load_checkpoint("spider1").unwrap().is_none());
++        delete_checkpoint(&store, "spider1").unwrap();
++        assert!(load_checkpoint(&store, "spider1").unwrap().is_none());
+     }
+ 
+     #[test]
+-    fn sqlite_response_roundtrip() {
+-        let store = SqliteStore::open_in_memory().unwrap();
++    fn response_roundtrip_via_free_fn() {
++        let store = MockStore::new();
+         let resp = make_cached(200, b"<html>hi</html>", Some(Duration::from_secs(3600)));
+-        store.save_response("GET", "https://example.com", &resp).unwrap();
+-        let loaded = store.load_response("GET", "https://example.com").unwrap().unwrap();
++        save_response(&store, "GET", "https://example.com", &resp).unwrap();
++        let loaded = load_response(&store, "GET", "https://example.com").unwrap().unwrap();
+         assert_eq!(loaded.status, 200);
+         assert_eq!(loaded.body, b"<html>hi</html>");
+         assert_eq!(loaded.content_type, "text/html");
+     }
+ 
+     #[test]
+-    fn sqlite_response_expired_filtered() {
+-        let store = SqliteStore::open_in_memory().unwrap();
+-        // 手动写入已过期 entry（cached_at = 1，ttl = 1 秒，早就过期了）
+-        let expired = CachedResponse {
+-            status: 200, headers: HashMap::new(), body: b"old".to_vec(),
+-            content_type: String::new(), cached_at: 1, ttl: Some(Duration::from_secs(1)),
+-        };
+-        store.save_response("GET", "https://expired.com", &expired).unwrap();
+-        assert!(store.load_response("GET", "https://expired.com").unwrap().is_none());
++    fn response_ttl_expiry() {
++        let store = MockStore::new();
++        let resp = make_cached(200, b"x", Some(Duration::from_millis(1)));
++        save_response(&store, "GET", "https://expired.com", &resp).unwrap();
++        std::thread::sleep(Duration::from_millis(10));
++        assert!(load_response(&store, "GET", "https://expired.com").unwrap().is_none());
+     }
+ 
+     #[test]
+-    fn sqlite_response_no_ttl_never_expires() {
+-        let store = SqliteStore::open_in_memory().unwrap();
++    fn response_no_ttl_never_expires() {
++        let store = MockStore::new();
+         let resp = make_cached(200, b"forever", None);
+-        store.save_response("GET", "https://forever.com", &resp).unwrap();
+-        let loaded = store.load_response("GET", "https://forever.com").unwrap().unwrap();
++        save_response(&store, "GET", "https://forever.com", &resp).unwrap();
++        let loaded = load_response(&store, "GET", "https://forever.com").unwrap().unwrap();
+         assert_eq!(loaded.body, b"forever");
+     }
+ 
+-    // --- MemoryStore ---
+-
+-    #[test]
+-    fn memory_checkpoint_roundtrip() {
+-        let store = MemoryStore::default();
+-        store.save_checkpoint("spider1", b"state", 0).unwrap();
+-        assert_eq!(store.load_checkpoint("spider1").unwrap().unwrap(), b"state");
+-        store.delete_checkpoint("spider1").unwrap();
+-        assert!(store.load_checkpoint("spider1").unwrap().is_none());
+-    }
+-
+-    #[test]
+-    fn memory_response_roundtrip() {
+-        let store = MemoryStore::default();
+-        let resp = make_cached(200, b"hello", Some(Duration::from_secs(60)));
+-        store.save_response("GET", "https://example.com", &resp).unwrap();
+-        let loaded = store.load_response("GET", "https://example.com").unwrap().unwrap();
+-        assert_eq!(loaded.body, b"hello");
+-    }
+-
+     #[test]
+-    fn memory_response_delete() {
+-        let store = MemoryStore::default();
+-        let resp = make_cached(200, b"x", None);
+-        store.save_response("POST", "https://example.com/api", &resp).unwrap();
+-        assert!(store.load_response("POST", "https://example.com/api").unwrap().is_some());
+-        store.delete_response("POST", "https://example.com/api").unwrap();
+-        assert!(store.load_response("POST", "https://example.com/api").unwrap().is_none());
++    fn method_isolation() {
++        let store = MockStore::new();
++        save_response(&store, "GET", "https://example.com", &make_cached(200, b"get", None)).unwrap();
++        save_response(&store, "POST", "https://example.com", &make_cached(201, b"post", None)).unwrap();
++        assert_eq!(load_response(&store, "GET", "https://example.com").unwrap().unwrap().body, b"get");
++        assert_eq!(load_response(&store, "POST", "https://example.com").unwrap().unwrap().body, b"post");
+     }
+ 
+     #[test]
+-    fn memory_method_isolation() {
+-        let store = MemoryStore::default();
+-        store.save_response("GET", "https://example.com", &make_cached(200, b"get", None)).unwrap();
+-        store.save_response("POST", "https://example.com", &make_cached(201, b"post", None)).unwrap();
+-        assert_eq!(store.load_response("GET", "https://example.com").unwrap().unwrap().body, b"get");
+-        assert_eq!(store.load_response("POST", "https://example.com").unwrap().unwrap().body, b"post");
+-    }
+-
+-    #[test]
+-    fn cached_response_is_expired_logic() {
+-        let now = chrono::Utc::now().timestamp();
+-        let fresh = CachedResponse { status: 200, headers: HashMap::new(), body: vec![], content_type: String::new(), cached_at: now, ttl: Some(Duration::from_secs(3600)) };
+-        assert!(!fresh.is_expired());
+-
+-        let expired = CachedResponse { status: 200, headers: HashMap::new(), body: vec![], content_type: String::new(), cached_at: 1, ttl: Some(Duration::from_secs(1)) };
+-        assert!(expired.is_expired());
+-
+-        let forever = CachedResponse { status: 200, headers: HashMap::new(), body: vec![], content_type: String::new(), cached_at: 1, ttl: None };
+-        assert!(!forever.is_expired());
++    fn namespace_isolation() {
++        let store = MockStore::new();
++        // checkpoint 和 element 同名 key 不冲突
++        save_checkpoint(&store, "mykey", b"cp").unwrap();
++        let elem = ElementSnapshotRow {
++            tag: "div".into(), attrs: serde_json::Value::Null,
++            text_preview: "hi".into(), ancestor_path: serde_json::Value::Null,
++            sibling_tags: serde_json::Value::Null, position_in_parent: 0,
++            parent_tag: "body".into(), parent_attrs: serde_json::Value::Null,
++            captured_at: 0,
++        };
++        save_element(&store, "http://x", "mykey", &elem).unwrap();
++        assert_eq!(load_checkpoint(&store, "mykey").unwrap().unwrap(), b"cp");
++        assert!(load_element(&store, "http://x", "mykey").unwrap().is_some());
+     }
+ }
+diff --git a/src/storage/sqlite.rs b/src/storage/sqlite.rs
+new file mode 100644
+index 0000000..9d79bf1
+--- /dev/null
++++ b/src/storage/sqlite.rs
+@@ -0,0 +1,156 @@
++//! SQLite 存储后端。单表 KV 结构。
++
++use std::path::Path;
++use std::time::Duration;
++
++use parking_lot::Mutex;
++use rusqlite::{params, Connection};
++
++use crate::error::{Result, WispError, StorageError};
++use super::Store;
++
++/// SQLite 存储后端。线程安全（`parking_lot::Mutex<Connection>`，无 poison）。
++pub struct SqliteStore {
++    conn: Mutex<Connection>,
++}
++
++impl SqliteStore {
++    /// 打开或创建数据库文件。
++    pub fn open(path: &Path) -> Result<Self> {
++        let conn = Connection::open(path)
++            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        let store = Self { conn: Mutex::new(conn) };
++        store.init_schema()?;
++        Ok(store)
++    }
++
++    /// 内存数据库（测试用）。
++    pub fn open_in_memory() -> Result<Self> {
++        let conn = Connection::open_in_memory()
++            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        let store = Self { conn: Mutex::new(conn) };
++        store.init_schema()?;
++        Ok(store)
++    }
++
++    fn init_schema(&self) -> Result<()> {
++        let conn = self.conn.lock();
++        conn.execute_batch("PRAGMA journal_mode=WAL;")
++            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        conn.execute_batch("PRAGMA synchronous=NORMAL;")
++            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        conn.execute_batch(super::migrations::SCHEMA_V1)
++            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        Ok(())
++    }
++}
++
++impl Store for SqliteStore {
++    fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
++        let conn = self.conn.lock();
++        let now = chrono::Utc::now().timestamp();
++        conn.execute(
++            "INSERT OR REPLACE INTO kv (namespace, key, value, ttl_secs, cached_at) \
++             VALUES (?1, ?2, ?3, NULL, ?4)",
++            params![namespace, key, value, now],
++        )
++        .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        Ok(())
++    }
++
++    fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
++        let conn = self.conn.lock();
++        let mut stmt = conn.prepare(
++            "SELECT value FROM kv
++             WHERE namespace = ?1 AND key = ?2
++               AND (ttl_secs IS NULL OR cached_at + ttl_secs >= CAST(strftime('%s','now') AS INTEGER))",
++        )
++        .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        let mut rows = stmt.query(params![namespace, key])
++            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        if let Some(row) = rows.next()
++            .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))? {
++            let value: Vec<u8> = row.get(0)
++                .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++            Ok(Some(value))
++        } else {
++            Ok(None)
++        }
++    }
++
++    fn delete(&self, namespace: &str, key: &str) -> Result<()> {
++        let conn = self.conn.lock();
++        conn.execute(
++            "DELETE FROM kv WHERE namespace = ?1 AND key = ?2",
++            params![namespace, key],
++        )
++        .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        Ok(())
++    }
++
++    fn set_with_ttl(
++        &self,
++        namespace: &str,
++        key: &str,
++        value: &[u8],
++        ttl: Option<Duration>,
++    ) -> Result<()> {
++        let conn = self.conn.lock();
++        let now = chrono::Utc::now().timestamp();
++        let ttl_secs = ttl.map(|d| d.as_secs() as i64);
++        conn.execute(
++            "INSERT OR REPLACE INTO kv (namespace, key, value, ttl_secs, cached_at) \
++             VALUES (?1, ?2, ?3, ?4, ?5)",
++            params![namespace, key, value, ttl_secs, now],
++        )
++        .map_err(|e| WispError::Storage(StorageError::General(e.to_string())))?;
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::time::Duration;
++
++    fn make_store() -> SqliteStore {
++        SqliteStore::open_in_memory().unwrap()
++    }
++
++    #[test]
++    fn checkpoint_roundtrip() {
++        let store = make_store();
++        store.set("checkpoint", "spider1", b"state").unwrap();
++        assert_eq!(store.get("checkpoint", "spider1").unwrap().unwrap(), b"state");
++        store.delete("checkpoint", "spider1").unwrap();
++        assert!(store.get("checkpoint", "spider1").unwrap().is_none());
++    }
++
++    #[test]
++    fn ttl_expiry() {
++        let store = make_store();
++        store.set_with_ttl("ns", "k", b"v", Some(Duration::from_secs(1))).unwrap();
++        // 手动改 cached_at 让它过期
++        store.conn.lock().execute(
++            "UPDATE kv SET cached_at = cached_at - 100 WHERE namespace='ns' AND key='k'",
++            [],
++        ).unwrap();
++        assert!(store.get("ns", "k").unwrap().is_none());
++    }
++
++    #[test]
++    fn ttl_none_never_expires() {
++        let store = make_store();
++        store.set_with_ttl("ns", "k", b"forever", None).unwrap();
++        assert_eq!(store.get("ns", "k").unwrap().unwrap(), b"forever");
++    }
++
++    #[test]
++    fn namespace_isolation() {
++        let store = make_store();
++        store.set("ns1", "key", b"a").unwrap();
++        store.set("ns2", "key", b"b").unwrap();
++        assert_eq!(store.get("ns1", "key").unwrap().unwrap(), b"a");
++        assert_eq!(store.get("ns2", "key").unwrap().unwrap(), b"b");
++    }
++}

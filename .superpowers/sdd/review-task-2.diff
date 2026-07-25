@@ -1,0 +1,174 @@
+=== COMMITS ===
+ffd38f3 feat(engine): 默认注入 MemoryStore + FileStore + CLI 适配
+
+=== STAT ===
+ .gitignore          |  3 ++-
+ src/bin/wisp.rs     | 19 +++++++++++++++----
+ src/crawl/runner.rs |  4 ++--
+ src/lib.rs          |  2 +-
+ src/mcp/mod.rs      |  2 +-
+ src/mcp/tools.rs    |  2 +-
+ 6 files changed, 22 insertions(+), 10 deletions(-)
+
+=== DIFF (U10) ===
+diff --git a/.gitignore b/.gitignore
+index a67c551..36a49a0 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,4 +1,5 @@
+ /target
+ *.png
+ .codegraph
+-.qoder/
+\ No newline at end of file
++.qoder/
++wisp-data/
+\ No newline at end of file
+diff --git a/src/bin/wisp.rs b/src/bin/wisp.rs
+index dcf1bcd..d3c123e 100644
+--- a/src/bin/wisp.rs
++++ b/src/bin/wisp.rs
+@@ -111,21 +111,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
+                         }
+                     }
+                     _ => println!("{}", serde_json::to_string_pretty(&items)?),
+                 }
+             } else {
+                 println!("{html}");
+             }
+         }
+         Commands::Mcp { cmd } => match cmd {
+             McpCmd::Serve { db } => {
+-                let store: Arc<dyn wisp::Store> = if db == ":memory:" {
+-                    Arc::new(wisp::SqliteStore::open_in_memory()?)
+-                } else {
+-                    Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db))?)
++                let store: Arc<dyn wisp::Store> = {
++                    #[cfg(feature = "sqlite")]
++                    {
++                        if db != ":memory:" && !db.is_empty() {
++                            Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db))?)
++                        } else {
++                            Arc::new(wisp::FileStore::default())
++                        }
++                    }
++                    #[cfg(not(feature = "sqlite"))]
++                    {
++                        // sqlite feature 未启用时忽略 db 参数，使用 FileStore
++                        let _ = db;
++                        Arc::new(wisp::FileStore::default())
++                    }
+                 };
+                 wisp::mcp::serve(store).await?;
+             }
+         },
+     }
+     Ok(())
+ }
+diff --git a/src/crawl/runner.rs b/src/crawl/runner.rs
+index a346052..ab6690c 100644
+--- a/src/crawl/runner.rs
++++ b/src/crawl/runner.rs
+@@ -74,22 +74,22 @@ impl Engine {
+     /// 创建 Engine builder（纯基础设施构造器）。
+     ///
+     /// 替代原 `Engine::new(spider)` / `Engine::spiders(vec)` / `Engine::builder(spider)`。
+     /// Engine 不再持有 Spider，长期持有共享底层资源。
+     pub fn infra() -> EngineBuilder {
+         EngineBuilder {
+             fetch_client_config: FetchClientConfig::default(),
+             max_concurrent: 8,
+             max_pages: 1000,
+             max_refetch_rounds: 5,
+-            cache_store: None,
+-            checkpoint_store: None,
++            cache_store: Some(Arc::new(crate::storage::MemoryStore::default())),
++            checkpoint_store: Some(Arc::new(crate::storage::FileStore::default())),
+             checkpoint_interval: 100,
+             autoscale: None,
+             // 引擎配置默认值（ND-031-ARCH：原 Spider trait 默认值）
+             fetch_mode: crate::fetcher::FetchMode::Auto,
+             obey_robots: true,
+             max_retries: 3,
+             download_delay: Duration::ZERO,
+             auto_rules: Vec::new(),
+         }
+     }
+diff --git a/src/lib.rs b/src/lib.rs
+index 949e977..65b7011 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -63,18 +63,18 @@ pub mod mcp;
+ pub use fetcher::{FetchClient, FetchClientConfig, Fetcher, FetchMode, FetcherBuilder};
+ pub use fetcher::{Response, Request, Method};
+ 
+ // === 核心类型 ===
+ pub use browser::{Browser, Page};
+ pub use config::{LaunchOptions, ProxyConfig};
+ pub use error::{WispError, Result, BrowserError, NetworkError, ParseError, McpError, StorageError};
+ 
+ pub use parser::{Node, NodeList};
+ pub use proxy::RotationStrategy;
+-pub use storage::{Store, MemoryStore, SqliteStore, CachedResponse, ElementSnapshotRow};
++pub use storage::{Store, MemoryStore, FileStore, SqliteStore, CachedResponse, ElementSnapshotRow};
+ 
+ // === 爬虫引擎 ===
+ pub use crawl::{Spider, Engine, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider};
+ pub use http::UaRotator;
+ 
+ // === 底层类型（FetchClientConfig 公共字段需要） ===
+ pub use http::DomainBlocker;
+diff --git a/src/mcp/mod.rs b/src/mcp/mod.rs
+index 24ad58e..780d08b 100644
+--- a/src/mcp/mod.rs
++++ b/src/mcp/mod.rs
+@@ -255,21 +255,21 @@ mod tests {
+ 
+     #[test]
+     fn test_handle_initialize() {
+         let init = handle_initialize();
+         assert_eq!(init["serverInfo"]["name"], "wisp");
+         assert!(init["capabilities"]["tools"].is_object());
+     }
+ 
+     #[tokio::test]
+     async fn test_handle_tools_call_unknown_tool() {
+-        let store: Arc<dyn Store> = Arc::new(crate::storage::SqliteStore::open_in_memory().unwrap());
++        let store: Arc<dyn Store> = Arc::new(crate::storage::MemoryStore::default());
+         let engine = Engine::infra()
+             .max_pages(100)
+             .obey_robots(false)
+             .build()
+             .unwrap();
+         let req = json!({
+             "params": { "name": "nonexistent", "arguments": {} }
+         });
+         let result = handle_tools_call(req, &store, &engine).await;
+         assert!(result.is_err());
+diff --git a/src/mcp/tools.rs b/src/mcp/tools.rs
+index ea3f826..37b0ea1 100644
+--- a/src/mcp/tools.rs
++++ b/src/mcp/tools.rs
+@@ -266,21 +266,21 @@ mod tests {
+             .max_pages(100)
+             .build()
+             .unwrap();
+         let args = json!({});
+         let result = crawl_site(args, &engine).await;
+         assert!(result.is_err());
+     }
+ 
+     #[tokio::test]
+     async fn test_adaptive_scrape_missing_args() {
+-        let store: Arc<dyn Store> = Arc::new(crate::storage::SqliteStore::open_in_memory().unwrap());
++        let store: Arc<dyn Store> = Arc::new(crate::storage::MemoryStore::default());
+         let args = json!({});
+         let result = adaptive_scrape(args, &store).await;
+         assert!(result.is_err());
+     }
+ 
+     #[tokio::test]
+     async fn test_stealth_fetch_missing_url() {
+         let args = json!({});
+         let result = stealth_fetch(args).await;
+         assert!(result.is_err());

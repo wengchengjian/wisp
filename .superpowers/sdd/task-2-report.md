@@ -1,133 +1,75 @@
-# Task 2 Report — P1-1a status_codes 改用 DashMap 无锁计数
+# Task 2 实施报告：Engine 默认值 + bin/wisp.rs CLI + mcp 测试改动
 
-## Steps Taken (TDD: Red → Green → Commit)
+## 状态
+**DONE_WITH_CONCERNS** — brief 列出的全部修改完成，编译通过、mcp 单测 10/10 通过；但 brief Step 7 的两个端到端测试因 Task 1 留下的 API 破坏编译失败（不在 Task 2 范围内），见"顾虑"。
 
-### Step 1: 写失败测试
-新建 `/home/weng/wisp/tests/p1_status_codes_test.rs`（逐字照搬 brief），2 个 `#[tokio::test]`：
-- `status_codes_concurrent_increment_is_correct` — 50 个 task 各对 200/404 累加 100 次，断言各 5000
-- `status_codes_snapshot_returns_empty_for_fresh_stats` — 新建 stats 快照为空
+## 修改的文件（绝对路径）
+- `/home/weng/wisp/src/crawl/runner.rs` — `Engine::infra()` 默认值：`cache_store`/`checkpoint_store` 从 `None` 改为注入 `MemoryStore::default()` / `FileStore::default()`
+- `/home/weng/wisp/src/bin/wisp.rs` — `McpCmd::Serve` 分支：默认 `FileStore::default()`，`#[cfg(feature="sqlite")]` 分支保留 `--db` 走 `SqliteStore::open`
+- `/home/weng/wisp/src/mcp/tools.rs` L276 — 测试用 `MemoryStore::default()` 替换 `SqliteStore::open_in_memory()`
+- `/home/weng/wisp/src/mcp/mod.rs` L265 — 同上
+- `/home/weng/wisp/src/lib.rs` L73 — re-export 追加 `FileStore`（brief 未列出但必须，否则 `bin/wisp.rs` 中 `wisp::FileStore` 无法解析）
+- `/home/weng/wisp/.gitignore` — 追加 `wisp-data/`
 
-### Step 2: 验证失败（Red）
-```
-error[E0425]: cannot find function `record_status` in module `wisp::crawl`
-error[E0603]: struct `SpiderStats` is private
-```
-符合预期：`record_status` 是 `pub(crate)` 不可见；`SpiderStats` 在 `mod.rs:50` 是 `use self::stats::SpiderStats;`（私有 use），外部不可达。
+## 关键决策
+1. **lib.rs re-export 追加 FileStore**：按任务上下文要求执行，确保 `bin/wisp.rs` 中 `wisp::FileStore::default()` 可解析。已验证 `src/storage/mod.rs:15` 已 `pub use file::FileStore;`，`src/storage/file.rs:74` 已 `impl Default for FileStore`。
+2. **未触碰端到端测试代码**：`tests/crawl_checkpoint_test.rs` 与 `tests/crawl_cache_real_test.rs` 编译失败是因为它们仍在调用 Task 1 已删除的 `SqliteStore::save_checkpoint/load_checkpoint/delete_checkpoint/load_response` 方法。brief Files 列表未包含这两个测试文件，按"精准修改"原则未改动。
+3. **未加 `#[allow(unused_attributes)]`**：按任务上下文建议，先编译看实际效果。结果是 cargo 对 `#[cfg(feature = "sqlite")]` 产生 `unexpected_cfgs` 警告（2 个），符合预期，Task 3 添加 feature 定义后消失。
+4. **git add 范围**：仅 `git add src/ .gitignore`，未包含 `.superpowers/sdd/` 或 `docs/` 的他人改动。
 
-### Steps 3–9: 实现
+## 编译输出摘要
+- 命令：`cd /home/weng/wisp && cargo build`
+- 结果：**Finished exit 0**，0 错误
+- 警告：
+  - lib 293 个 `missing_docs` 历史警告（与本次改动无关）
+  - bin "wisp" 2 个 `unexpected_cfgs` 警告（`feature = "sqlite"` 未在 Cargo.toml 定义，Task 3 修复）
+  - 无 `unused variable: db` 警告（`let _ = db;` 生效）
 
-**Step 3 — `src/crawl/observability/stats.rs`**
-- imports：`tokio::sync::Mutex` → `dashmap::DashMap`
-- 字段：`pub status_codes: Mutex<HashMap<u16, usize>>` → `pub status_codes: DashMap<u16, AtomicUsize>`
-- 构造：`Mutex::new(HashMap::new())` → `DashMap::new()`
-- 新增 `pub fn status_codes_snapshot(&self) -> HashMap<u16, usize>`（`iter().map(|r| (*r.key(), r.value().load(SeqCst))).collect()`）
+## 测试结果摘要
 
-**Step 4 — `src/crawl/engine.rs` `record_status`**
-- `async fn` → 同步 `pub fn`（直接定为 `pub`，合并 Step 4 与 Step 8 的可见性改动）
-- 内部：`stats.status_codes.entry(status).and_modify(|c| c.fetch_add(1, Relaxed)).or_insert(AtomicUsize::new(1))`
+### Step 6: `cargo test --lib mcp`
+- 结果：**10 passed; 0 failed; 0 ignored**（260 filtered out）
+- 用时：0.03s
+- 通过测试列表：
+  - mcp::tests::test_handle_initialize
+  - mcp::tests::test_tools_list_has_five_tools
+  - mcp::tests::test_handle_tools_call_unknown_tool
+  - mcp::tools::tests::test_extract_css_missing_args
+  - mcp::tools::tests::test_fetch_page_missing_url
+  - mcp::tools::tests::test_adaptive_scrape_missing_args
+  - mcp::tools::tests::test_extract_css_returns_attr
+  - mcp::tools::tests::test_extract_css_returns_text
+  - mcp::tools::tests::test_stealth_fetch_missing_url
+  - mcp::tools::tests::test_crawl_site_missing_args
 
-**Step 5 — 移除 4 处 `.await`**
-`grep -n "record_status.*\.await" src/crawl/engine.rs` 定位 4 行（166/185/301/445），逐个 Edit 删 `.await`。完成后 grep 复核：0 匹配。
+### Step 7: 端到端测试
 
-**Step 6 — `src/crawl/engine.rs:417`**
-`stats.status_codes.lock().await.clone()` → `stats.status_codes_snapshot()`
+#### `cargo test --test crawl_checkpoint_test`
+- 结果：**编译失败**（9 个 E0599 错误 + 1 个 unused_imports 警告）
+- 失败原因：测试代码调用 `SqliteStore::save_checkpoint / load_checkpoint / delete_checkpoint` 等方法，这些方法在 Task 1 已删除，改为 `crate::storage::save_checkpoint(store, ...)` 等自由函数。
+- 失败位置：
+  - tests/crawl_checkpoint_test.rs:22, 24, 46, 47, 49, 50, 56, 87, 90
+- 不在 Task 2 brief 范围内（brief Files 列表未含此文件）。
 
-**Step 7 — `src/crawl/runner.rs:390`**
-`ctx.state.stats.status_codes.lock().await.clone()` → `ctx.state.stats.status_codes_snapshot()`
+#### `cargo test --test crawl_cache_real_test`
+- 结果：**编译失败**（1 个 E0599 错误 + 1 个 unused_imports 警告）
+- 失败原因：测试代码调用 `Arc<SqliteStore>::load_response`（L45），该方法在 Task 1 已删除。
+- 测试本身标了 `#[ignore = "requires network access"]`，但编译失败导致无法跳过执行。
+- 不在 Task 2 brief 范围内。
 
-**Step 8 — `src/crawl/mod.rs` 暴露 API**
-- 在 `pub use runner::{Engine, EngineBuilder};` 后追加 `pub use engine::record_status;`
-- 额外：将 `mod.rs:50` 的 `use self::stats::SpiderStats;` 改为 `pub use self::stats::SpiderStats;` —— brief Step 8 假定 `SpiderStats` 已通过 `pub use observability::stats;` 可见，但该 re-export 仅暴露模块（`wisp::crawl::stats::SpiderStats` 可用），短路径 `wisp::crawl::SpiderStats` 实际不可见（Step 2 报错即因此）。改为 `pub use` 后测试导入通过。此为 brief 措辞与现状的小偏差，最小修复。
+## Step 8: wisp-data 目录检查
+- 命令：`ls -la wisp-data/`
+- 观察：目录存在但为空（仅 `.`/`..`，无子目录）。与任务上下文预测一致——`Engine::infra().build()` 时 `FileStore::default()` 可能创建根目录，但因端到端测试编译失败未实际触发 checkpoint 写入，故无 `checkpoint/` `element/` `response/` 子目录。
+- git 不跟踪空目录，故 `wisp-data/` 未出现在 `git status` untracked 中；仍在 `.gitignore` 中追加 `wisp-data/` 以防后续写入数据。
 
-**Step 9 — 删除孤立死文件 `src/crawl/stats.rs`**
-- `git rm src/crawl/stats.rs` 失败：`fatal: pathspec 'src/crawl/stats.rs' did not match any files`
-- 原因：该文件未被 git 追踪（`git status` 显示 `?? src/crawl/stats.rs`，`git ls-files` 为空）
-- 处置：改用文件系统删除（DeleteFile 工具）。文件本就 untracked，删除无需 git 暂存，提交时自然不包含。结果一致：仓库与工作树均不再有此死文件。
+## 提交信息
+- commit hash: `ffd38f3b114a541484781fa8f5429c022252a13f`（短：`ffd38f3`）
+- message: `feat(engine): 默认注入 MemoryStore + FileStore + CLI 适配`
+- 范围：6 files changed, 22 insertions(+), 10 deletions(-)
+  - src/bin/wisp.rs, src/crawl/runner.rs, src/lib.rs, src/mcp/mod.rs, src/mcp/tools.rs, .gitignore
 
-### Step 10: 验证通过（Green）
-见下方"Verification Commands"。
-
-### Step 11: 提交
-```
-git add src/crawl/observability/stats.rs src/crawl/engine.rs src/crawl/runner.rs src/crawl/mod.rs tests/p1_status_codes_test.rs
-git commit -m "perf: status_codes 改用 DashMap 无锁计数 (P1-1a)"
-```
-未使用 `git add -A`/`git add .`。`src/crawl/stats.rs` 删除未单独暂存（文件 untracked，无删除差异可暂存）。
-
----
-
-## Verification Commands & Output
-
-### `cargo test --test p1_status_codes_test` — 期望 2 passed
-```
-running 2 tests
-test status_codes_snapshot_returns_empty_for_fresh_stats ... ok
-test status_codes_concurrent_increment_is_correct ... ok
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-```
-✅ PASS
-
-### `cargo build` — 期望无错误
-```
-warning: `wisp` (lib) generated 6 warnings (run `cargo fix --lib -p wisp` to apply 5 suggestions)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
-```
-✅ 编译成功。6 个 rustc warnings 全部是 pre-existing unused-import（`Client`、`StreamExt` 等，baseline 即有），与本次改动无关。
-
-### `cargo test --lib` — 期望 207 passed
-```
-test result: ok. 207 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
-```
-✅ 与 baseline 一致（207）。
-
-### `cargo clippy --lib 2>&1 | grep "generated.*warnings"` — 期望 28 baseline
-```
-warning: `wisp` (lib) generated 27 warnings (run `cargo clippy --fix --lib -p wisp -- ` to apply 15 suggestions)
-```
-✅ 27 ≤ 28，无新增 warning（实际减少 1 个：移除 stats.rs 的 `tokio::sync::Mutex` import 后该处不再产生相关 lint）。
-
-### 附加验证（相关集成测试）
-```
-cargo test --test crawl_checkpoint_test --test engine_infra_test --test multi_spider_test --test builder_api_test
-test result: ok. 10 passed; 0 failed
-test result: ok. 5 passed; 0 failed
-test result: ok. 5 passed; 0 failed
-test result: ok. 3 passed; 0 failed
-```
-✅ 无回归。
-
----
-
-## Warnings Encountered & Resolution
-
-1. **`git rm src/crawl/stats.rs` 失败**：文件未被 git 追踪（untracked）。改为文件系统删除。无影响：untracked 文件删除无需暂存，commit 后仓库与工作树均无该文件。已在报告 Step 9 说明。
-2. **测试导入 `wisp::crawl::SpiderStats` 报 private**：brief Step 8 假定 `pub use observability::stats;` 已让 `SpiderStats` 短路径可见，实际仅暴露模块。最小修复：将 `mod.rs:50` `use` 改为 `pub use`。已在报告 Step 8 说明。
-3. **clippy warnings 28 → 27**：减少而非增加，符合"无新增 warning"要求。无需处理。
-
----
-
-## Final Commit
-
-- SHA: `324b2a96061e20ed5f4cd56017caaac27dea226d`
-- 短 SHA: `324b2a9`
-- 分支: `master`
-- 消息: `perf: status_codes 改用 DashMap 无锁计数 (P1-1a)`（一行，符合 brief 要求）
-- 暂存文件（5）：
-  - `src/crawl/observability/stats.rs` (M)
-  - `src/crawl/engine.rs` (M)
-  - `src/crawl/runner.rs` (M)
-  - `src/crawl/mod.rs` (M)
-  - `tests/p1_status_codes_test.rs` (A)
-- 未暂存但已处理：`src/crawl/stats.rs` 删除（untracked，无删除差异）
-
----
-
-## Self-Review Note
-
-- 改动严格限定在 brief 列出的文件与接口内，未触碰范围外代码。
-- `record_status` 直接定为 `pub`（合并 Step 4 的 `pub(crate)` 与 Step 8 的 `pub` 升级），避免重复编辑；语义与最终目标一致。
-- 4 处 `.await` 移除逐个 Edit（每处上下文不同），grep 复核 0 残留。
-- `status_codes_snapshot()` 实现与 brief 给出的代码逐字一致。
-- `SpiderStats` 可见性修复（`use` → `pub use`）是 brief 措辞偏差的最小修复，非越权改动——测试用例逐字来自 brief，必须让其通过。
-- 孤立文件删除方式调整（untracked → 文件系统删除），结果与 brief 目标一致。
-- 未引入新 clippy warning，lib 测试数与 baseline 一致。
+## 顾虑与疑问
+1. **端到端测试 API 破坏未修复**：`tests/crawl_checkpoint_test.rs` 与 `tests/crawl_cache_real_test.rs` 因 Task 1 删除 `SqliteStore::save_checkpoint` 等方法而编译失败。brief Step 7 期望它们能跑通验证 Engine 默认值生效，但实际无法编译。建议后续任务（或单独 fixup）将这两个测试改用 `wisp::storage::{save_checkpoint, load_checkpoint, ...}` 自由函数 + `MemoryStore`/`FileStore`。这不在 Task 2 brief Files 列表内。
+2. **brief 与现实的矛盾**：brief Step 7 Expected 写"验证 Engine 默认值生效，checkpoint 持久化到 ./wisp-data/"，但因测试编译失败无法验证。Engine 默认值本身的代码改动已通过编译验证，且 mcp 单测中的 `Engine::infra().build()` 也成功，逻辑上默认值生效；但端到端"checkpoint 持久化到 wisp-data/"未能通过测试实证。
+3. **`#[cfg(feature="sqlite")]` 警告**：2 个 `unexpected_cfgs` 警告存在，Task 3 在 Cargo.toml 添加 `sqlite` feature 后会消失。非阻塞。
+4. **`wisp-data/` 目录为空**：未被 git 跟踪（空目录），`.gitignore` 已加入 `wisp-data/` 防止后续数据污染。

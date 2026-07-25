@@ -1,10 +1,10 @@
 //! Adaptive relocation tests: capture snapshot, simulate site change, verify relocate finds the right element.
 
 use wisp::parser::{Node, adaptive::{ElementSnapshot, relocate_with_snapshot, DEFAULT_TOLERANCE}};
-use wisp::storage::{Store, SqliteStore};
+use wisp::storage::{Store, MemoryStore};
 
 fn make_store() -> impl Store {
-    SqliteStore::open_in_memory().unwrap()
+    MemoryStore::default()
 }
 
 const HTML_BEFORE: &str = r#"
@@ -39,10 +39,10 @@ fn test_capture_then_relocate_after_class_change() {
     let snapshot = ElementSnapshot::capture(&apple_node);
     let key = "product-name";
     let url = "https://example.com/products";
-    store.save_element(url, key, &snapshot.to_row(0)).unwrap();
+    wisp::storage::save_element(&store, url, key, &snapshot.to_row(0)).unwrap();
 
     // Simulate site redesign: .name → .title, parent ul.list → ul.items
-    let loaded = store.load_element(url, key).unwrap().unwrap();
+    let loaded = wisp::storage::load_element(&store, url, key).unwrap().unwrap();
     let loaded_snapshot = ElementSnapshot::from_row(loaded);
 
     let doc_after = Node::from_html(HTML_AFTER);
@@ -73,11 +73,11 @@ fn test_relocate_finds_best_match_among_candidates() {
     let doc = Node::from_html(HTML_BEFORE);
     let banana = doc.select_all(".name").into_iter().nth(1).unwrap();
     let snapshot = ElementSnapshot::capture(&banana);
-    store.save_element("u", "k", &snapshot.to_row(0)).unwrap();
+    wisp::storage::save_element(&store, "u", "k", &snapshot.to_row(0)).unwrap();
 
     // Re-parse same HTML - should find Banana (not Apple)
     let doc2 = Node::from_html(HTML_BEFORE);
-    let loaded = store.load_element("u", "k").unwrap().unwrap();
+    let loaded = wisp::storage::load_element(&store, "u", "k").unwrap().unwrap();
     let loaded_snap = ElementSnapshot::from_row(loaded);
     let found = relocate_with_snapshot(&doc2, &loaded_snap, 0.3).unwrap();
     assert_eq!(found.text(), "Banana");
@@ -95,7 +95,7 @@ fn test_css_adaptive_falls_back_to_snapshot() {
     assert_eq!(found.unwrap().text(), "Apple");
 
     // Verify snapshot was saved
-    let row = store.load_element(url, "name-key").unwrap();
+    let row = wisp::storage::load_element(&store, url, "name-key").unwrap();
     assert!(row.is_some());
 
     // Second call: CSS fails (.name not in HTML_AFTER), should relocate via snapshot
