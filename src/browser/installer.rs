@@ -233,6 +233,8 @@ async fn download_and_install(version: &str, install_root: &Path) -> Result<Path
     let _ = std::fs::remove_file(&temp_zip);
 
     // 设置可执行权限（Linux/macOS）
+    // 对整个 chrome-{platform}/ 目录递归设置 0o755，确保 chrome、chrome_crashpad_handler
+    // 等所有可执行文件都有执行权限（zip 可能不保留 Unix 权限信息）
     let exe_path = find_executable_in_dir(&version_dir)?.ok_or_else(|| {
         WispError::Browser(BrowserError::LaunchFailed(
             "解压后未找到 Chrome 可执行文件".into(),
@@ -241,17 +243,45 @@ async fn download_and_install(version: &str, install_root: &Path) -> Result<Path
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&exe_path, std::fs::Permissions::from_mode(0o755)).map_err(
-            |e| {
-                WispError::Browser(BrowserError::LaunchFailed(format!(
-                    "设置可执行权限失败: {e}"
-                )))
-            },
-        )?;
+        fix_permissions(&version_dir)?;
     }
 
     Ok(exe_path)
+}
+
+/// 递归设置目录下所有文件的可执行权限（0o755）。
+///
+/// Chrome 目录下的可执行文件（chrome、chrome_crashpad_handler）和共享库（.so）
+/// 都需要可执行权限。zip 解压可能不保留原始权限，需要手动修复。
+#[cfg(unix)]
+fn fix_permissions(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn walk(dir: &Path) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .map_err(|e| {
+                        WispError::Browser(BrowserError::LaunchFailed(format!(
+                            "设置目录权限失败: {e}"
+                        )))
+                    })?;
+                walk(&path)?;
+            } else {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .map_err(|e| {
+                        WispError::Browser(BrowserError::LaunchFailed(format!(
+                            "设置文件权限失败: {e}"
+                        )))
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    walk(dir)
 }
 
 /// 解压 zip 文件到目标目录
@@ -300,6 +330,17 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
                     "写入文件失败: {e}"
                 )))
             })?;
+            drop(outfile);
+
+            // 保留 zip 中的 Unix 权限（chrome、chrome_crashpad_handler 等需要可执行权限）
+            #[cfg(unix)]
+            {
+                let mode = entry.unix_mode();
+                if let Some(mode) = mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode));
+                }
+            }
         }
     }
 

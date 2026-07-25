@@ -52,7 +52,7 @@ pub async fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
     }
 
     // 以上都失败：自动下载安装 Chrome for Testing
-    tracing::info!("系统未安装 Chrome/Chromium/Edge，自动下载 Chrome for Testing");
+    // （ensure_browser_installed 内部会先检查已安装，未安装时才下载）
     super::installer::ensure_browser_installed().await
 }
 
