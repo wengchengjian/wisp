@@ -138,10 +138,20 @@ impl FetchClient {
         })?;
         // acquire 返回带 page 的 handle（permit 限制并发数）
         let mut handle = pool.acquire().await?;
+
+        // 总超时：防止 CF 挑战页面卡住整个流程（导航+挑战+提取各阶段都有单独超时，
+        // 但极端情况下可能累加超过预期，这里加一个 120s 硬上限）
+        let work = self.do_browser_work_inner(handle.page_mut(), req, solve_cf);
+        let result = tokio::time::timeout(Duration::from_secs(120), work)
+            .await
+            .map_err(|_| {
+                WispError::Timeout(format!(
+                    "fetch_browser 总超时（120s）: {}",
+                    crate::crawl::engine::sanitize_url(&req.url)
+                ))
+            })?;
+
         // 实际工作；无论成功/失败都显式关闭 tab
-        let result = self
-            .do_browser_work_inner(handle.page_mut(), req, solve_cf)
-            .await;
         let _ = handle.page_mut().close().await;
         // handle Drop：page.target_id 已 None（Page::Drop no-op）+ permit 自动 release
         result
@@ -153,6 +163,10 @@ impl FetchClient {
         req: &Request,
         solve_cf: bool,
     ) -> Result<Response> {
+        let url = &req.url;
+        let solve_label = if solve_cf { "+CF" } else { "" };
+        tracing::info!("BrowserWork[{solve_label}]: {url} 开始");
+
         // 启用 Network 域以捕获真实 HTTP 状态码。
         // 失败立即报错：若 Network.enable 失败，后续无法收到
         // Network.responseReceived 事件，状态码获取链路会彻底失效。
@@ -164,13 +178,16 @@ impl FetchClient {
         let mut event_rx = page.session.subscribe_events();
         let sid = page.session_id.clone();
 
+        tracing::info!("BrowserWork[{solve_label}]: {url} 导航");
         page.goto(&req.url).await?;
 
         // 从事件流中捕获导航请求的真实 HTTP 状态码。
         // 失败立即报错：不再 fallback 到脆弱的 <title> 文本匹配。
         let nav_status = self.recv_navigation_status(&mut event_rx, &sid).await?;
+        tracing::info!("BrowserWork[{solve_label}]: {url} 状态码={nav_status}");
 
         if solve_cf {
+            tracing::info!("BrowserWork[{solve_label}]: {url} 解决 CF 挑战");
             // 检测并解决 Cloudflare 挑战
             let solver = ChallengeSolver::new(page);
             solver.solve(self.config.challenge_timeout).await?;
@@ -195,7 +212,10 @@ impl FetchClient {
             tokio::time::sleep(Duration::from_millis(self.config.extra_wait_ms)).await;
         }
 
-        self.extract_browser_response(page, req, nav_status).await
+        tracing::info!("BrowserWork[{solve_label}]: {url} 提取响应");
+        let resp = self.extract_browser_response(page, req, nav_status).await?;
+        tracing::info!("BrowserWork[{solve_label}]: {url} 完成 ({} bytes)", resp.body.len());
+        Ok(resp)
     }
 
     /// 从事件流中接收 `Network.responseReceived` (type=Document) 事件并提取状态码。
