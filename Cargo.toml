@@ -58,6 +58,8 @@ dashmap = "6"
 parking_lot = "0.12"
 # 临时目录自动清理（替代 Drop 中 thread::spawn + remove_dir_all）
 tempfile = "3"
+# Chrome for Testing 安装器：解压下载的 zip 包
+zip = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -75,7 +77,7 @@ path = "src/bin/wisp.rs"
 # 注意：未启用 panic = "abort"，因为部分 Drop 实现依赖 catch_unwind 语义
 # （如 Page::Drop 的 tokio::spawn 兜底）。如需进一步缩减二进制体积可手动启用。
 [profile.release]
-lto = "thin"          # 跨 crate 内联优化，约 5-10% 性能提升
-codegen-units = 1     # 单 codegen unit，最佳优化（牺牲编译时间）
-strip = true          # 移除调试符号，减小二进制体积
-opt-level = 3         # 默认值，显式声明
+lto = "thin"      # 跨 crate 内联优化，约 5-10% 性能提升
+codegen-units = 1 # 单 codegen unit，最佳优化（牺牲编译时间）
+strip = true      # 移除调试符号，减小二进制体积
+opt-level = 3     # 默认值，显式声明

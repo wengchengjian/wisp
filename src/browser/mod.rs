@@ -6,6 +6,7 @@ pub mod cdp;
 pub mod patches;
 pub mod element;
 pub mod pool;
+pub mod installer;
 
 pub use page::Page;
 pub use cdp::CdpSession;
@@ -43,7 +44,7 @@ impl Browser {
     ///   DevToolsActivePort 超时未出现。
     /// - `BrowserError::CdpConnection` — WebSocket 连接 CDP 失败。
     pub async fn launch(options: LaunchOptions) -> Result<Self> {
-        let executable = launch::resolve_executable(&options)?;
+        let executable = launch::resolve_executable(&options).await?;
 
         // 用户自定义目录：不清理；否则创建 TempDir 自动清理。
         let (user_data_path, temp_dir) = if let Some(ref dir) = options.user_data_dir {

@@ -4,7 +4,13 @@ use crate::config::LaunchOptions;
 use crate::error::{WispError, Result, BrowserError};
 
 /// Resolve the browser executable path from options.
-pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
+///
+/// 查找顺序：
+/// 1. `options.executable_path`（用户显式指定）
+/// 2. Windows 常见安装路径
+/// 3. `which::which` 查找系统 PATH 中的浏览器
+/// 4. **自动下载安装 Chrome for Testing**（若以上都失败）
+pub async fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
     if let Some(ref path) = options.executable_path {
         if path.exists() {
             return Ok(path.clone());
@@ -45,9 +51,9 @@ pub fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
         }
     }
 
-    Err(WispError::Browser(BrowserError::LaunchFailed(
-        "No Chromium-based browser found. Install Chrome/Chromium/Edge or set executable_path.".into(),
-    )))
+    // 以上都失败：自动下载安装 Chrome for Testing
+    tracing::info!("系统未安装 Chrome/Chromium/Edge，自动下载 Chrome for Testing");
+    super::installer::ensure_browser_installed().await
 }
 
 /// Build default Chrome launch arguments from options, with patches applied.
