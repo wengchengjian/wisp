@@ -609,6 +609,13 @@ impl Middleware for BlockedRetryMiddleware {
 
     async fn process_response(&self, resp: &mut Response, _ctx: &CrawlContext) -> MwAction {
         use crate::crawl::BLOCKED_STATUS_CODES;
+        // Stealth 模式下不再 Refetch：浏览器已是最强抓取模式，重复 Refetch 只会
+        // 再次触发 CF 挑战流程，无法突破拦截。状态码 403/503 通常是挑战前的响应，
+        // 挑战已由 ChallengeSolver 解决（fetch_browser 内会修正最终状态码）。
+        // 与 StealthUpgradeMiddleware 的防御保持一致。
+        if resp.request.fetch_mode_override == Some(FetchMode::Stealth) {
+            return MwAction::Continue;
+        }
         if BLOCKED_STATUS_CODES.contains(&resp.status) {
             // 不再维护 _retry 计数，依赖 engine 的 refetch_depth 上限
             if !self.retry_delay.is_zero() {
@@ -992,6 +999,43 @@ mod tests {
 <script src='/c.js'></script>\
 </head><body>ok</body></html>";
         let mut resp = make_resp(200, body);
+        let action = mw.process_response(&mut resp, &ctx).await;
+        assert_eq!(action, MwAction::Continue);
+    }
+
+    // === BlockedRetryMiddleware 测试 ===
+
+    #[tokio::test]
+    async fn blocked_retry_triggers_for_403_without_override() {
+        // 无 fetch_mode_override 时，403 应触发 Refetch（HTTP 模式被拦截，期望重试）
+        let mw = BlockedRetryMiddleware::new(Duration::ZERO);
+        let ctx = make_ctx();
+        let mut resp = make_resp(403, b"");
+        let action = mw.process_response(&mut resp, &ctx).await;
+        match action {
+            MwAction::Refetch(_) => {}
+            other => panic!("expected Refetch, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_retry_skips_for_stealth_override() {
+        // Stealth 模式下不 Refetch：浏览器已是最强模式，403 通常是挑战前的状态码，
+        // Refetch 只会再次触发挑战流程，无法突破拦截。
+        let mw = BlockedRetryMiddleware::new(Duration::ZERO);
+        let ctx = make_ctx();
+        let mut resp = make_resp(403, b"");
+        resp.request.fetch_mode_override = Some(FetchMode::Stealth);
+        let action = mw.process_response(&mut resp, &ctx).await;
+        assert_eq!(action, MwAction::Continue);
+    }
+
+    #[tokio::test]
+    async fn blocked_retry_skips_for_200() {
+        // 200 正常响应不触发 Refetch
+        let mw = BlockedRetryMiddleware::new(Duration::ZERO);
+        let ctx = make_ctx();
+        let mut resp = make_resp(200, b"<html>ok</html>");
         let action = mw.process_response(&mut resp, &ctx).await;
         assert_eq!(action, MwAction::Continue);
     }

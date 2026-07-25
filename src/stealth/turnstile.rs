@@ -63,27 +63,30 @@ pub async fn solve_turnstile(page: &Page, timeout: Duration) -> Result<()> {
 }
 
 /// Check if the CF challenge has been bypassed.
+///
+/// 关键：不能仅凭 `cf_clearance` cookie 就判定挑战已通过。
+/// Turnstile 通过后，CF 服务器需要时间响应并跳转到真实页面，此时：
+/// - `cf_clearance` cookie 已存在
+/// - 但页面 title 仍是 "Just a moment..."
+/// - body 仍是挑战页内容
+///
+/// 必须确认页面已经跳转到真实内容（title 不含挑战标识且 body 不含挑战元素）。
 async fn check_bypassed(page: &Page) -> Result<bool> {
-    // Check cf_clearance cookie via CDP (httpOnly cookies not visible to document.cookie!)
-    if let Ok(resp) = page.cmd("Network.getCookies", json!({})).await {
-        let has_cf = resp.pointer("/cookies")
-            .and_then(|c| c.as_array())
-            .map(|arr| arr.iter().any(|c| c.get("name").and_then(|n| n.as_str()) == Some("cf_clearance")))
-            .unwrap_or(false);
-        if has_cf {
-            return Ok(true);
-        }
-    }
-
-    // Fallback: check if challenge elements are gone and page has real content
+    // 唯一判据：页面内容是否已经脱离挑战页状态
+    // （cf_clearance cookie 存在不代表页面已跳转完成）
     let content_check = page.evaluate(r#"(() => {
         const body = document.body ? document.body.innerHTML : '';
-        const hasCf = body.includes('cf-chl-widget') ||
-                      body.includes('challenge-platform') ||
-                      body.includes('cf-browser-verification');
         const title = document.title || '';
-        const onChallenge = title.includes('Just a moment') || title.includes('\u8bf7\u7a0d\u5019');
-        return !hasCf && !onChallenge && body.length > 1000;
+        // 挑战页特征（title 或 body 含 CF 挑战标识）
+        const onChallenge = title.includes('Just a moment') ||
+                            title.includes('\u8bf7\u7a0d\u5019') ||
+                            title.includes('Attention Required') ||
+                            body.includes('cf-chl-widget') ||
+                            body.includes('challenge-platform') ||
+                            body.includes('cf-browser-verification') ||
+                            body.includes('cf-challenge-running');
+        // 页面已跳转到真实内容：不在挑战页且 body 有足够内容
+        return !onChallenge && body.length > 1000;
     })()"#).await?;
 
     Ok(content_check.as_bool().unwrap_or(false))

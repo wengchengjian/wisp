@@ -416,27 +416,46 @@ pub async fn do_reload(page: &Page) -> Result<()> {
 }
 
 async fn wait_for_load(page: &Page) -> Result<()> {
-    // Try to wait for load event, but don't fail if it times out
-    // (some pages like about:blank don't fire load events the same way)
+    // 用 broadcast subscriber 等待**新的** load 事件，避免匹配到 events Vec 中
+    // about:blank 的历史 load 事件（会导致 0ms 立即返回，goto 过早完成）。
     let sid = page.session_id.clone();
-    let result = page.session.wait_for_event(
-        move |e| {
-            if e.method == "Page.loadEventFired" {
-                return e.session_id.as_deref() == Some(sid.as_str()) || e.session_id.is_none();
-            }
-            // Also accept lifecycleEvent with name "load"
-            if e.method == "Page.lifecycleEvent" {
-                if e.params.get("name").and_then(|n| n.as_str()) == Some("load") {
-                    return e.session_id.as_deref() == Some(sid.as_str()) || e.session_id.is_none();
+    let mut rx = page.session.subscribe_events();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(15000);
+    let start = std::time::Instant::now();
+    let mut found = false;
+
+    loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Ok(event)) => {
+                let match_session = event.session_id.as_deref() == Some(sid.as_str())
+                    || event.session_id.is_none();
+                if !match_session {
+                    continue;
+                }
+                if event.method == "Page.loadEventFired" {
+                    found = true;
+                    break;
+                }
+                if event.method == "Page.lifecycleEvent"
+                    && event.params.get("name").and_then(|n| n.as_str()) == Some("load")
+                {
+                    found = true;
+                    break;
                 }
             }
-            false
-        },
-        15000,
-    ).await;
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(_)) => break,
+            Err(_) => break, // 超时
+        }
+    }
 
-    // If event wait fails, fall back to a short delay
-    if result.is_err() {
+    tracing::debug!(
+        "wait_for_load: 耗时 {}ms, 结果={}",
+        start.elapsed().as_millis(),
+        if found { "Ok(找到新事件)" } else { "超时(15s)" }
+    );
+
+    if !found {
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
     }
     Ok(())

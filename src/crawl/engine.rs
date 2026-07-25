@@ -257,7 +257,24 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     }
 
     // Task 3：调用 handle()（callback 路由），而非 parse()
+    let page_url_for_log = resp.url.clone();
+    let status_for_log = resp.status;
     let (items, follows) = spider.handle(resp).await;
+    // 诊断：items 和 follows 都为 0 时输出 warn，帮助定位解析失败
+    if items.is_empty() && follows.is_empty() {
+        tracing::warn!(
+            "handle 返回空 (items=0, follows=0): url={}, status={}",
+            sanitize_url(&page_url_for_log),
+            status_for_log
+        );
+    } else {
+        tracing::info!(
+            "handle 完成: url={}, items={}, follows={}",
+            sanitize_url(&page_url_for_log),
+            items.len(),
+            follows.len()
+        );
+    }
 
     // 发送 items：经过 pipeline 链处理后收集到 ctx.items 和 tx（若有）
     // ND-009-PERF：crawl_ctx 在循环外构建一次，避免每 item 重建
@@ -623,6 +640,14 @@ pub async fn fetch_page_inner(
             .or_else(|| resp.headers.get("Content-Type"))
             .cloned()
             .unwrap_or_default();
+        // 标记实际使用的抓取模式，让响应中间件能识别当前已是浏览器模式，
+        // 避免 DynamicUpgradeMiddleware 对 Stealth 抓取结果再次升级（Stealth→Dynamic→Stealth 循环）。
+        // 仅当原 req.fetch_mode_override 为 None 时设置（rule_engine 路径）；
+        // 中间件 Refetch 路径已显式设置 override，保持原值不变。
+        let mut final_req = req.clone();
+        if final_req.fetch_mode_override.is_none() {
+            final_req.fetch_mode_override = Some(mode);
+        }
         return Ok(Response::from_parts(
             resp.status,
             resp.url.clone(),
@@ -630,7 +655,7 @@ pub async fn fetch_page_inner(
             resp.body.clone(),
             resp.title.clone(),
             resp.cookies.clone(),
-            req.clone(),
+            final_req,
             content_type,
             false,
         ));

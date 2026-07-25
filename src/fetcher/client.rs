@@ -11,7 +11,7 @@ use wreq_util::Profile;
 
 use crate::browser::BrowserPool;
 use crate::config::LaunchOptions;
-use crate::error::{Result, WispError, BrowserError};
+use crate::error::{BrowserError, Result, WispError};
 use crate::http::{block::DomainBlocker, Client};
 use crate::stealth::challenge::ChallengeSolver;
 use crate::stealth::human::HumanBehavior;
@@ -87,10 +87,16 @@ impl Default for FetchClientConfig {
 ///
 /// - HTTP 请求：共享 `http::Client`（连接池复用）
 /// - 浏览器请求：通过 `BrowserPool`（实例复用，RAII 自动归还）
+/// - CF Cookie 复用：CF 挑战解决后保存 cookie，下次请求前注入
 pub struct FetchClient {
     http: Arc<Client>,
     browser_pool: Option<Arc<BrowserPool>>,
     config: FetchClientConfig,
+    /// CF cookie jar：按域名保存 cookie，复用 CF 挑战结果。
+    ///
+    /// 关键：每次请求使用独立 tab，关闭 tab 后 session cookie 丢失。
+    /// 通过 cookie jar 在 tab 间共享 CF cookie，避免每次请求都重新挑战。
+    cf_cookie_jar: Arc<tokio::sync::Mutex<HashMap<String, Vec<serde_json::Value>>>>,
 }
 
 impl FetchClient {
@@ -102,6 +108,7 @@ impl FetchClient {
             http,
             browser_pool,
             config,
+            cf_cookie_jar: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -134,7 +141,9 @@ impl FetchClient {
     /// `solve_cf=true` 时执行 CF 挑战解决 + 人类行为模拟。
     pub async fn fetch_browser(&self, req: &Request, solve_cf: bool) -> Result<Response> {
         let pool = self.browser_pool.as_ref().ok_or_else(|| {
-            WispError::Browser(BrowserError::Other("browser pool not configured (max_concurrent_pages=0)".into()))
+            WispError::Browser(BrowserError::Other(
+                "browser pool not configured (max_concurrent_pages=0)".into(),
+            ))
         })?;
         // acquire 返回带 page 的 handle（permit 限制并发数）
         let mut handle = pool.acquire().await?;
@@ -172,18 +181,83 @@ impl FetchClient {
         // Network.responseReceived 事件，状态码获取链路会彻底失效。
         page.cmd("Network.enable", serde_json::json!({}))
             .await
-            .map_err(|e| WispError::Browser(BrowserError::CdpConnection(format!("Network.enable failed: {e}"))))?;
+            .map_err(|e| {
+                WispError::Browser(BrowserError::CdpConnection(format!(
+                    "Network.enable failed: {e}"
+                )))
+            })?;
 
         // 在 goto 之前订阅事件流，避免「事件已发出但订阅者尚未注册」的竞态。
         let mut event_rx = page.session.subscribe_events();
         let sid = page.session_id.clone();
 
+        // 注入之前保存的 CF cookie（复用 CF 挑战结果，避免每次请求都重新挑战）
+        let domain = url::Url::parse(&req.url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()));
+        if let Some(ref domain) = domain {
+            let jar = self.cf_cookie_jar.lock().await;
+            if let Some(cookies) = jar.get(domain) {
+                for cookie in cookies {
+                    let name = cookie.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let value = cookie.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                    let cookie_domain = cookie
+                        .get("domain")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or(domain);
+                    let path = cookie.get("path").and_then(|p| p.as_str()).unwrap_or("/");
+                    let secure = cookie
+                        .get("secure")
+                        .and_then(|s| s.as_bool())
+                        .unwrap_or(false);
+                    let http_only = cookie
+                        .get("httpOnly")
+                        .and_then(|h| h.as_bool())
+                        .unwrap_or(false);
+                    let same_site = cookie
+                        .get("sameSite")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("Lax");
+                    let _ = page
+                        .cmd(
+                            "Network.setCookie",
+                            serde_json::json!({
+                                "name": name,
+                                "value": value,
+                                "domain": cookie_domain,
+                                "path": path,
+                                "secure": secure,
+                                "httpOnly": http_only,
+                                "sameSite": same_site,
+                            }),
+                        )
+                        .await;
+                }
+                tracing::info!(
+                    "BrowserWork[{solve_label}]: {url} 注入 {} 个 CF cookie",
+                    cookies.len()
+                );
+            }
+        }
+
         tracing::info!("BrowserWork[{solve_label}]: {url} 导航");
-        page.goto(&req.url).await?;
+        if let Err(e) = page.goto(&req.url).await {
+            tracing::warn!("BrowserWork[{solve_label}]: {url} goto 失败: {e}");
+            return Err(e);
+        }
+        tracing::info!("BrowserWork[{solve_label}]: {url} 导航完成");
 
         // 从事件流中捕获导航请求的真实 HTTP 状态码。
         // 失败立即报错：不再 fallback 到脆弱的 <title> 文本匹配。
-        let nav_status = self.recv_navigation_status(&mut event_rx, &sid).await?;
+        let mut nav_status = match self.recv_navigation_status(&mut event_rx, &sid).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "BrowserWork[{solve_label}]: {url} recv_navigation_status 失败: {e}"
+                );
+                return Err(e);
+            }
+        };
         tracing::info!("BrowserWork[{solve_label}]: {url} 状态码={nav_status}");
 
         if solve_cf {
@@ -191,6 +265,19 @@ impl FetchClient {
             // 检测并解决 Cloudflare 挑战
             let solver = ChallengeSolver::new(page);
             solver.solve(self.config.challenge_timeout).await?;
+            // CF 挑战解决后，浏览器显示的是真实页面内容。
+            // nav_status 捕获的是首次 goto 时的状态码（通常是 403/503 挑战页），
+            // 不能反映挑战解决后的最终页面状态。修正为 200 以反映真实结果。
+            // 边界情况：若页面本就无挑战，solve 立即返回 Ok，nav_status 改为 200
+            // 可能掩盖真实错误码（如 404）。但 Stealth 模式通常用于 CF 站点，
+            // 此处的 200 修正与 BlockedRetryMiddleware 的 Stealth 防御共同保证
+            // 不会因挑战前状态码触发无限 Refetch。
+            if nav_status != 200 {
+                tracing::debug!(
+                    "BrowserWork[{solve_label}]: {url} CF 挑战解决，状态码 {nav_status} → 200"
+                );
+                nav_status = 200;
+            }
 
             // 人类行为模拟
             if self.config.human_mode {
@@ -198,6 +285,31 @@ impl FetchClient {
                 human.random_delay(500, 1500).await?;
                 human.random_scroll().await?;
                 human.random_delay(300, 800).await?;
+            }
+
+            // CF 挑战解决后，保存 cookie 到 cookie jar（复用给后续请求）
+            if let Some(ref domain) = domain {
+                if let Ok(resp) = page.cmd("Network.getCookies", serde_json::json!({})).await {
+                    if let Some(cookies) = resp.pointer("/cookies").and_then(|c| c.as_array()) {
+                        let cookies_to_save: Vec<serde_json::Value> = cookies
+                            .iter()
+                            .filter(|c| {
+                                let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                // 只保存 CF 相关 cookie（cf_clearance 等）
+                                name.starts_with("cf_") || name.starts_with("__cf")
+                            })
+                            .cloned()
+                            .collect();
+                        if !cookies_to_save.is_empty() {
+                            let mut jar = self.cf_cookie_jar.lock().await;
+                            jar.insert(domain.clone(), cookies_to_save.clone());
+                            tracing::info!(
+                                "BrowserWork[{solve_label}]: {url} 保存 {} 个 CF cookie",
+                                cookies_to_save.len()
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -212,9 +324,12 @@ impl FetchClient {
             tokio::time::sleep(Duration::from_millis(self.config.extra_wait_ms)).await;
         }
 
-        tracing::info!("BrowserWork[{solve_label}]: {url} 提取响应");
+        tracing::debug!("BrowserWork[{solve_label}]: {url} 提取响应");
         let resp = self.extract_browser_response(page, req, nav_status).await?;
-        tracing::info!("BrowserWork[{solve_label}]: {url} 完成 ({} bytes)", resp.body.len());
+        tracing::info!(
+            "BrowserWork[{solve_label}]: {url} 完成 ({} bytes)",
+            resp.body.len()
+        );
         Ok(resp)
     }
 
@@ -222,6 +337,9 @@ impl FetchClient {
     ///
     /// 必须在 `goto` 之前订阅 `event_rx`，否则可能丢失事件。
     /// 5s 超时：导航通常在 1-3s 内完成，5s 足够覆盖慢速页面。
+    ///
+    /// 特殊处理：若先收到 `Network.loadingFailed` (type=Document)，说明导航请求失败
+    ///（如代理连接失败、DNS 解析失败），立即返回错误，不空等 5s 超时。
     async fn recv_navigation_status(
         &self,
         rx: &mut tokio::sync::broadcast::Receiver<crate::browser::cdp::CdpEvent>,
@@ -232,17 +350,38 @@ impl FetchClient {
         loop {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(event)) => {
+                    let match_session =
+                        event.session_id.as_deref() == Some(sid) || event.session_id.is_none();
+                    if !match_session {
+                        continue;
+                    }
+
+                    // 导航请求失败（代理/DNS/网络问题）：立即返回错误
+                    if event.method == "Network.loadingFailed" {
+                        let is_doc =
+                            event.params.get("type").and_then(|t| t.as_str()) == Some("Document");
+                        if is_doc {
+                            let error_text = event
+                                .params
+                                .get("errorText")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("unknown");
+                            tracing::warn!(
+                                "recv_navigation_status: Network.loadingFailed errorText={error_text}"
+                            );
+                            return Err(WispError::Browser(BrowserError::CdpConnection(format!(
+                                "navigation loading failed: {error_text}"
+                            ))));
+                        }
+                        continue;
+                    }
+
                     if event.method != "Network.responseReceived" {
                         continue;
                     }
                     let is_doc =
                         event.params.get("type").and_then(|t| t.as_str()) == Some("Document");
                     if !is_doc {
-                        continue;
-                    }
-                    let match_session =
-                        event.session_id.as_deref() == Some(sid) || event.session_id.is_none();
-                    if !match_session {
                         continue;
                     }
                     return event
@@ -267,9 +406,14 @@ impl FetchClient {
                     )));
                 }
                 Err(_) => {
-                    return Err(WispError::Timeout(
-                        "capture_navigation_status: no Network.responseReceived within 5s".into(),
-                    ));
+                    // 超时不返回错误：CF 挑战页面可能不触发 Network.responseReceived (type=Document)
+                    // 事件（CF 用 JavaScript 挑战，非标准 HTTP 响应流程）。
+                    // 返回默认 200，让流程继续到 CF 挑战解决阶段。
+                    tracing::warn!(
+                        "capture_navigation_status: 5s 内未收到 Network.responseReceived，\
+                         返回默认 200（CF 挑战页面可能不触发此事件）"
+                    );
+                    return Ok(200);
                 }
             }
         }

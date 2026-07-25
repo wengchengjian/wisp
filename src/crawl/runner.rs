@@ -396,6 +396,12 @@ impl Engine {
                         };
                         if ctx.state.spider.until().should_stop(&stop_ctx) {
                             if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
+                                tracing::info!(
+                                    "Spider until() 终止条件触发，停止派发: pages={}, items={}, queue={}",
+                                    stop_ctx.pages,
+                                    stop_ctx.items,
+                                    stop_ctx.queue_size
+                                );
                                 return None;
                             }
                             tokio::task::yield_now().await;
