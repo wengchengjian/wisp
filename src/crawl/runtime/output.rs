@@ -3,10 +3,10 @@
 //! Provides converters and streaming writers for exporting crawled pages
 //! in LLM-friendly Markdown or archival WARC/1.1 format.
 
+use crate::error::{Result, WispError};
+use crate::utils::{status_text, url_to_filename};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use crate::error::{WispError, Result};
-use crate::utils::{status_text, url_to_filename};
 
 /// Output format enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,15 +24,25 @@ pub enum OutputFormat {
 /// Convert HTML to Markdown using htmd.
 pub fn html_to_markdown(html: &str) -> Result<String> {
     let converter = htmd::HtmlToMarkdown::new();
-    converter.convert(html)
-        .map_err(|e| WispError::Parse(crate::error::ParseError::Html(format!("html2markdown: {e}"))))
+    converter.convert(html).map_err(|e| {
+        WispError::Parse(crate::error::ParseError::Html(format!(
+            "html2markdown: {e}"
+        )))
+    })
 }
 
 /// Build a WARC/1.1 response record.
-pub fn to_warc_record(url: &str, status: u16, headers: &HashMap<String, String>, body: &[u8]) -> String {
+#[must_use]
+pub fn to_warc_record(
+    url: &str,
+    status: u16,
+    headers: &HashMap<String, String>,
+    body: &[u8],
+) -> String {
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-    let http_headers: String = headers.iter()
-        .map(|(k, v)| format!("{}: {}\r\n", k, v))
+    let http_headers: String = headers
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}\r\n"))
         .collect();
     let http_block = format!(
         "HTTP/1.1 {} {}\r\n{}\r\n",
@@ -60,8 +70,6 @@ pub fn to_warc_record(url: &str, status: u16, headers: &HashMap<String, String>,
     )
 }
 
-
-
 /// Streaming WARC writer (appends records to a file).
 pub struct WarcWriter {
     file: std::fs::File,
@@ -70,14 +78,22 @@ pub struct WarcWriter {
 impl WarcWriter {
     /// 创建 WARC 写入器。
     pub fn new(path: &Path) -> Result<Self> {
-        Ok(Self { file: std::fs::File::create(path)? })
+        Ok(Self {
+            file: std::fs::File::create(path)?,
+        })
     }
 
     /// 写入响应记录。
-    pub fn write_response(&mut self, url: &str, status: u16, headers: &HashMap<String, String>, body: &[u8]) -> Result<()> {
+    pub fn write_response(
+        &mut self,
+        url: &str,
+        status: u16,
+        headers: &HashMap<String, String>,
+        body: &[u8],
+    ) -> Result<()> {
         use std::io::Write;
         let record = to_warc_record(url, status, headers, body);
-        writeln!(self.file, "{}\r\n", record)?;
+        writeln!(self.file, "{record}\r\n")?;
         Ok(())
     }
 
@@ -99,7 +115,10 @@ impl MarkdownWriter {
     /// 创建 Markdown 写入器。
     pub fn new(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
-        Ok(Self { dir: dir.to_path_buf(), counter: 0 })
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            counter: 0,
+        })
     }
 
     /// Convert HTML to Markdown and write to a file. Returns the output path.
@@ -114,8 +133,6 @@ impl MarkdownWriter {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,8 +141,8 @@ mod tests {
     fn test_html_to_markdown_basic() {
         let html = "<h1>Title</h1><p>Hello <strong>world</strong></p>";
         let md = html_to_markdown(html).unwrap();
-        assert!(md.contains("Title"), "should contain title: {}", md);
-        assert!(md.contains("world"), "should contain world: {}", md);
+        assert!(md.contains("Title"), "should contain title: {md}");
+        assert!(md.contains("world"), "should contain world: {md}");
     }
 
     #[test]
@@ -150,7 +167,9 @@ mod tests {
         let dir = std::env::temp_dir().join("wisp_test_md_output");
         let _ = std::fs::remove_dir_all(&dir);
         let mut writer = MarkdownWriter::new(&dir).unwrap();
-        let path = writer.write_page("https://example.com/test", "<h1>Hi</h1><p>Content</p>").unwrap();
+        let path = writer
+            .write_page("https://example.com/test", "<h1>Hi</h1><p>Content</p>")
+            .unwrap();
         assert!(path.exists());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("Hi"));

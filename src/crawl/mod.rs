@@ -42,8 +42,6 @@ pub use self::stats::SpiderStats;
 // 统一类型：直接使用 fetcher 的 Request/Response/Method
 pub use crate::fetcher::{Method, Request, Response};
 
-
-
 /// 请求钩子的决策结果。
 #[derive(Debug, Clone, PartialEq)]
 pub enum RequestAction {
@@ -56,8 +54,6 @@ pub enum RequestAction {
     /// 终止整个爬取
     Abort,
 }
-
-
 
 /// The core Spider trait users implement to define a crawler.
 ///
@@ -157,6 +153,7 @@ pub struct CrawlStats {
 
 impl CrawlStats {
     /// 生成摘要字符串。
+    #[must_use]
     pub fn summary(&self) -> String {
         format!(
             "爬取完成: {} 页 / {} items / {} 错误 / 耗时 {:?} / {:.1} KB / 平均响应 {:?}",
@@ -212,6 +209,7 @@ pub struct CrawlStream {
 
 impl CrawlStream {
     /// 过滤出 item 流。
+    #[must_use]
     pub fn items(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Value>>> {
         use futures::StreamExt;
         Box::pin(self.inner.filter_map(|e| async move {
@@ -222,6 +220,7 @@ impl CrawlStream {
         }))
     }
     /// 获取完整事件流。
+    #[must_use]
     pub fn events(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = CrawlEvent>>> {
         self.inner
     }
@@ -255,7 +254,7 @@ mod tests {
         struct DummySpider;
         #[async_trait]
         impl Spider for DummySpider {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "dummy"
             }
             fn start_urls(&self) -> Vec<String> {
@@ -267,13 +266,21 @@ mod tests {
         }
         let spider = DummySpider;
         let blocked_resp = Response::from_http(
-            403, "http://example.com".into(), HashMap::new(), vec![],
-            "text/html".into(), Request::get("http://example.com"),
+            403,
+            "http://example.com".into(),
+            HashMap::new(),
+            vec![],
+            "text/html".into(),
+            Request::get("http://example.com"),
         );
         assert!(spider.is_blocked(&blocked_resp));
         let ok_resp = Response::from_http(
-            200, "http://example.com".into(), HashMap::new(), vec![],
-            "text/html".into(), Request::get("http://example.com"),
+            200,
+            "http://example.com".into(),
+            HashMap::new(),
+            vec![],
+            "text/html".into(),
+            Request::get("http://example.com"),
         );
         assert!(!spider.is_blocked(&ok_resp));
     }
@@ -299,7 +306,7 @@ mod tests {
                 });
             }
         });
-        format!("http://{}", addr)
+        format!("http://{addr}")
     }
 
     #[test]
@@ -319,10 +326,10 @@ mod tests {
             ..Default::default()
         };
         let s = stats.summary();
-        assert!(s.contains("5 页"), "summary 应含页数: {}", s);
-        assert!(s.contains("10 items"), "summary 应含 items: {}", s);
-        assert!(s.contains("1 错误"), "summary 应含错误数: {}", s);
-        assert!(s.contains("2.0 KB"), "summary 应含字节数: {}", s);
+        assert!(s.contains("5 页"), "summary 应含页数: {s}");
+        assert!(s.contains("10 items"), "summary 应含 items: {s}");
+        assert!(s.contains("1 错误"), "summary 应含错误数: {s}");
+        assert!(s.contains("2.0 KB"), "summary 应含字节数: {s}");
     }
 
     #[test]
@@ -363,7 +370,7 @@ mod tests {
         }
         #[async_trait]
         impl Spider for CountSpider {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "count"
             }
             fn start_urls(&self) -> Vec<String> {
@@ -375,7 +382,11 @@ mod tests {
                 (vec![serde_json::json!({"text": text})], vec![])
             }
         }
-        let engine = Engine::infra().max_pages(1).obey_robots(false).build().unwrap();
+        let engine = Engine::infra()
+            .max_pages(1)
+            .obey_robots(false)
+            .build()
+            .unwrap();
         let mut stream = engine.run_stream(CountSpider { start_url: base }).events();
         let mut items = 0;
         let mut done = false;
@@ -391,7 +402,7 @@ mod tests {
             }
         }
         assert!(done, "应收到 Done 事件");
-        assert!(items >= 1, "应至少收到 1 个 Item 事件, 实际 {}", items);
+        assert!(items >= 1, "应至少收到 1 个 Item 事件, 实际 {items}");
     }
 
     #[tokio::test]
@@ -402,7 +413,7 @@ mod tests {
         }
         #[async_trait]
         impl Spider for OneSpider {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "one"
             }
             fn start_urls(&self) -> Vec<String> {
@@ -412,7 +423,11 @@ mod tests {
                 (vec![serde_json::json!({"v": 1})], vec![])
             }
         }
-        let engine = Engine::infra().max_pages(1).obey_robots(false).build().unwrap();
+        let engine = Engine::infra()
+            .max_pages(1)
+            .obey_robots(false)
+            .build()
+            .unwrap();
         let mut items_stream = engine.run_stream(OneSpider { start_url: base }).items();
         let mut count = 0;
         while items_stream.next().await.is_some() {
@@ -447,7 +462,9 @@ mod tests {
     #[test]
     fn response_css_works() {
         let resp = Response::from_http(
-            200, "http://example.com".into(), HashMap::new(),
+            200,
+            "http://example.com".into(),
+            HashMap::new(),
             b"<html><body><p>x</p></body></html>".to_vec(),
             "text/html; charset=utf-8".into(),
             Request::get("http://example.com"),

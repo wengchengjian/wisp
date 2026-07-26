@@ -1,12 +1,12 @@
 //! 内存存储后端。单 moka 实例，per-entry TTL 原生支持。
 
-use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use moka::sync::Cache as MokaCache;
 use moka::Expiry;
+use std::time::{Duration, Instant};
 
-use crate::error::Result;
 use super::Store;
+use crate::error::Result;
 
 /// entry 包装：value + 可选过期时间。
 #[derive(Clone, Debug)]
@@ -26,7 +26,8 @@ impl Expiry<(String, String), Entry> for EntryExpiry {
         entry: &Entry,
         _now: Instant,
     ) -> Option<Duration> {
-        entry.expires_at
+        entry
+            .expires_at
             .map(|at| at.saturating_duration_since(_now))
     }
 }
@@ -44,6 +45,7 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     /// 创建内存存储。`capacity` 限制总 entry 数。
+    #[must_use]
     pub fn new(capacity: u64) -> Self {
         Self {
             inner: MokaCache::builder()
@@ -64,19 +66,25 @@ impl Default for MemoryStore {
 #[async_trait]
 impl Store for MemoryStore {
     async fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
-        let entry = Entry { value: value.to_vec(), expires_at: None };
-        self.inner.insert((namespace.to_string(), key.to_string()), entry);
+        let entry = Entry {
+            value: value.to_vec(),
+            expires_at: None,
+        };
+        self.inner
+            .insert((namespace.to_string(), key.to_string()), entry);
         Ok(())
     }
 
     async fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.inner
+        Ok(self
+            .inner
             .get(&(namespace.to_string(), key.to_string()))
             .map(|e| e.value))
     }
 
     async fn delete(&self, namespace: &str, key: &str) -> Result<()> {
-        self.inner.invalidate(&(namespace.to_string(), key.to_string()));
+        self.inner
+            .invalidate(&(namespace.to_string(), key.to_string()));
         Ok(())
     }
 
@@ -88,8 +96,12 @@ impl Store for MemoryStore {
         ttl: Option<Duration>,
     ) -> Result<()> {
         let expires_at = ttl.map(|d| Instant::now() + d);
-        let entry = Entry { value: value.to_vec(), expires_at };
-        self.inner.insert((namespace.to_string(), key.to_string()), entry);
+        let entry = Entry {
+            value: value.to_vec(),
+            expires_at,
+        };
+        self.inner
+            .insert((namespace.to_string(), key.to_string()), entry);
         Ok(())
     }
 }

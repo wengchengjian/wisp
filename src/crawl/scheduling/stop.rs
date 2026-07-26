@@ -30,21 +30,29 @@ pub trait StopCondition: Send + Sync {
     where
         Self: Sized + 'static,
     {
-        Arc::new(And { a: Arc::new(self), b: Arc::new(other) })
+        Arc::new(And {
+            a: Arc::new(self),
+            b: Arc::new(other),
+        })
     }
     /// 逻辑或组合。
     fn or<C: StopCondition + 'static>(self, other: C) -> Arc<dyn StopCondition>
     where
         Self: Sized + 'static,
     {
-        Arc::new(Or { a: Arc::new(self), b: Arc::new(other) })
+        Arc::new(Or {
+            a: Arc::new(self),
+            b: Arc::new(other),
+        })
     }
     /// 逻辑非。
     fn not(self) -> Arc<dyn StopCondition>
     where
         Self: Sized + 'static,
     {
-        Arc::new(Not { inner: Arc::new(self) })
+        Arc::new(Not {
+            inner: Arc::new(self),
+        })
     }
 }
 
@@ -85,32 +93,44 @@ impl StopCondition for Timeout {
 /// 永不停止（默认）。
 pub struct NeverStop;
 impl StopCondition for NeverStop {
-    fn should_stop(&self, _ctx: &StopContext) -> bool { false }
+    fn should_stop(&self, _ctx: &StopContext) -> bool {
+        false
+    }
 }
 
 /// 闭包转 StopCondition。
 pub struct FnStopCondition<F: Fn(&StopContext) -> bool + Send + Sync>(pub F);
 impl<F: Fn(&StopContext) -> bool + Send + Sync> StopCondition for FnStopCondition<F> {
-    fn should_stop(&self, ctx: &StopContext) -> bool { (self.0)(ctx) }
+    fn should_stop(&self, ctx: &StopContext) -> bool {
+        (self.0)(ctx)
+    }
 }
 
 // === 组合策略 ===
 
-struct And { a: Arc<dyn StopCondition>, b: Arc<dyn StopCondition> }
+struct And {
+    a: Arc<dyn StopCondition>,
+    b: Arc<dyn StopCondition>,
+}
 impl StopCondition for And {
     fn should_stop(&self, ctx: &StopContext) -> bool {
         self.a.should_stop(ctx) && self.b.should_stop(ctx)
     }
 }
 
-struct Or { a: Arc<dyn StopCondition>, b: Arc<dyn StopCondition> }
+struct Or {
+    a: Arc<dyn StopCondition>,
+    b: Arc<dyn StopCondition>,
+}
 impl StopCondition for Or {
     fn should_stop(&self, ctx: &StopContext) -> bool {
         self.a.should_stop(ctx) || self.b.should_stop(ctx)
     }
 }
 
-struct Not { inner: Arc<dyn StopCondition> }
+struct Not {
+    inner: Arc<dyn StopCondition>,
+}
 impl StopCondition for Not {
     fn should_stop(&self, ctx: &StopContext) -> bool {
         !self.inner.should_stop(ctx)

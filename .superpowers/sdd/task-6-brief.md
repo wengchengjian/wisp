@@ -1,67 +1,242 @@
-### Task 6: 最终回归验证与清理
+# Task 6 (Round 2): L5 EventListener 改 Arc<EngineEvent>
 
 **Files:**
-- 全量测试
-- `docs/superpowers/plans/2026-07-23-p1-optimization.md`（本文件，标记完成）
+- Modify: `src/crawl/observability/events.rs`（仅此一个文件）
 
 **Interfaces:**
-- 无新增接口
+- Consumes: `std::sync::Arc`
+- Produces: `EventListener` 类型签名从 `Fn(EngineEvent)` 改为 `Fn(Arc<EngineEvent>)`；`EventBus::emit` 内部用 `Arc::new(event)` + `Arc::clone(&event)` 共享
 
-- [ ] **Step 1: 全量 lib + 集成测试**
+## 背景
 
-Run: `cargo test --lib`
-Expected: 206+ 测试全绿（可能因新增单元测试略增）。
+当前 `EventBus::emit` 实现（events.rs:127-137）：
 
-Run: `cargo test --test p1_status_codes_test --test p1_proxy_clients_test --test p1_scheduler_test --test p1_meta_persistence_test --test p0_autoscale_test --test p0_dashmap_test --test engine_infra_test --test crawl_concurrency_test --test multi_spider_test --test builder_api_test --test cr_fix_engine_test`
-Expected: 全部 PASS。
+```rust
+pub async fn emit(&self, event: EngineEvent) {
+    if self.listeners.is_empty() {
+        return;
+    }
+    let mut futures: FuturesUnordered<_> = self
+        .listeners
+        .iter()
+        .map(|listener| listener(event.clone()))  // N 次 EngineEvent clone（深拷贝）
+        .collect();
+    while futures.next().await.is_some() {}
+}
+```
 
-- [ ] **Step 2: 验证 clippy 无新警告**
+每次 emit 时，N 个 listener 共享 event 需要N-1 次 `EngineEvent::clone()`（深拷贝，包含 String/Vec 字段）。
+改为 `Arc<EngineEvent>` 后，仅 1 次 `Arc::new`（堆分配）+ N-1 次 `Arc::clone`（原子计数器自增，无堆分配）。
 
-Run: `cargo clippy --lib 2>&1 | grep "generated.*warnings"`
-Expected: `28 warnings`（与 P0 完成后基线一致，不新增）。
+## Steps
 
-- [ ] **Step 3: 标记 plan 完成**
+### Step 1: 修改 EventListener 类型定义
 
-在 plan 文件中将所有 `- [ ]` 改为 `- [x]`：
+在 `src/crawl/observability/events.rs:102`：
 
-Run: `sed -i 's/^- \[ \]/- [x]/g' docs/superpowers/plans/2026-07-23-p1-optimization.md`
+```rust
+// 旧
+pub type EventListener = Arc<dyn Fn(EngineEvent) -> BoxFuture<'static, ()> + Send + Sync>;
 
-- [ ] **Step 4: 提交 plan 完成标记**
+// 新
+pub type EventListener = Arc<dyn Fn(Arc<EngineEvent>) -> BoxFuture<'static, ()> + Send + Sync>;
+```
 
-`docs/` 已被本地 `.gitignore`（工作区修改），plan 文件为本地工作文件，无法 commit。此 Step 为 no-op，跳过提交，仅本地标记完成。
+### Step 2: 修改 EventBus::emit
 
----
+在 `src/crawl/observability/events.rs:127-137`：
 
-## Self-Review
+```rust
+// 旧
+pub async fn emit(&self, event: EngineEvent) {
+    if self.listeners.is_empty() {
+        return;
+    }
+    let mut futures: FuturesUnordered<_> = self
+        .listeners
+        .iter()
+        .map(|listener| listener(event.clone()))  // N 次 EngineEvent clone
+        .collect();
+    while futures.next().await.is_some() {}
+}
 
-### 1. Spec coverage
+// 新（Arc 共享，无 EngineEvent clone）
+pub async fn emit(&self, event: EngineEvent) {
+    if self.listeners.is_empty() {
+        return;
+    }
+    let event = Arc::new(event);  // 1 次 Arc 分配
+    let mut futures: FuturesUnordered<_> = self
+        .listeners
+        .iter()
+        .map(|listener| listener(Arc::clone(&event)))  // N 次 Arc::clone（廉价）
+        .collect();
+    while futures.next().await.is_some() {}
+}
+```
 
-| Spec 项 | Plan Task |
-|---|---|
-| P1-1 status_codes/proxy_clients 每请求锁 | Task 2 (status_codes DashMap) + Task 3 (proxy_clients DashMap) |
-| P1-2 Scheduler 单 Mutex<BinaryHeap> | Task 4 (seen DashSet + heap 独立 Mutex) |
-| P1-5 Method 枚举与转换重复 | Task 1 (Method::as_str + 替换 3 处) |
-| P1-7 SpiderRequest.meta 不持久化 | Task 5 (meta_serde 自定义 serde) |
-| P1-3 反检测能力薄弱 | 不在本计划（大特性，单独 spec） |
-| P1-4 Storage 后端单一 | 不在本计划（大特性，单独 spec） |
-| P1-6 双轨重试逻辑 | 不在本计划（核心抓取改动大、回归风险高） |
+同时更新 OPTIMIZE 注释，说明现在用 Arc 共享：
 
-覆盖 4/7 P1 项，其余 3 项按风险/规模显式排除，已在 plan 头部说明。
+```rust
+/// OPTIMIZE: 旧实现 `listener(event.clone())` 每次 emit N-1 次 EngineEvent 深拷贝。
+/// 改用 `Arc<EngineEvent>` 共享：1 次 Arc 分配 + N-1 次 Arc::clone（原子计数器自增，无堆分配）。
+/// 同时用 FuturesUnordered 并发 await，总延迟 = max(单 listener)。
+```
 
-### 2. Placeholder scan
+### Step 3: 修改 logging_listener
 
-无 TBD/TODO/"实现细节后补"。每步含完整代码或精确命令。
+在 `src/crawl/observability/events.rs:157-184`：
 
-### 3. Type consistency
+```rust
+// 旧
+pub fn logging_listener() -> EventListener {
+    Arc::new(|event: EngineEvent| {
+        Box::pin(async move {
+            match &event {
+                EngineEvent::CrawlStarted { spider, start_urls } => { ... }
+                // ...
+            }
+        })
+    })
+}
 
-- `record_status`: Task 2 定义为 `pub fn record_status(stats: &Arc<SpiderStats>, status: u16)`（同步），Step 5 移除调用点 `.await`。Task 2 Step 8 re-export `pub use engine::record_status;`。一致。
-- `fetch_page_inner`: Task 3 定义为 `pub async fn fetch_page_inner(..., proxy_clients: &dashmap::DashMap<String, Arc<Client>>)`, Step 8 re-export。一致。
-- `status_codes_snapshot`: Task 2 Step 3 定义为 `pub fn status_codes_snapshot(&self) -> HashMap<u16, usize>`，Task 2 Step 6/7 调用。一致。
-- `Scheduler`: Task 4 拆分后字段 `heap`/`seen_exact`/`seen_fp`/`strategy`，公开方法签名不变。一致。
-- `meta_serde`: Task 5 Step 3 定义 `serialize`/`deserialize`，Step 4 `#[serde(with = "meta_serde")]` 引用。一致。
+// 新（Arc<EngineEvent> 自动 deref，match &*event 解引用）
+pub fn logging_listener() -> EventListener {
+    Arc::new(|event: Arc<EngineEvent>| {
+        Box::pin(async move {
+            match &*event {
+                EngineEvent::CrawlStarted { spider, start_urls } => { ... }
+                // ...
+            }
+        })
+    })
+}
+```
 
-### 执行顺序
+注意：`match &event` 改为 `match &*event`（解引用 Arc 后再引用），或用 `match event.as_ref()`。
 
-Task 1（最小、无依赖）→ Task 2（status_codes）→ Task 3（proxy_clients，依赖 Task 2 的 re-export 位置合并）→ Task 4（Scheduler，独立）→ Task 5（meta，独立）→ Task 6（回归）。
+### Step 4: 修改 metrics_listener
 
-Task 3 Step 8 与 Task 2 Step 8 都修改 `src/crawl/mod.rs` 的 re-export 区，按顺序执行时 Task 3 合并为 `pub use engine::{record_status, fetch_page, fetch_page_inner};`（覆盖 Task 2 的单行）。
+在 `src/crawl/observability/events.rs:187-223`：
+
+```rust
+// 旧
+pub fn metrics_listener(metrics: Arc<Metrics>) -> EventListener {
+    Arc::new(move |event: EngineEvent| {
+        let metrics = Arc::clone(&metrics);
+        Box::pin(async move {
+            match event {  // event 是 owned EngineEvent
+                EngineEvent::ResponseReceived { elapsed_ms, from_cache, .. } => {
+                    metrics.responses.fetch_add(1, ...);
+                    if from_cache {  // from_cache 是 bool
+                        metrics.cache_hits.fetch_add(1, ...);
+                    }
+                    metrics.total_elapsed_ms.fetch_add(elapsed_ms, ...);  // elapsed_ms 是 u64
+                }
+                EngineEvent::ItemScraped { .. } => { ... }
+                EngineEvent::ErrorOccurred { .. } => { ... }
+                _ => {}
+            }
+        })
+    })
+}
+
+// 新（event 是 Arc<EngineEvent>，match &*event 改为引用解构）
+pub fn metrics_listener(metrics: Arc<Metrics>) -> EventListener {
+    Arc::new(move |event: Arc<EngineEvent>| {
+        let metrics = Arc::clone(&metrics);
+        Box::pin(async move {
+            match &*event {  // 解引用 Arc，match 引用
+                EngineEvent::ResponseReceived { elapsed_ms, from_cache, .. } => {
+                    metrics.responses.fetch_add(1, ...);
+                    if *from_cache {  // from_cache 是 &bool，需要解引用
+                        metrics.cache_hits.fetch_add(1, ...);
+                    }
+                    metrics.total_elapsed_ms.fetch_add(*elapsed_ms, ...);  // elapsed_ms 是 &u64
+                }
+                EngineEvent::ItemScraped { .. } => { ... }
+                EngineEvent::ErrorOccurred { .. } => { ... }
+                _ => {}
+            }
+        })
+    })
+}
+```
+
+注意：`match event`（owned）改为 `match &*event`（引用），字段 `elapsed_ms` 从 `u64` 变为 `&u64`，需要 `*elapsed_ms` 解引用。`from_cache` 从 `bool` 变为 `&bool`，需要 `*from_cache` 解引用（或在 if 条件中自动 deref）。
+
+### Step 5: 修改测试中的 listener 闭包
+
+在 `src/crawl/observability/events.rs:281` 和 `:349`：
+
+```rust
+// 旧（line 281）
+bus.on(Arc::new(move |_event: EngineEvent| {
+    let c = Arc::clone(&counter_clone);
+    Box::pin(async move {
+        c.fetch_add(1, Ordering::SeqCst);
+    })
+}));
+
+// 新
+bus.on(Arc::new(move |_event: Arc<EngineEvent>| {
+    let c = Arc::clone(&counter_clone);
+    Box::pin(async move {
+        c.fetch_add(1, Ordering::SeqCst);
+    })
+}));
+```
+
+```rust
+// 旧（line 349）
+bus.on(Arc::new(move |_event: EngineEvent| {
+    let c = Arc::clone(&c);
+    let o = Arc::clone(&o);
+    Box::pin(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        c.fetch_add(1, Ordering::SeqCst);
+        o.lock().await.push(label);
+    })
+}));
+
+// 新
+bus.on(Arc::new(move |_event: Arc<EngineEvent>| {
+    let c = Arc::clone(&c);
+    let o = Arc::clone(&o);
+    Box::pin(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        c.fetch_add(1, Ordering::SeqCst);
+        o.lock().await.push(label);
+    })
+}));
+```
+
+### Step 6: 编译验证
+
+Run: `cd /home/weng/wisp && cargo build --all-features`
+Expected: 编译通过
+
+### Step 7: 全量回归
+
+Run: `cd /home/weng/wisp && cargo test --all-features`
+Expected: 全部测试 PASS（约 439 个）
+
+### Step 8: Clippy 检查
+
+Run: `cd /home/weng/wisp && cargo clippy --all-targets --all-features 2>&1 | tail -5`
+Expected: 不增加新警告（已有的警告保持不变）
+
+### Step 9: 提交
+
+```bash
+cd /home/weng/wisp
+git add src/crawl/observability/events.rs
+git commit -m "perf(events): EventListener 改 Arc<EngineEvent> 共享事件无 clone"
+```
+
+## 验证
+
+- 编译通过
+- 所有测试 PASS
+- 无新增 clippy 警告
+- 提交信息符合规范：`perf(events): EventListener 改 Arc<EngineEvent> 共享事件无 clone`

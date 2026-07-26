@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
-use wisp::crawl::{StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition, StopCondition};
+use wisp::crawl::{
+    FnStopCondition, MaxErrors, MaxItems, MaxPages, NeverStop, StopCondition, StopContext, Timeout,
+};
 
 fn ctx(pages: usize, items: usize, errors: usize, elapsed_secs: u64) -> StopContext {
     StopContext {
@@ -59,9 +61,9 @@ fn test_fn_stop_condition() {
 fn test_and_combinator() {
     // pages >= 10 AND items >= 5
     let cond: Arc<dyn StopCondition> = MaxPages(10).and(MaxItems(5));
-    assert!(!cond.should_stop(&ctx(9, 5, 0, 0)));   // pages 不够
-    assert!(!cond.should_stop(&ctx(10, 4, 0, 0)));  // items 不够
-    assert!(cond.should_stop(&ctx(10, 5, 0, 0)));   // 都满足
+    assert!(!cond.should_stop(&ctx(9, 5, 0, 0))); // pages 不够
+    assert!(!cond.should_stop(&ctx(10, 4, 0, 0))); // items 不够
+    assert!(cond.should_stop(&ctx(10, 5, 0, 0))); // 都满足
 }
 
 #[test]
@@ -69,8 +71,8 @@ fn test_or_combinator() {
     // pages >= 10 OR items >= 5
     let cond: Arc<dyn StopCondition> = MaxPages(10).or(MaxItems(5));
     assert!(!cond.should_stop(&ctx(9, 4, 0, 0)));
-    assert!(cond.should_stop(&ctx(10, 4, 0, 0)));   // pages 满足
-    assert!(cond.should_stop(&ctx(9, 5, 0, 0)));    // items 满足
+    assert!(cond.should_stop(&ctx(10, 4, 0, 0))); // pages 满足
+    assert!(cond.should_stop(&ctx(9, 5, 0, 0))); // items 满足
 }
 
 #[test]

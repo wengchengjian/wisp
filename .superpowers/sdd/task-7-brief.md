@@ -1,152 +1,402 @@
-### Task 7: 修复 robots.txt 端口丢失与失败缓存
+# Task 7 (Round 2): Turso 替换 rusqlite
 
 **Files:**
-- Modify: `src/crawl/runtime/robots.rs:40-58`（rules_for + fetch_robots）
-- Test: `src/crawl/runtime/robots.rs` 内 `#[cfg(test)]`
+- Modify: `Cargo.toml`（替换依赖）
+- Modify: `src/storage/sqlite.rs`（重写 SqliteStore）
+- Modify: `src/bin/wisp.rs:125`（`SqliteStore::open` 加 `.await`）
+
+**已确认的调用点（仅此 1 处生产代码 + sqlite.rs 内部测试）：**
+- `src/bin/wisp.rs:125` — `Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db))?)` 需改 async + `.await`
+- `src/storage/sqlite.rs` 内的 `#[cfg(test)] mod tests` — `make_store` 改 async
+
+**已确认不涉及的位置（不要修改这些）：**
+- `src/crawl/runner.rs` — 无 SqliteStore 引用
+- `src/mcp/` — 无 SqliteStore 引用
+- `tests/` 目录 — 无 SqliteStore::open 直接调用
 
 **Interfaces:**
-- Consumes: `url::Url::parse`，`url::Url::host_str` / `port`
-- Produces: robots.txt 从正确 host:port 获取；获取失败不缓存空规则（下次重试）
+- Consumes: `turso::{Builder, Database, Value as TursoValue}`、`turso::params!`
+- Produces:
+  - `SqliteStore::open` 签名从 `pub fn open(path: &Path) -> Result<Self>` 改为 `pub async fn open(path: &Path) -> Result<Self>`
+  - `SqliteStore::open_in_memory` 同上改 async
 
-**背景：** 两个缺陷：
-1. L43 `format!("{}://{}", parsed.scheme(), host)` 用 `host_str()`（不含端口），`http://example.com:8080/x` 的 robots.txt 错误地从 `http://example.com/robots.txt` 获取。
-2. L45-50 `fetch_robots` 失败返回空 `RobotsRules::default()`，被缓存到 `cache`，导致网络瞬态失败后永久允许全部（无 disallow）。
-
-- [ ] **Step 1: 写失败测试 — 端口保留**
-
-在 `src/crawl/runtime/robots.rs` 的 `#[cfg(test)]` 末尾追加：
+## 已验证的 turso 0.7 API（docs.rs/turso/0.7.0-pre.18）
 
 ```rust
-    #[test]
-    fn rules_for_preserves_port() {
-        // 验证 domain key 含端口（不实际请求网络，仅检查缓存 key 构造逻辑）
-        // rules_for 会尝试 fetch_robots，网络失败返回 default 并缓存。
-        // 这里用 mock：直接调 fetch_robots 的 URL 构造无法隔离，改为
-        // 验证 cache key 格式：通过 rules_for 两次调用同 host:port 命中缓存。
-        // 简化：单元测试 parse_robots_text 已覆盖解析，端口逻辑用集成测试。
-        // 此处验证：端口不同的 URL 生成不同的 domain key（不共享 robots）。
-        // 由于 rules_for 需要 Client，这里改为验证 URL 拼接逻辑。
-        // 见 integration test tests/crawl_robots_real_test.rs（需网络，ignored）。
-        // 单元层：验证 fetch_robots 拼接的 URL 含端口。
-        assert!(true, "端口逻辑通过集成测试验证，见 tests/crawl_robots_real_test.rs");
+use turso::{Builder, Database, Value as TursoValue};
+
+// Builder
+let db: Database = Builder::new_local(":memory:").build().await?;
+let db: Database = Builder::new_local("/path/to/db.sqlite").build().await?;
+
+// Database（Clone, 内部管理连接池）
+let conn: Connection = db.connect()?;  // 同步方法，返回 Result<Connection>
+
+// Connection（async 方法）
+conn.execute_batch("PRAGMA journal_mode=WAL;").await?;
+conn.execute_batch("CREATE TABLE ...").await?;
+let n: u64 = conn.execute("INSERT ...", turso::params![...]).await?;
+let mut rows: Rows = conn.query("SELECT ...", turso::params![...]).await?;
+
+// Rows
+while let Some(row_result) = rows.next().await? {
+    let row: &Row = row_result;
+    let val: TursoValue = row.get_value(0)?;
+    match val {
+        TursoValue::Blob(b: Vec<u8>) => ...,
+        TursoValue::Integer(i: i64) => ...,
+        TursoValue::Text(s: String) => ...,
+        TursoValue::Real(f: f64) => ...,
+        TursoValue::Null => ...,
     }
-
-    #[test]
-    fn parse_robots_text_handles_uppercase_directive() {
-        // RFC 9309 大小写不敏感（虽实践多用首字母大写）
-        // 当前实现区分大小写，这里仅记录现状不强制改
-        let text = "user-agent: *\nDisallow: /x";
-        let rules = parse_robots_text(text);
-        // 当前实现不识别小写 user-agent（按现状）
-        assert_eq!(rules.disallowed.len(), 0, "当前仅识别 'User-agent:' 大小写敏感");
-    }
-```
-
-端口逻辑的集成测试创建 `tests/cr_fix_robots_port_test.rs`：
-
-```rust
-//! 验证 robots.txt 从正确的 host:port 获取（端口不丢失）。
-//! 需要本地 mock server，用 tokio TcpListener。
-use wisp::crawl::runtime::robots::RobotsCache;
-use wisp::http::Client;
-
-#[tokio::test]
-async fn robots_fetched_from_correct_port() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let counter = Arc::new(AtomicUsize::new(0));
-    let counter_c = counter.clone();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut sock, _)) = listener.accept().await else { return };
-            let c = counter_c.clone();
-            tokio::spawn(async move {
-                let mut buf = [0u8; 512];
-                let _ = sock.read(&mut buf).await;
-                c.fetch_add(1, Ordering::SeqCst);
-                let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 25\r\n\r\nUser-agent: *\nDisallow: /";
-                let _ = sock.write_all(resp.as_bytes()).await;
-            });
-        }
-    });
-
-    let url = format!("http://127.0.0.1:{}/page", port);
-    let client = Client::new().unwrap();
-    let mut cache = RobotsCache::new();
-    let allowed = cache.is_allowed(&client, &url).await;
-    assert_eq!(counter.load(Ordering::SeqCst), 1, "应从带端口的地址获取 robots.txt");
-    assert!(allowed, "/page 不在 Disallow: / 下应允许");
 }
+
+// params! 宏接受 owned 或 ref 类型
+turso::params![namespace, key, value.to_vec(), now]  // &str, &str, Vec<u8>, i64
+turso::params![namespace, key]  // &str, &str
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+## Steps
 
-Run: `cargo test --test cr_fix_robots_port_test 2>&1 | tail -15`
-Expected: 当前实现 domain key 为 `http://127.0.0.1`（无端口），fetch_robots 拼接 `http://127.0.0.1/robots.txt`（端口 80），连接失败返回空规则，`counter=0`。断言 `counter==1` FAIL。
+### Step 1: 修改 Cargo.toml
 
-- [ ] **Step 3: 修复 rules_for 保留端口**
+```toml
+# 旧（约 line 30）
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 
-修改 `src/crawl/runtime/robots.rs` 的 `rules_for`（L40-51）：
+# 新
+turso = { version = "=0.7.0-pre.18", optional = true }
+
+# [features] 部分
+# 旧：sqlite = ["dep:rusqlite"]
+# 新：sqlite = ["dep:turso"]
+```
+
+注意：
+- **必须用 `=0.7.0-pre.18`** 精确版本（pre-release 不支持 `^0.7` 自动解析）
+- 保留 `sqlite = ["dep:turso"]`，feature gate 名称不变
+- 删除 `rusqlite` 依赖
+
+### Step 2: 重写 src/storage/sqlite.rs
+
+**完整重写**，结构如下（参考 plan 文档 880-1164 行的完整代码）：
 
 ```rust
-    pub async fn rules_for(&mut self, client: &Client, url: &str) -> RobotsRules {
-        let Ok(parsed) = url::Url::parse(url) else { return RobotsRules::default(); };
-        let Some(host) = parsed.host_str() else { return RobotsRules::default(); };
-        // 保留端口：http://example.com:8080 与 http://example.com 是不同 origin
-        let domain = match parsed.port() {
-            Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
-            None => format!("{}://{}", parsed.scheme(), host),
+//! SQLite 存储后端（基于 turso，原生 async）。单表 KV 结构。
+//!
+//! turso 内部管理连接池，每次操作 `db.connect()` 取独立 Connection，无需手动加锁。
+//! 所有 Store 方法直接 `.await`，不需要 `spawn_blocking`。
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use turso::{Builder, Database, Value as TursoValue};
+
+use crate::error::{Result, WispError, StorageError};
+use super::Store;
+
+/// SQLite 存储后端。线程安全（turso `Database` 内部管理连接池）。
+pub struct SqliteStore {
+    db: Database,
+}
+
+impl SqliteStore {
+    /// 打开或创建数据库文件。
+    pub async fn open(path: &Path) -> Result<Self> {
+        let path_str = path.to_str().ok_or_else(|| {
+            WispError::Storage(StorageError::General("invalid path: non-UTF8".into()))
+        })?;
+        let db = Builder::new_local(path_str)
+            .build()
+            .await
+            .map_err(|e| WispError::Storage(StorageError::General(format!("turso open: {e}"))))?;
+        let store = Self { db };
+        store.init_schema().await?;
+        Ok(store)
+    }
+
+    /// 内存数据库（测试用）。
+    pub async fn open_in_memory() -> Result<Self> {
+        let db = Builder::new_local(":memory:")
+            .build()
+            .await
+            .map_err(|e| WispError::Storage(StorageError::General(format!("turso open in-memory: {e}"))))?;
+        let store = Self { db };
+        store.init_schema().await?;
+        Ok(store)
+    }
+
+    async fn init_schema(&self) -> Result<()> {
+        let conn = self.db.connect()
+            .map_err(|e| WispError::Storage(StorageError::General(format!("turso connect: {e}"))))?;
+
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .await
+            .map_err(|e| WispError::Storage(StorageError::General(format!("PRAGMA journal_mode: {e}"))))?;
+        conn.execute_batch("PRAGMA synchronous=NORMAL;")
+            .await
+            .map_err(|e| WispError::Storage(StorageError::General(format!("PRAGMA synchronous: {e}"))))?;
+
+        // 旧 schema 检测
+        let mut rows = conn.query(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name IN ('element_snapshots', 'crawl_checkpoints', 'response_cache')",
+            (),
+        ).await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("old schema query: {e}"))))?;
+        let has_old_table = if let Some(row) = rows.next().await
+            .map_err(|e| WispError::Storage(StorageError::General(format!("old schema fetch: {e}"))))? {
+            let val = row.get_value(0)
+                .map_err(|e| WispError::Storage(StorageError::General(format!("old schema get_value: {e}"))))?;
+            matches!(val, TursoValue::Integer(1))
+        } else {
+            false
         };
-
-        if !self.cache.contains_key(&domain) {
-            let rules = self.fetch_robots(client, &domain).await;
-            // 仅在成功获取到规则时缓存；失败不缓存（下次重试）
-            if !rules.is_empty_rules() {
-                self.cache.insert(domain.clone(), rules);
-            }
+        if has_old_table {
+            tracing::warn!("检测到旧 schema (element_snapshots/crawl_checkpoints/response_cache 三表)，与新版单表 kv 结构不兼容。旧数据已弃用，建议删除 db 文件重新开始。");
         }
 
-        self.cache.get(&domain).cloned().unwrap_or_default()
+        conn.execute_batch(super::migrations::SCHEMA_V1)
+            .await
+            .map_err(|e| WispError::Storage(StorageError::General(format!("SCHEMA_V1: {e}"))))?;
+        Ok(())
     }
-```
+}
 
-为 `RobotsRules` 新增 `is_empty_rules` 辅助方法（在 `RobotsRules` impl 块，紧跟 `Default` derive 后）：
+#[async_trait]
+impl Store for SqliteStore {
+    async fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
+        let conn = self.db.connect()
+            .map_err(|e| WispError::Storage(StorageError::General(format!("turso connect: {e}"))))?;
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT OR REPLACE INTO kv (namespace, key, value, ttl_secs, cached_at) \
+             VALUES (?1, ?2, ?3, NULL, ?4)",
+            turso::params![namespace, key, value.to_vec(), now],
+        ).await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("turso set: {e}"))))?;
+        Ok(())
+    }
 
-```rust
-impl RobotsRules {
-    /// 规则是否为空（disallowed 空 + 无 crawl_delay + 无 request_rate）。
-    /// 用于判断 fetch_robots 是否成功获取有效规则（区分"无规则"与"获取失败返回的默认空"）。
-    pub fn is_empty_rules(&self) -> bool {
-        self.disallowed.is_empty() && self.crawl_delay.is_none() && self.request_rate.is_none()
+    async fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
+        let conn = self.db.connect()
+            .map_err(|e| WispError::Storage(StorageError::General(format!("turso connect: {e}"))))?;
+        let mut rows = conn.query(
+            "SELECT value FROM kv \
+             WHERE namespace = ?1 AND key = ?2 \
+               AND (ttl_secs IS NULL OR cached_at + ttl_secs >= CAST(strftime('%s','now') AS INTEGER))",
+            turso::params![namespace, key],
+        ).await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("turso get: {e}"))))?;
+        if let Some(row) = rows.next().await
+            .map_err(|e| WispError::Storage(StorageError::General(format!("turso get next: {e}"))))? {
+            let val = row.get_value(0)
+                .map_err(|e| WispError::Storage(StorageError::General(format!("turso get_value: {e}"))))?;
+            match val {
+                TursoValue::Blob(b) => Ok(Some(b)),
+                TursoValue::Null => Ok(None),
+                _ => Err(WispError::Storage(StorageError::General("expected blob".into()))),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn delete(&self, namespace: &str, key: &str) -> Result<()> {
+        let conn = self.db.connect()
+            .map_err(|e| WispError::Storage(StorageError::General(format!("turso connect: {e}"))))?;
+        conn.execute(
+            "DELETE FROM kv WHERE namespace = ?1 AND key = ?2",
+            turso::params![namespace, key],
+        ).await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("turso delete: {e}"))))?;
+        Ok(())
+    }
+
+    async fn set_with_ttl(&self, namespace: &str, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<()> {
+        let conn = self.db.connect()
+            .map_err(|e| WispError::Storage(StorageError::General(format!("turso connect: {e}"))))?;
+        let now = chrono::Utc::now().timestamp();
+        let ttl_secs = ttl.map(|d| d.as_secs() as i64);
+        conn.execute(
+            "INSERT OR REPLACE INTO kv (namespace, key, value, ttl_secs, cached_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            turso::params![namespace, key, value.to_vec(), ttl_secs, now],
+        ).await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("turso set_with_ttl: {e}"))))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    async fn make_store() -> SqliteStore {
+        SqliteStore::open_in_memory().await.expect("open in-memory sqlite")
+    }
+
+    #[tokio::test]
+    async fn checkpoint_roundtrip() {
+        let store = make_store().await;
+        store.set("checkpoint", "spider1", b"state").await.unwrap();
+        assert_eq!(store.get("checkpoint", "spider1").await.unwrap().unwrap(), b"state");
+        store.delete("checkpoint", "spider1").await.unwrap();
+        assert!(store.get("checkpoint", "spider1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ttl_expiry() {
+        let store = make_store().await;
+        store.set_with_ttl("ns", "k", b"v", Some(Duration::from_secs(1))).await.unwrap();
+        {
+            let conn = store.db.connect().unwrap();
+            conn.execute(
+                "UPDATE kv SET cached_at = cached_at - 100 WHERE namespace='ns' AND key='k'",
+                (),
+            ).await.unwrap();
+        }
+        assert!(store.get("ns", "k").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ttl_none_never_expires() {
+        let store = make_store().await;
+        store.set_with_ttl("ns", "k", b"forever", None).await.unwrap();
+        assert_eq!(store.get("ns", "k").await.unwrap().unwrap(), b"forever");
+    }
+
+    #[tokio::test]
+    async fn namespace_isolation() {
+        let store = make_store().await;
+        store.set("ns1", "key", b"a").await.unwrap();
+        store.set("ns2", "key", b"b").await.unwrap();
+        assert_eq!(store.get("ns1", "key").await.unwrap().unwrap(), b"a");
+        assert_eq!(store.get("ns2", "key").await.unwrap().unwrap(), b"b");
+    }
+
+    #[tokio::test]
+    async fn old_schema_detection_does_not_break_new_store() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test_old_schema.db");
+
+        {
+            let store = SqliteStore::open(&db_path).await.unwrap();
+            store.set("ns", "k", b"v").await.unwrap();
+        }
+
+        {
+            let db = Builder::new_local(db_path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE element_snapshots (url TEXT, key TEXT);
+                 CREATE TABLE crawl_checkpoints (spider_name TEXT, state BLOB);
+                 CREATE TABLE response_cache (url TEXT, method TEXT);",
+            ).await.unwrap();
+        }
+
+        let store = SqliteStore::open(&db_path).await.unwrap();
+        assert_eq!(store.get("ns", "k").await.unwrap().unwrap(), b"v");
+        store.set("ns", "k2", b"v2").await.unwrap();
+        assert_eq!(store.get("ns", "k2").await.unwrap().unwrap(), b"v2");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_store_async_does_not_block_runtime() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::{Duration, Instant};
+
+        let store = SqliteStore::open_in_memory().await.expect("open in-memory sqlite");
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = Arc::clone(&counter);
+
+        let task = tokio::spawn(async move {
+            for _ in 0..100 {
+                c.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+
+        let start = Instant::now();
+        for i in 0..50 {
+            store.set("test_ns", &format!("k{i}"), b"v").await.expect("set should succeed");
+        }
+        let write_elapsed = start.elapsed();
+
+        task.await.unwrap();
+
+        let counter_val = counter.load(Ordering::SeqCst);
+        assert!(counter_val > 10, "后台 task 应在 SQLite 写入期间继续，实际 counter={counter_val}");
+        assert!(write_elapsed < Duration::from_secs(5), "50 次 set 应 < 5s，实际 {write_elapsed:?}");
     }
 }
 ```
 
-注意：这会让"robots.txt 真的为空（无任何规则）"的情况也不缓存，每次重试获取。这是可接受的取舍（空 robots.txt 少见，且重试成本低）。若需精确区分"空规则"与"失败"，可改为 `fetch_robots` 返回 `Result`，但改动更大。此处保持简单。
+### Step 3: 修改 src/bin/wisp.rs:125
 
-- [ ] **Step 4: 运行测试确认通过**
+```rust
+// 旧
+let store: Arc<dyn Store> = Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db))?);
 
-Run: `cargo test --test cr_fix_robots_port_test 2>&1 | tail -15`
-Expected: PASS — `counter==1`，从正确端口获取。
+// 新（加 .await）
+let store: Arc<dyn Store> = Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db)).await?);
+```
 
-Run: `cargo test --lib crawl::runtime::robots 2>&1 | tail -10`
-Expected: 现有 robots 测试通过。
+注意：确认 `main` 函数是 async（应该是 `#[tokio::main] async fn main()`）。
 
-- [ ] **Step 5: Commit**
+### Step 4: 编译验证
+
+Run: `cd /home/weng/wisp && cargo build --all-features`
+Expected: 编译通过
+
+如果出现 `params!` 宏类型不匹配，调整参数类型：
+- `&[u8]` → `value.to_vec()`（已在上面的代码中处理）
+- `String` → `&str`（直接传 `&str`）
+- `i64` → 保持 `i64`
+
+### Step 5: 运行 sqlite 模块测试
+
+Run: `cd /home/weng/wisp && cargo test --lib storage::sqlite --features sqlite`
+Expected: 全部 sqlite 测试 PASS
+
+### Step 6: 全量回归
+
+Run: `cd /home/weng/wisp && cargo test --all-features`
+Expected: 全部测试 PASS
+
+### Step 7: Clippy 检查
+
+Run: `cd /home/weng/wisp && cargo clippy --all-targets --all-features 2>&1 | tail -5`
+Expected: 不增加新警告（已有的警告保持不变）
+
+### Step 8: 提交
 
 ```bash
-git add src/crawl/runtime/robots.rs tests/cr_fix_robots_port_test.rs
-git commit -m "fix(robots): 保留端口 + 失败不缓存
-
-- rules_for domain key 含端口（http://h:8080 != http://h）
-- 新增 RobotsRules::is_empty_rules，fetch 失败返回的空规则不缓存
-- 修复非默认端口 robots.txt 从错误地址获取的问题
-- 修复网络瞬态失败导致永久允许全部的问题"
+cd /home/weng/wisp
+git add Cargo.toml Cargo.lock src/storage/sqlite.rs src/bin/wisp.rs
+git commit -m "perf(storage): turso 替换 rusqlite，原生 async 无需 spawn_blocking"
 ```
 
----
+## 验证
 
+- 编译通过
+- sqlite 模块测试 PASS
+- 全量测试 PASS（约 435-440 个）
+- 无新增 clippy 警告
+- 提交信息符合规范
+
+## 注意事项
+
+1. **不要删除 `feature = "sqlite"` gate** — 保持 `sqlite = ["dep:turso"]`
+2. **不要修改 src/crawl/runner.rs** — 已确认无 SqliteStore 引用
+3. **不要修改 src/mcp/** — 已确认无 SqliteStore 引用
+4. **不要修改 tests/ 目录** — 已确认无直接 SqliteStore::open 调用
+5. 如果 `super::migrations::SCHEMA_V1` 不存在，搜索 `SCHEMA_V1` 在 src/storage/migrations.rs 中找到定义
+6. 如果 `WispError::Storage` 或 `StorageError::General` 不存在，检查 src/error.rs 中的实际变体名
+7. 如果 `Arc` 不再使用（旧代码用 `Arc<parking_lot::Mutex<Connection>>`），删除 `use std::sync::Arc;` 如果编译器警告未使用

@@ -1,12 +1,12 @@
 //! 内建 Item Pipeline 实现。
 
-use std::future::Future;
-use std::pin::Pin;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
 use tokio::sync::Mutex;
 
-use super::{ItemPipeline, CrawlContext};
+use super::{CrawlContext, ItemPipeline};
 
 /// JSONL 文件写入管道。
 ///
@@ -18,15 +18,23 @@ pub struct JsonlWriterPipeline {
 
 impl JsonlWriterPipeline {
     /// 创建 JSONL 写入管道。
+    #[must_use]
     pub fn new(path: &str) -> Self {
-        Self { path: path.to_string(), file: Mutex::new(None) }
+        Self {
+            path: path.to_string(),
+            file: Mutex::new(None),
+        }
     }
 }
 
 #[async_trait]
 impl ItemPipeline for JsonlWriterPipeline {
     async fn open(&self, _ctx: &CrawlContext) {
-        if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&self.path) {
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
             *self.file.lock().await = Some(file);
         }
     }
@@ -36,11 +44,15 @@ impl ItemPipeline for JsonlWriterPipeline {
         let mut guard = self.file.lock().await;
         if let Some(ref mut file) = *guard {
             if let Ok(line) = serde_json::to_string(&item) {
-                let _ = writeln!(file, "{}", line);
+                let _ = writeln!(file, "{line}");
             }
-        } else if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&self.path) {
+        } else if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
             if let Ok(line) = serde_json::to_string(&item) {
-                let _ = writeln!(file, "{}", line);
+                let _ = writeln!(file, "{line}");
             }
         }
         Some(item)
@@ -63,8 +75,14 @@ pub struct FilterFieldsPipeline {
 
 impl FilterFieldsPipeline {
     /// 创建字段过滤管道。
+    #[must_use]
     pub fn new(fields: Vec<&str>) -> Self {
-        Self { fields: fields.into_iter().map(|s| s.to_string()).collect() }
+        Self {
+            fields: fields
+                .into_iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+        }
     }
 }
 
@@ -98,6 +116,7 @@ impl ItemPipeline for FilterFieldsPipeline {
 ///     println!("flushing {} items", items.len());
 /// });
 /// ```
+#[allow(clippy::type_complexity)]
 pub struct BatchItemPipeline {
     buffer: Mutex<Vec<Value>>,
     batch_size: usize,
@@ -136,13 +155,16 @@ impl ItemPipeline for BatchItemPipeline {
 
     async fn close(&self, _ctx: &CrawlContext) {
         let mut buf = self.buffer.lock().await;
-        if !buf.is_empty() {
+        if buf.is_empty() {
+            tracing::debug!("BatchItemPipeline::close: buffer empty, nothing to flush");
+        } else {
             let remaining = buf.len();
-            tracing::info!("BatchItemPipeline::close: flushing {} remaining items", remaining);
+            tracing::info!(
+                "BatchItemPipeline::close: flushing {} remaining items",
+                remaining
+            );
             let batch = std::mem::take(&mut *buf);
             (self.flush_fn)(batch).await;
-        } else {
-            tracing::debug!("BatchItemPipeline::close: buffer empty, nothing to flush");
         }
     }
 }

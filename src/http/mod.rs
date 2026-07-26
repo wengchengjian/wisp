@@ -16,7 +16,7 @@ use std::time::Duration;
 use wreq::header::HeaderName;
 use wreq_util::Profile;
 
-use crate::error::{Result, WispError, NetworkError, ParseError};
+use crate::error::{NetworkError, ParseError, Result, WispError};
 use crate::fetcher::{Method as FetchMethod, Request as FetchRequest, Response as FetchResponse};
 
 /// HTTP client configuration.
@@ -78,27 +78,32 @@ impl Default for ClientBuilder {
 
 impl ClientBuilder {
     /// 创建新的构建器。
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: Config::default(),
         }
     }
     /// 设置请求超时。
+    #[must_use]
     pub fn timeout(mut self, d: Duration) -> Self {
         self.config.timeout = d;
         self
     }
     /// 设置 User-Agent。
+    #[must_use]
     pub fn user_agent(mut self, ua: &str) -> Self {
         self.config.user_agent = Some(ua.to_string());
         self
     }
     /// 设置代理。
+    #[must_use]
     pub fn proxy(mut self, url: &str) -> Self {
         self.config.proxy = Some(url.to_string());
         self
     }
     /// 添加默认请求头。
+    #[must_use]
     pub fn header(mut self, key: &str, value: &str) -> Self {
         self.config
             .headers
@@ -106,24 +111,28 @@ impl ClientBuilder {
         self
     }
     /// 设置最大重定向次数。
+    #[must_use]
     pub fn max_redirects(mut self, n: usize) -> Self {
         self.config.max_redirects = n;
         self
     }
 
     /// 指定浏览器 TLS 指纹模拟（Chrome/Firefox/Safari/Edge/OkHttp，75 变体）
+    #[must_use]
     pub fn emulation(mut self, emu: Profile) -> Self {
         self.config.emulation = Some(emu);
         self
     }
 
     /// 关闭 TLS 指纹模拟（用 wreq 默认行为，用于调试）
+    #[must_use]
     pub fn no_emulation(mut self) -> Self {
         self.config.emulation = None;
         self
     }
 
     /// 自定义 header 顺序（wreq 6.0.0-rc.29 未暴露 headers_order 方法，配置暂不生效）
+    #[must_use]
     pub fn header_order(mut self, order: Vec<HeaderName>) -> Self {
         self.config.header_order = Some(order);
         self
@@ -132,12 +141,14 @@ impl ClientBuilder {
     /// 设置 DNS-over-HTTPS 服务器（防止代理场景 DNS 泄漏）。
     ///
     /// 常用值："https://1.1.1.1/dns-query" (Cloudflare) 或 "https://dns.google/dns-query" (Google)
+    #[must_use]
     pub fn dns_over_https(mut self, url: &str) -> Self {
         self.config.dns_over_https = Some(url.to_string());
         self
     }
 
     /// 设置响应体最大字节数。超过则返回 `ResponseBodyTooLarge` 错误。
+    #[must_use]
     pub fn max_body_size(mut self, max: usize) -> Self {
         self.config.max_body_size = max;
         self
@@ -147,6 +158,7 @@ impl ClientBuilder {
     ///
     /// 仅用于测试或抓取自签名证书的内部站点。启用后存在中间人攻击风险，
     /// 生产环境应保持默认 false（启用验证）。
+    #[must_use]
     pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
         self.config.danger_accept_invalid_certs = accept;
         self
@@ -154,6 +166,7 @@ impl ClientBuilder {
 
     /// 获取配置引用（测试用）
     #[doc(hidden)]
+    #[must_use]
     pub fn config_ref(&self) -> &Config {
         &self.config
     }
@@ -181,9 +194,9 @@ impl ClientBuilder {
         // 注：wreq 6.0.0-rc.29 ClientBuilder 未暴露 headers_order 方法，
         // header_order 字段暂不应用，保留供未来版本支持后启用
 
-        let http_client = builder
-            .build()
-            .map_err(|e| WispError::Network(NetworkError::Http(format!("client build error: {e}"))))?;
+        let http_client = builder.build().map_err(|e| {
+            WispError::Network(NetworkError::Http(format!("client build error: {e}")))
+        })?;
 
         Ok(Client {
             http: http_client,
@@ -201,6 +214,7 @@ pub struct Client {
 
 impl Client {
     /// 创建客户端构建器。
+    #[must_use]
     pub fn builder() -> ClientBuilder {
         ClientBuilder::new()
     }
@@ -211,6 +225,7 @@ impl Client {
     }
 
     /// 获取配置引用（供 Engine 代理轮换时读取 timeout 等参数）。
+    #[must_use]
     pub fn config_ref(&self) -> &Config {
         &self.config
     }
@@ -262,12 +277,17 @@ impl Client {
             }
         };
 
-        let wreq_resp = wreq_resp.map_err(|e| classify_request_error(&e, &req.url, self.config.timeout))?;
+        let wreq_resp =
+            wreq_resp.map_err(|e| classify_request_error(&e, &req.url, self.config.timeout))?;
         self.build_fetch_response(wreq_resp, req.clone()).await
     }
 
     /// GET request（便捷方法，内部构造 Request）。
-    pub async fn get(&self, url: &str, extra_headers: &[(String, String)]) -> Result<FetchResponse> {
+    pub async fn get(
+        &self,
+        url: &str,
+        extra_headers: &[(String, String)],
+    ) -> Result<FetchResponse> {
         let mut req = FetchRequest::get(url);
         for (k, v) in extra_headers {
             req.headers.insert(k.clone(), v.clone());
@@ -283,7 +303,7 @@ impl Client {
         json: Option<&Value>,
         extra_headers: &[(String, String)],
     ) -> Result<FetchResponse> {
-        let mut req = FetchRequest::post(url, body.map(|b| b.to_string()));
+        let mut req = FetchRequest::post(url, body.map(std::string::ToString::to_string));
         for (k, v) in extra_headers {
             req.headers.insert(k.clone(), v.clone());
         }
@@ -291,7 +311,8 @@ impl Client {
             let json_str = serde_json::to_string(j)
                 .map_err(|e| WispError::Parse(ParseError::Json(format!("JSON serialize: {e}"))))?;
             req.body = Some(json_str);
-            req.headers.insert("content-type".to_string(), "application/json".to_string());
+            req.headers
+                .insert("content-type".to_string(), "application/json".to_string());
         }
         self.fetch(&req).await
     }
@@ -307,7 +328,7 @@ impl Client {
         let mut req = FetchRequest {
             url: url.to_string(),
             method: FetchMethod::Put,
-            body: body.map(|b| b.to_string()),
+            body: body.map(std::string::ToString::to_string),
             ..Default::default()
         };
         for (k, v) in extra_headers {
@@ -317,13 +338,18 @@ impl Client {
             let json_str = serde_json::to_string(j)
                 .map_err(|e| WispError::Parse(ParseError::Json(format!("JSON serialize: {e}"))))?;
             req.body = Some(json_str);
-            req.headers.insert("content-type".to_string(), "application/json".to_string());
+            req.headers
+                .insert("content-type".to_string(), "application/json".to_string());
         }
         self.fetch(&req).await
     }
 
     /// DELETE request（便捷方法）。
-    pub async fn delete(&self, url: &str, extra_headers: &[(String, String)]) -> Result<FetchResponse> {
+    pub async fn delete(
+        &self,
+        url: &str,
+        extra_headers: &[(String, String)],
+    ) -> Result<FetchResponse> {
         let mut req = FetchRequest {
             url: url.to_string(),
             method: FetchMethod::Delete,
@@ -343,7 +369,9 @@ impl Client {
                 wreq::header::HeaderName::from_bytes(k.as_bytes()),
                 wreq::header::HeaderValue::from_str(v),
             ) {
-                (Ok(name), Ok(val)) => { map.insert(name, val); }
+                (Ok(name), Ok(val)) => {
+                    map.insert(name, val);
+                }
                 (Err(e), _) => tracing::warn!("跳过无效 header 名 '{}': {}", k, e),
                 (_, Err(e)) => tracing::warn!("跳过无效 header 值 '{}': {}", k, e),
             }
@@ -358,7 +386,9 @@ impl Client {
                 wreq::header::HeaderName::from_bytes(k.as_bytes()),
                 wreq::header::HeaderValue::from_str(v),
             ) {
-                (Ok(name), Ok(val)) => { map.insert(name, val); }
+                (Ok(name), Ok(val)) => {
+                    map.insert(name, val);
+                }
                 (Err(e), _) => tracing::warn!("跳过无效 config header 名 '{}': {}", k, e),
                 (_, Err(e)) => tracing::warn!("跳过无效 config header 值 '{}': {}", k, e),
             }
@@ -367,7 +397,11 @@ impl Client {
     }
 
     /// 从 wreq 响应构建统一 `fetcher::Response`（流式读取 body + 大小限制）。
-    async fn build_fetch_response(&self, resp: wreq::Response, request: FetchRequest) -> Result<FetchResponse> {
+    async fn build_fetch_response(
+        &self,
+        resp: wreq::Response,
+        request: FetchRequest,
+    ) -> Result<FetchResponse> {
         let status = resp.status().as_u16();
         let url = resp.uri().to_string();
         let content_type = resp
@@ -388,7 +422,9 @@ impl Client {
         let mut stream = resp.bytes_stream();
         use futures::StreamExt;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| WispError::Network(NetworkError::Http(format!("read body chunk: {e}"))))?;
+            let chunk = chunk.map_err(|e| {
+                WispError::Network(NetworkError::Http(format!("read body chunk: {e}")))
+            })?;
             if body.len() + chunk.len() > max_body_size {
                 return Err(WispError::Network(NetworkError::ResponseBodyTooLarge {
                     url: url.clone(),
@@ -410,7 +446,6 @@ impl Client {
     }
 }
 
-
 /// 将 `wreq::Error` 分类为结构化的 `WispError`，支持按错误类别差异化重试/降级。
 ///
 /// 分类顺序（先命中先返回）：
@@ -427,7 +462,7 @@ impl Client {
 fn classify_request_error(e: &wreq::Error, url: &str, timeout: Duration) -> WispError {
     let host = url::Url::parse(url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .and_then(|u| u.host_str().map(std::string::ToString::to_string))
         .unwrap_or_else(|| url.to_string());
 
     if e.is_timeout() {
@@ -506,7 +541,7 @@ mod tests {
                         .skip(1)
                         .take_while(|line| !line.is_empty())
                         .filter(|line| line.contains(':'))
-                        .map(|line| format!("{}\n", line))
+                        .map(|line| format!("{line}\n"))
                         .collect();
                     let body = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -517,7 +552,7 @@ mod tests {
                 });
             }
         });
-        format!("http://{}", addr)
+        format!("http://{addr}")
     }
 
     #[tokio::test]
@@ -526,7 +561,7 @@ mod tests {
         let client = Client::builder().no_emulation().build().unwrap();
         let extra = vec![("X-Custom".to_string(), "put-val".to_string())];
         let resp = client
-            .put(&format!("{}/item", base), None, None, &extra)
+            .put(&format!("{base}/item"), None, None, &extra)
             .await
             .unwrap();
         let text = resp.text().unwrap();
@@ -542,7 +577,7 @@ mod tests {
         let client = Client::builder().no_emulation().build().unwrap();
         let extra = vec![("X-Custom".to_string(), "del-val".to_string())];
         let resp = client
-            .delete(&format!("{}/item", base), &extra)
+            .delete(&format!("{base}/item"), &extra)
             .await
             .unwrap();
         let text = resp.text().unwrap();
@@ -556,7 +591,7 @@ mod tests {
     async fn get_with_empty_extra_headers_still_works() {
         let base = spawn_echo_server().await;
         let client = Client::builder().no_emulation().build().unwrap();
-        let resp = client.get(&format!("{}/item", base), &[]).await.unwrap();
+        let resp = client.get(&format!("{base}/item"), &[]).await.unwrap();
         assert_eq!(resp.status, 200);
     }
 }

@@ -4,8 +4,8 @@
 //! 不发起实际网络请求（避免环境依赖）。
 
 use wisp::http::{Client, ClientBuilder, Config};
-use wreq_util::Profile;
 use wreq::header::HeaderName;
+use wreq_util::Profile;
 
 #[test]
 fn test_config_default_has_chrome136_emulation() {
@@ -16,15 +16,13 @@ fn test_config_default_has_chrome136_emulation() {
 
 #[test]
 fn test_builder_emulation_override() {
-    let builder = ClientBuilder::new()
-        .emulation(Profile::Firefox128);
+    let builder = ClientBuilder::new().emulation(Profile::Firefox128);
     assert_eq!(builder.config_ref().emulation, Some(Profile::Firefox128));
 }
 
 #[test]
 fn test_builder_no_emulation() {
-    let builder = ClientBuilder::new()
-        .no_emulation();
+    let builder = ClientBuilder::new().no_emulation();
     assert_eq!(builder.config_ref().emulation, None);
 }
 
@@ -35,8 +33,7 @@ fn test_builder_header_order() {
         HeaderName::from_static("accept"),
         HeaderName::from_static("accept-encoding"),
     ];
-    let builder = ClientBuilder::new()
-        .header_order(order.clone());
+    let builder = ClientBuilder::new().header_order(order.clone());
     assert_eq!(builder.config_ref().header_order.as_ref().unwrap(), &order);
 }
 
@@ -60,13 +57,19 @@ fn test_client_build_with_emulation() {
         .emulation(Profile::Chrome136)
         .timeout(std::time::Duration::from_secs(10))
         .build();
-    assert!(client.is_ok(), "client build with emulation should succeed: {:?}", client.err());
+    assert!(
+        client.is_ok(),
+        "client build with emulation should succeed: {:?}",
+        client.err()
+    );
 }
 
 #[test]
 fn test_client_build_with_no_emulation() {
-    let client = Client::builder()
-        .no_emulation()
-        .build();
-    assert!(client.is_ok(), "client build without emulation should succeed: {:?}", client.err());
+    let client = Client::builder().no_emulation().build();
+    assert!(
+        client.is_ok(),
+        "client build without emulation should succeed: {:?}",
+        client.err()
+    );
 }

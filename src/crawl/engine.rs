@@ -170,10 +170,12 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
     if let Some(err) = last_error {
         if let Some(ref tx) = ctx.state.tx {
             // OPTIMIZE: try_send 非阻塞。channel 满时丢失事件优于阻塞核心路径。
-            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(CrawlEvent::Error {
-                url: sanitize_url(&req.url), // ND-007-SEC：事件中脱敏 URL 凭据
-                error: err,
-            }) {
+            if let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) =
+                tx.try_send(CrawlEvent::Error {
+                    url: sanitize_url(&req.url), // ND-007-SEC：事件中脱敏 URL 凭据
+                    error: err,
+                })
+            {
                 tracing::warn!("event channel full, dropping Error event");
             }
         }
@@ -242,24 +244,20 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
                     );
                     // ND-007-CORR：保留错误上下文，不再用 _err 丢弃
                     let (new_resp, err) = fetch_dispatch(ctx, &new_req).await;
-                    match new_resp {
-                        Some(r) => {
-                            resp = r;
-                            continue;
-                        }
-                        None => {
-                            // ND-007-CORR：refetch 失败时发送 Error 事件，不静默丢弃
-                            let err_msg =
-                                err.unwrap_or_else(|| "refetch failed (unknown error)".to_string());
-                            tracing::warn!(
-                                "Refetch 失败，放弃: {} - {}",
-                                sanitize_url(&new_req.url),
-                                err_msg
-                            );
-                            emit_error_event(ctx, &new_req.url, &err_msg);
-                            return;
-                        }
+                    if let Some(r) = new_resp {
+                        resp = r;
+                        continue;
                     }
+                    // ND-007-CORR：refetch 失败时发送 Error 事件，不静默丢弃
+                    let err_msg =
+                        err.unwrap_or_else(|| "refetch failed (unknown error)".to_string());
+                    tracing::warn!(
+                        "Refetch 失败，放弃: {} - {}",
+                        sanitize_url(&new_req.url),
+                        err_msg
+                    );
+                    emit_error_event(ctx, &new_req.url, &err_msg);
+                    return;
                 }
                 _ => break,
             }
@@ -429,14 +427,14 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
                 }
 
                 // 调用错误中间件：只决定"是否重试"，不维护计数
-                let action = if !ctx.shared.middleware_chain.is_empty() {
+                let action = if ctx.shared.middleware_chain.is_empty() {
+                    middleware::ErrorAction::Propagate
+                } else {
                     let crawl_ctx = build_crawl_context(ctx);
                     ctx.shared
                         .middleware_chain
                         .run_error_middlewares(&current_req, &e.to_string(), &crawl_ctx)
                         .await
-                } else {
-                    middleware::ErrorAction::Propagate
                 };
 
                 match action {
@@ -448,9 +446,7 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
                         let attempt = current_req.retry_count;
                         let base_ms = 100u64;
                         let cap_ms = 30_000u64;
-                        let exp_delay = base_ms
-                            .saturating_mul(1u64 << attempt.min(10))
-                            .min(cap_ms);
+                        let exp_delay = base_ms.saturating_mul(1u64 << attempt.min(10)).min(cap_ms);
                         // 抖动：[0, exp_delay/2)，避免所有失败请求同步重试
                         let jitter = rand::rng().random_range(0..exp_delay / 2 + 1);
                         let total_delay = std::time::Duration::from_millis(exp_delay + jitter);
@@ -472,7 +468,7 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
                                 error: e.to_string(),
                             });
                         }
-                        continue; // 同步重试，绕过 scheduler seen 去重
+                        // 同步重试，绕过 scheduler seen 去重
                     }
                     _ => {
                         stats.errors.fetch_add(1, Ordering::SeqCst);
@@ -615,11 +611,13 @@ pub(crate) async fn persist_spider_checkpoint(
             "checkpoint 序列化失败: {e}"
         )))
     })?;
-    crate::storage::save_checkpoint(store, spider_name, &blob).await.map_err(|e| {
-        crate::error::WispError::Storage(crate::error::StorageError::General(format!(
-            "checkpoint 保存失败: {e}"
-        )))
-    })?;
+    crate::storage::save_checkpoint(store, spider_name, &blob)
+        .await
+        .map_err(|e| {
+            crate::error::WispError::Storage(crate::error::StorageError::General(format!(
+                "checkpoint 保存失败: {e}"
+            )))
+        })?;
     Ok(())
 }
 
@@ -641,7 +639,7 @@ pub async fn fetch_page(
         if override_mode == FetchMode::Stealth {
             let domain = url::Url::parse(&req.url)
                 .ok()
-                .and_then(|u| u.host_str().map(|s| s.to_string()))
+                .and_then(|u| u.host_str().map(std::string::ToString::to_string))
                 .unwrap_or_default();
 
             // 双重检测：先检查 cookie 是否已存在（其他请求可能已解决 CF）
@@ -654,9 +652,19 @@ pub async fn fetch_page(
                     http_req.headers.insert("User-Agent".to_string(), ua);
                 }
                 http_req.fetch_mode_override = Some(FetchMode::Http);
-                let resp = fetch_page_inner(fetch_client, &http_req, proxy_url, FetchMode::Http, proxy_clients).await?;
+                let resp = fetch_page_inner(
+                    fetch_client,
+                    &http_req,
+                    proxy_url,
+                    FetchMode::Http,
+                    proxy_clients,
+                )
+                .await?;
                 if !auto::is_blocked_response(resp.status, &resp.body, &resp.headers) {
-                    tracing::info!("AutoMode: 域名锁双重检测 - cookie已存在，HTTP成功 (status={})", resp.status);
+                    tracing::info!(
+                        "AutoMode: 域名锁双重检测 - cookie已存在，HTTP成功 (status={})",
+                        resp.status
+                    );
                     let mut final_resp = resp;
                     final_resp.request.fetch_mode_override = Some(FetchMode::Http);
                     return Ok(final_resp);
@@ -677,9 +685,19 @@ pub async fn fetch_page(
                     http_req.headers.insert("User-Agent".to_string(), ua);
                 }
                 http_req.fetch_mode_override = Some(FetchMode::Http);
-                let resp = fetch_page_inner(fetch_client, &http_req, proxy_url, FetchMode::Http, proxy_clients).await?;
+                let resp = fetch_page_inner(
+                    fetch_client,
+                    &http_req,
+                    proxy_url,
+                    FetchMode::Http,
+                    proxy_clients,
+                )
+                .await?;
                 if !auto::is_blocked_response(resp.status, &resp.body, &resp.headers) {
-                    tracing::info!("AutoMode: 域名锁等待后 - HTTP+cookie 成功 (status={})", resp.status);
+                    tracing::info!(
+                        "AutoMode: 域名锁等待后 - HTTP+cookie 成功 (status={})",
+                        resp.status
+                    );
                     let mut final_resp = resp;
                     final_resp.request.fetch_mode_override = Some(FetchMode::Http);
                     return Ok(final_resp);
@@ -687,7 +705,14 @@ pub async fn fetch_page(
             }
 
             // 无 cookie，执行 Stealth（持锁期间其他请求会等待）
-            return fetch_page_inner(fetch_client, req, proxy_url, FetchMode::Stealth, proxy_clients).await;
+            return fetch_page_inner(
+                fetch_client,
+                req,
+                proxy_url,
+                FetchMode::Stealth,
+                proxy_clients,
+            )
+            .await;
         }
         return fetch_page_inner(fetch_client, req, proxy_url, override_mode, proxy_clients).await;
     }
@@ -707,11 +732,21 @@ pub async fn fetch_page(
             if let Some(ua) = fetch_client.get_cf_ua(&req.url).await {
                 http_req.headers.insert("User-Agent".to_string(), ua);
             }
-            let resp = fetch_page_inner(fetch_client, &http_req, proxy_url, FetchMode::Http, proxy_clients).await?;
+            let resp = fetch_page_inner(
+                fetch_client,
+                &http_req,
+                proxy_url,
+                FetchMode::Http,
+                proxy_clients,
+            )
+            .await?;
             // 使用与 StealthUpgradeMiddleware 相同的检测逻辑，避免“先报成功再被中间件拦截”的无效 Refetch
             let blocked_reason = auto::blocked_reason(resp.status, &resp.body, &resp.headers);
             if resp.status == 200 && blocked_reason.is_none() {
-                tracing::info!("AutoMode: HTTP+cookie 成功 (status={}), 跳过浏览器", resp.status);
+                tracing::info!(
+                    "AutoMode: HTTP+cookie 成功 (status={}), 跳过浏览器",
+                    resp.status
+                );
                 // 标记为 HTTP 模式，阻止 DynamicUpgradeMiddleware 误升级
                 let mut final_resp = resp;
                 final_resp.request.fetch_mode_override = Some(FetchMode::Http);
@@ -725,13 +760,21 @@ pub async fn fetch_page(
             );
             let mut stealth_req = req.clone();
             stealth_req.fetch_mode_override = Some(FetchMode::Stealth);
-            return fetch_page_inner(fetch_client, &stealth_req, proxy_url, FetchMode::Stealth, proxy_clients).await;
+            return fetch_page_inner(
+                fetch_client,
+                &stealth_req,
+                proxy_url,
+                FetchMode::Stealth,
+                proxy_clients,
+            )
+            .await;
         }
 
         // 无 CF cookie：检查 rule_engine 缓存
         let resolved = { rule_engine.lock().await.resolve(&req.url) };
         if let Some(cached_mode) = resolved {
-            return fetch_page_inner(fetch_client, req, proxy_url, cached_mode, proxy_clients).await;
+            return fetch_page_inner(fetch_client, req, proxy_url, cached_mode, proxy_clients)
+                .await;
         }
         // HTTP 先行（升级由 StealthUpgradeMiddleware 通过 Refetch 触发）
         let resp =
@@ -811,8 +854,7 @@ pub async fn fetch_page_inner(
             })
             .map_err(|e| {
                 crate::error::WispError::Network(crate::error::NetworkError::Http(format!(
-                    "proxy client build failed: {}",
-                    e
+                    "proxy client build failed: {e}"
                 )))
             })?;
         Some(client)
@@ -851,7 +893,6 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Store;
     use async_trait::async_trait;
     use std::time::Instant;
 
@@ -860,7 +901,7 @@ mod tests {
 
     #[async_trait]
     impl Spider for DummySpider {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "dummy"
         }
         fn start_urls(&self) -> Vec<String> {
@@ -1055,8 +1096,7 @@ mod tests {
         let err_msg = err.unwrap();
         assert!(
             err_msg.contains("fetch failed"),
-            "错误信息应含 'fetch failed'，实际: {}",
-            err_msg
+            "错误信息应含 'fetch failed'，实际: {err_msg}"
         );
 
         // 关键断言：stats.retries 必须等于 max_retries（2）
@@ -1171,8 +1211,7 @@ mod tests {
         assert_eq!(
             resolved,
             Some(FetchMode::Stealth),
-            "Auto 模式首次失败后 rule_engine 应学到 Stealth，实际: {:?}",
-            resolved
+            "Auto 模式首次失败后 rule_engine 应学到 Stealth，实际: {resolved:?}"
         );
     }
 
@@ -1220,9 +1259,7 @@ mod tests {
         fn compute_backoff(attempt: u32) -> u64 {
             let base_ms = 100u64;
             let cap_ms = 30_000u64;
-            base_ms
-                .saturating_mul(1u64 << attempt.min(10))
-                .min(cap_ms)
+            base_ms.saturating_mul(1u64 << attempt.min(10)).min(cap_ms)
         }
 
         assert_eq!(compute_backoff(1), 200, "attempt=1 → 200ms");
@@ -1271,11 +1308,7 @@ mod tests {
         let should_upgrade = engine.resolve_and_learn();
 
         assert!(should_upgrade);
-        assert_eq!(
-            engine.lock_count.load(Ordering::SeqCst),
-            1,
-            "应只抢一次锁"
-        );
+        assert_eq!(engine.lock_count.load(Ordering::SeqCst), 1, "应只抢一次锁");
     }
 
     // === ND-012-TEST：核心函数补充测试 ===
@@ -1471,8 +1504,7 @@ mod tests {
         assert!(!sanitized.contains("pass"), "脱敏后不应包含 password");
         assert!(
             sanitized.contains("***:***@"),
-            "脱敏后应包含 ***:***@，实际: {}",
-            sanitized
+            "脱敏后应包含 ***:***@，实际: {sanitized}"
         );
         assert!(sanitized.contains("example.com"), "脱敏后应保留 host");
     }

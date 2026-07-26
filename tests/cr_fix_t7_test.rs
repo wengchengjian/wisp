@@ -10,7 +10,7 @@
 //! 零次 HTML 重解析。
 
 use std::time::Instant;
-use wisp::parser::{Node, ElementSnapshot, similarity};
+use wisp::parser::{similarity, ElementSnapshot, Node};
 
 #[test]
 fn test_similarity_uses_node_navigation_not_reparse() {
@@ -26,7 +26,10 @@ fn test_similarity_uses_node_navigation_not_reparse() {
 
     let doc = Node::from_html(html);
     // select_all 返回拥有所有权的 Vec<Node>，避免借用临时 NodeList
-    let li = doc.select_all("li.item").into_iter().next()
+    let li = doc
+        .select_all("li.item")
+        .into_iter()
+        .next()
         .expect("应找到 li.item");
 
     // 捕获快照（capture 也用 Node 导航 API，不重解析）
@@ -84,7 +87,10 @@ fn test_similarity_helpers_match_capture_logic() {
     </body></html>"##;
 
     let doc = Node::from_html(html);
-    let li = doc.select_all("li.item.active").into_iter().next()
+    let li = doc
+        .select_all("li.item.active")
+        .into_iter()
+        .next()
         .expect("应找到 li.item.active");
     let snapshot = ElementSnapshot::capture(&li);
 

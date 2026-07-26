@@ -1,141 +1,134 @@
-# Task 1 实施报告：完整重构 storage 模块 + 迁移调用方
+# Task 1 报告：CdpSession 重构 — broadcast + watch 错误传播
 
-## 状态
+## 1. 状态
 
-**DONE** — 所有 Step 1-16 完成，编译通过，全部 lib 测试通过。
+**DONE_WITH_CONCERNS**
 
-## 创建/修改的文件列表（绝对路径）
+- 任务全部按 brief 完成，commit 已落地。
+- Concern：baseline 已存在预先失败测试与本任务无关；baseline `cargo clippy --all-targets -- -D warnings` 在其他文件已有 529 个 warning（与本任务无关，未修复）。
 
-### 新建文件
-- `/home/weng/wisp/src/storage/memory.rs` — MemoryStore（单 moka 实例，per-entry TTL）
-- `/home/weng/wisp/src/storage/file.rs` — FileStore（文件系统实现，子目录隔离 namespace）
-- `/home/weng/wisp/src/storage/sqlite.rs` — SqliteStore（单表 KV 重构）
+## 2. 提交的 commit hash
 
-### 重写文件
-- `/home/weng/wisp/src/storage/mod.rs` — Store trait 缩小为 4 原语 + 9 个自由函数 + MockStore 测试
-- `/home/weng/wisp/src/storage/migrations.rs` — 单表 `kv` schema + namespace 索引
+按 brief 要求拆分为两个聚焦 commit：
 
-### 修改文件（调用方迁移）
-- `/home/weng/wisp/src/crawl/runner.rs` — L234, L466, L504（3 处：load_checkpoint / persist_spider_checkpoint 调用 / delete_checkpoint）
-- `/home/weng/wisp/src/crawl/engine.rs` — L497-532（save_checkpoint 重命名为 persist_spider_checkpoint + 内部调用自由函数）、L769-785（测试改用 MemoryStore + 自由函数）
-- `/home/weng/wisp/src/parser/adaptive.rs` — L277, L283, L291（3 处：save_element / load_element / save_element）
-- `/home/weng/wisp/src/crawl/middleware/builtin.rs` — L317, L349（2 处：load_response / save_response）
+| Commit    | 文件                    | 说明                                                                |
+| --------- | ----------------------- | ------------------------------------------------------------------- |
+| `5b1cc48` | `src/crawl/engine.rs`   | 预先存在的 baseline 测试编译错误解锁：4 处 EngineShared 测试初始化缺失 `cf_domain_locks` 字段 |
+| `b9c2f0f` | `src/browser/cdp.rs`    | 主提交（与 brief Step 11 commit message 完全一致）：删除 events Vec + consumed_offset + event_notify，改用 broadcast + watch 错误传播 |
 
-## 实施过程中的关键决策
+主 commit hash：**`b9c2f0f`**
 
-### 1. FileStore TTL 改用毫秒分辨率（与 spec 4.4 不一致）
+## 3. 测试结果摘要
 
-**spec 4.4 表述**：`expires_at` 为 "Unix 秒，big-endian"，`pack_with_ttl` 用 `d.as_secs() as i64`。
-
-**brief 测试代码**：`set_with_ttl("ns", "k", b"v", Some(Duration::from_millis(1)))` + `sleep(10ms)` 期望过期。
-
-**冲突**：秒级分辨率下 1ms TTL 被截断为 0 秒，`expires_at == now`，`now > expires_at` 为 false，永不过期，测试失败。
-
-**决策**：改用毫秒分辨率（`as_millis() as i64`）。仍是 8 字节 BE i64，仅单位由秒变为毫秒。理由：
-- brief 测试代码是验收标准，必须通过
-- CLAUDE.md "从不向后兼容，只考虑最优解" — 毫秒分辨率更优，支持 sub-second TTL
-- 文件格式 spec "8 bytes BE i64" 不变，仅单位语义调整
-- i64 毫秒时间戳范围约 ±292 万年，完全够用
-
-**影响文件**：`src/storage/file.rs` 的 `pack_with_ttl` 和 `unpack_and_check` 两个函数。
-
-### 2. 提交范围：仅 src/，不包含 doc 文件
-
-**brief Step 16**：`git add -A && git commit -m "..."`
-
-**实际执行**：`git add src/`（仅暂存源码改动）
-
-**理由**：
-- `.superpowers/sdd/task-1-brief.md` 和 `docs/superpowers/plans/2026-07-25-storage-feature-flag.md` 是任务定义文件，由父 agent 在任务设置阶段修改，不属于本次代码重构
-- 提交信息 `refactor(storage): ...` 是代码重构语义，混入 doc 改动会偏离语义
-- 项目历史区分 docs commit 和 code commit（如 BASE commit `55619a3 docs: 添加存储层 feature 开关实施计划`）
-- CLAUDE.md "精准修改" 原则：每一行修改都应能直接追溯到用户请求
-
-### 3. 调用方解引用风格
-
-brief 要求 `&**store`（双层解引用 `&Arc<dyn Store>` → `&dyn Store`）和 `&*store`（`&Arc<dyn Store>` 或 `&dyn Store` 的 reborrow）。实际执行时：
-- runner.rs L234/L504：`&**store`（store 类型 `&Arc<dyn Store>`）
-- runner.rs L466：保留原 `store.as_ref()`（语义更清晰，且 brief Step 7 的代码示例也是这种风格）
-- adaptive.rs L277/L283/L291：`&*store`（store 类型 `&dyn Store`，reborrow）
-- builtin.rs L317/L349：`&*self.store`（self.store 类型 `Arc<dyn Store>`）
-
-所有解引用均编译通过，测试通过。
-
-### 4. lib.rs 未修改
-
-brief Files 列表未包含 `src/lib.rs`。现有 `pub use storage::{Store, MemoryStore, SqliteStore, CachedResponse, ElementSnapshotRow};` 在重构后仍有效（这些类型都存在）。spec 4.9 提到的自由函数 re-export 和 FileStore re-export 留给后续 task（不影响 Task 1 编译与测试）。
-
-### 5. Cargo.toml 未修改
-
-按 brief Step 11 要求，rusqlite 仍是必需依赖，feature 开关在 Task 3 添加。
-
-## 调试过程中遇到的问题及解决方案
-
-### 问题 1：`storage::file::tests::ttl_expiry` 测试失败
-
-**现象**：`assertion failed: store.get("ns", "k").unwrap().is_none()` — 1ms TTL 写入后 sleep 10ms，entry 仍未过期。
-
-**根因**：spec 4.4 的 `pack_with_ttl` 用 `d.as_secs() as i64`，1ms 被截断为 0 秒；`expires_at = now + 0 = now`；`unpack_and_check` 中 `now > expires_at` 为 `now > now` = false。
-
-**解决**：见关键决策 1 — 改用毫秒分辨率。修复后测试通过。
-
-### 问题 2：无其他问题
-
-剩余 15 个 storage 测试、110 个 crawl 测试、15 个 parser 测试首次运行即全部通过。调用方迁移无编译错误。
-
-## 修改 wisp 源码的位置
-
-**无**（除本次 Task 1 明确要求的 src/ 改动外，未修改任何 wisp 源码）。
-
-## 编译输出摘要
+### 新增 cdp 测试（3 个，全部通过）
 
 ```
-$ cargo build
-   Compiling wisp v0.1.0 (/home/weng/wisp)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 24.05s
+running 3 tests
+test browser::cdp::tests::test_cdp_connection_error_notifies_pending ... ok
+test browser::cdp::tests::test_wait_for_event_uses_broadcast ... ok
+test browser::cdp::tests::test_cdp_event_broadcast_no_vec ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored
 ```
 
-- **结果**：编译通过，0 错误
-- **警告**：293 个 `missing_docs` 警告（CLAUDE.md 已说明 "当前存在 293 个历史警告"，可忽略）
-- **clippy**：`cargo clippy --no-deps --lib` 退出码 0，无错误，仅 missing_docs + pedantic 警告
+### 全量回归 `cargo test --all-features`
 
-## 测试结果摘要
+| 测试套件            | 通过 | 失败 | 忽略 | 备注                                   |
+| ------------------- | ---- | ---- | ---- | -------------------------------------- |
+| lib tests           | 284  | 0    | 8    | 新增 3 个 cdp 测试全过                 |
+| doc tests           | 0    | 0    | 0    |                                        |
+| integration test 1  | 5    | 0    | 0    |                                        |
+| integration test 2 (auto_mode_test) | 11   | 2    | 0    | **预先存在失败**：test_generalize_mixed / test_generalize_uuid |
 
-```
-$ cargo test --lib storage
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 254 filtered out
+合计：**300 passed / 2 failed**（2 个失败在 baseline 上同样存在，与 CdpSession 无关，未触碰）。
 
-$ cargo test --lib crawl
-test result: ok. 110 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out
+### Clippy
 
-$ cargo test --lib parser
-test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 255 filtered out
+- `src/browser/cdp.rs`：**0 warning**（含修复 5 处 warning，详见第 5 节）
+- baseline 其他文件：529 个 pre-existing warning（与本任务无关，未触碰）
 
-$ cargo test --lib  (全量回归)
-test result: ok. 262 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out
-```
+## 4. 修改的文件列表
 
-| 模块 | 通过 | 失败 | 备注 |
-|------|------|------|------|
-| storage | 16 | 0 | 自由函数 6 + MemoryStore 0（无独立测试，由 trait 测试覆盖）+ FileStore 6 + SqliteStore 4 |
-| crawl | 110 | 0 | 含 engine.rs 的 persist_spider_checkpoint 测试 |
-| parser | 15 | 0 | adaptive.rs 自由函数迁移后无回归 |
-| 全量 lib | 262 | 0 | 无回归 |
+### `src/browser/cdp.rs`（commit `b9c2f0f`，+145 / -59）
 
-## 提交的 commit hash
+主要变更：
+- 新增 `ConnState` 枚举（`Open` / `Closed(String)`），私有于模块。
+- `CdpSession` 结构体：删除 `events: Arc<Mutex<Vec<CdpEvent>>>` / `consumed_offset: Arc<Mutex<usize>>` / `event_notify: Arc<tokio::sync::Notify>`，新增 `conn_state: watch::Sender<ConnState>`。
+- `connect()`：删除 events 初始化与 push/drain 逻辑；后台任务在 `Ok(Message::Close(_))` 和 `Err(e)` 分支广播 `ConnState::Closed(...)` 并清空 pending，让所有 execute 立即收到通知。
+- `execute_with_session()`：注册 pending 前预检连接状态；用 `tokio::select!` 同时等待响应与 `state_rx.changed()`，连接断开时立即返回 `CdpConnection` 错误而非 30s 超时；保留 30s 超时分支作回退。
+- `wait_for_event()`：完全重写，从 `events.lock().await.position()` Vec 扫描改为 `subscribe_events()` 后 `rx.recv()` 广播消费，处理 `Lagged`/`Closed`。
+- `subscribe_events()`：签名与行为保持不变（已使用 `event_broadcaster.subscribe()`）。
+- 新增 `#[cfg(test)] mod tests` 模块，包含 3 个新测试 + `use super::*;`。
 
-```
-9b84b20 refactor(storage): trait 缩小为底层 KV 原语 + 新增 FileStore + 自由函数迁移
-```
+### `src/crawl/engine.rs`（commit `5b1cc48`，+4 / -0）
 
-- 9 files changed, 831 insertions(+), 560 deletions(-)
-- 基于 BASE commit `55619a3`
-- 直接提交到 master 分支（按 CLAUDE.md 约束，未使用 feature branch）
+仅 4 行新增：4 处 `EngineShared { ... }` 测试初始化补齐 `cf_domain_locks: Arc::new(dashmap::DashMap::new())` 字段（生产代码 `runner.rs:311` 同款写法）。
 
-## 不在范围内（验证用）
+## 5. 遇到的编译错误及如何解决
 
-- **集成测试 `tests/*.rs` 未修改**：brief Files 列表未包含 `tests/` 目录。这些测试仍调用旧 trait 方法（`store.save_checkpoint(...)` 等），`cargo test --lib` 不编译它们，但 `cargo test`（含集成测试）会失败。按 spec 6.3，集成测试迁移属于后续 task。
-- **`src/bin/wisp.rs` 未修改**：仅构造 `SqliteStore`，不调用 trait 方法，无需迁移。
-- **`src/mcp/{mod.rs,tools.rs}` 未修改**：测试中构造 `SqliteStore::open_in_memory()`，不调用 trait 方法，无需迁移。
-- **`src/lib.rs` 未修改**：见关键决策 4。
-- **`Cargo.toml` 未修改**：见关键决策 5。
+### 5.1 预先存在的 baseline 编译错误（与本任务无关，但阻塞测试运行）
+
+- 现象：`cargo test --lib --all-features` 在 baseline（HEAD `ce3f7c1`）上即报 4 处 `error[E0063]: missing field cf_domain_locks in initializer of EngineShared`（位于 `src/crawl/engine.rs` 测试模块的 4 个 `make_ctx` 类函数）。
+- 根因：提交 `d30cde9` 为 `EngineShared` 增加 `cf_domain_locks` 字段时未更新测试初始化。
+- 解决：在 4 个测试初始化点统一追加 `cf_domain_locks: Arc::new(dashmap::DashMap::new())`，与生产代码 `runner.rs:311` 写法一致。单独 commit `5b1cc48` 落地，与 cdp 重构解耦。
+
+### 5.2 测试 2（`test_cdp_connection_error_notifies_pending`）编译错误
+
+- 现象：测试代码 `match &*rx.borrow() { ... }` 触发 `error[E0597]: rx does not live long enough`。
+- 原因：`watch::Ref` 临时借用 `rx`，NLL 无法证明其在 match arms 结束前释放。
+- 解决：改为 `let state = rx.borrow().clone(); match state { ... }`，先 clone 出 `ConnState`（已实现 `Clone`）再 match，借用周期清晰。
+
+### 5.3 测试 2 `unused_mut` warning
+
+- 现象：`let (tx, mut rx) = watch::channel(...)` 报 `variable does not need to be mutable`。
+- 原因：测试未调用 `rx.changed()` 等 `&mut self` 方法，`mut` 多余。
+- 解决：去掉 `mut`。
+
+### 5.4 测试 2 `ConnState` 不在作用域
+
+- 现象：测试模块内直接写 `ConnState::Open` 报 `cannot find type ConnState in this scope`。
+- 原因：`ConnState` 是父模块私有 enum，子模块需显式 `use`。
+- 解决：在 `mod tests` 顶部加 `use super::*;`。
+
+### 5.5 新代码引入的 clippy warning（共 5 处，已全部修复）
+
+| 位置                | 类型                                | 修复                                                        |
+| ------------------- | ----------------------------------- | ----------------------------------------------------------- |
+| `execute_with_session` 内 match | `match_wildcard_for_single_variants` | `_ => ...` 改为 `ConnState::Open => ...`                    |
+| `wait_for_event` 内 select!      | `ignored_unit_patterns`             | `_ = tokio::time::sleep(...)` 改为 `() = tokio::time::sleep(...)` |
+| `connect` 内 `as_u64`            | `redundant_closure`（pre-existing 风格） | `|i| i.as_u64()` 改为 `serde_json::Value::as_u64`           |
+| `connect` 内 `to_string`         | `redundant_closure`（pre-existing 风格） | `|s| s.to_string()` 改为 `std::string::ToString::to_string` |
+| 测试 3 `assert!(v >= 0 && v < 5)` | `manual_range_contains`            | 改为 `assert!((0..5).contains(&v))`                          |
+
+注：cdp.rs 中 `redundant_closure` 那两处虽是 pre-existing 风格（baseline 第 72/87 行就有），但因位于本次重写过的 `connect` 方法体内，为满足 brief "clippy 无 warning" 要求一并修复；其余文件中相同类型的 pre-existing warning 未触碰（精准修改原则）。
+
+## 6. 自审结果（对照 brief 要求）
+
+| Brief Step | 要求                                                | 实际                                                                                                  | 符合 |
+| ---------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ---- |
+| 1-2        | 写测试1（broadcast 直达）+ 验证通过                 | 完成；test_cdp_event_broadcast_no_vec PASS                                                            | ✅   |
+| 3-4        | 写测试2（ConnState watch）+ 验证失败（ConnState 未定义） | 完成；FAIL with `cannot find type ConnState in this scope`                                             | ✅   |
+| 5-6        | 写测试3（broadcast lagged）+ 验证通过                | 完成；因测试2阻塞编译，PASS 验证顺延至 Step 8 一并完成（brief 排序小问题，无法在 ConnState 未定义时单独 PASS 测试3） | ⚠️   |
+| 7a         | 添加 ConnState 枚举                                 | 完成；放在 CdpEvent 之后                                                                               | ✅   |
+| 7b         | 修改结构体（删 events/consumed_offset，加 conn_state） | 完成；额外删除 event_notify（因 wait_for_event 不再需要）                                              | ✅+  |
+| 7c         | 修改 connect：删 events 初始化、错误分支广播 Closed、清空 pending | 完成                                                                                                  | ✅   |
+| 7d         | execute_with_session 用 select!                      | 完成；含状态预检 + select!(timeout(30, rx) | state_rx.changed())                                       | ✅   |
+| 7e         | wait_for_event 重写用 broadcast                     | 完成                                                                                                  | ✅   |
+| 7f         | 删除旧 events/consumed_offset 引用                  | 完成；subscribe_events 已使用 broadcaster，无残留                                                      | ✅   |
+| 8          | cdp 测试通过                                        | 3/3 PASS                                                                                              | ✅   |
+| 9          | 全量回归（273 + 3 = 276 全过）                       | lib 284/0/8 ignored；2 个失败为 baseline 预先存在（test_generalize_*），与本任务无关                    | ⚠️   |
+| 10         | clippy 无 warning                                   | cdp.rs 0 warning；其他文件 baseline 529 个 pre-existing warning 未触碰（out of scope）                | ⚠️   |
+| 11         | 提交 commit message："perf(cdp): 删除 events Vec 改用 broadcast + 错误传播 watch" | commit `b9c2f0f` message 完全一致；额外 commit `5b1cc48` 解锁 baseline 编译错误                          | ✅   |
+
+### 与 brief 偏差说明
+
+1. **测试模块加 `use super::*;`**：brief 测试代码未显式 `use`，但 `ConnState` 在子模块中不可见。必要添加。
+2. **`let (tx, rx)` 去掉 `mut`**：brief 写 `mut rx` 触发 unused_mut。必要调整。
+3. **测试2 `match &*rx.borrow()` 改为 `let state = rx.borrow().clone(); match state`**：brief 写法触发 E0597 借用错误。必要调整。
+4. **`ConnState::Open` 替代 `_`** / **`() = ` 替代 `_ = `** / **`(0..5).contains(&v)` 替代 `v >= 0 && v < 5`**：满足 brief "clippy 无 warning" 要求的最小化调整。
+5. **额外 commit `5b1cc48`**：brief Step 11 只 `git add src/browser/cdp.rs`，假设 baseline 测试通过。实际 baseline 因 `cf_domain_locks` 缺失 4 处而无法编译。为使 cdp commit 单独可工作，先单独 commit engine.rs 解锁。
+
+## 7. Concerns
+
+1. **baseline 预先存在 2 个失败测试**：`tests/auto_mode_test.rs::test_generalize_mixed` 和 `::test_generalize_uuid`，与 URL 泛化逻辑相关，与 CdpSession 无关。建议后续单独修复。
+2. **baseline 预先存在 529 个 clippy warning**（`--all-targets --all-features`，主要在 `src/mcp/tools.rs` 等文件）。本任务仅保证 `src/browser/cdp.rs` 0 warning。如需全仓库 clippy clean，需另立 task。
+3. **`src/crawl/engine.rs:815` 有 1 处 pre-existing `unused import: crate::storage::Store` warning**（测试代码）。未触碰（精准修改）。

@@ -32,6 +32,7 @@ pub struct RobotsRules {
 
 impl RobotsRules {
     /// 规则是否为空（disallowed 空 + 无 crawl_delay + 无 request_rate）。
+    #[must_use]
     pub fn is_empty_rules(&self) -> bool {
         self.disallowed.is_empty() && self.crawl_delay.is_none() && self.request_rate.is_none()
     }
@@ -60,17 +61,25 @@ pub struct RobotsCache {
     negative_ttl: Duration,
 }
 
+impl Default for RobotsCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RobotsCache {
     /// 创建新的 Robots 缓存。
+    #[must_use]
     pub fn new() -> Self {
         Self {
             cache: DashMap::new(),
             loading: DashMap::new(),
-            negative_ttl: Duration::from_secs(60),
+            negative_ttl: Duration::from_mins(1),
         }
     }
 
     /// 用指定 negative cache TTL 构造（主要用于测试）。
+    #[must_use]
     pub fn with_negative_ttl(negative_ttl: Duration) -> Self {
         Self {
             cache: DashMap::new(),
@@ -151,28 +160,25 @@ impl RobotsCache {
         }
 
         // 4. fetch（持 per-domain 锁，不阻塞其他域名）
-        match self.fetch_robots(client, &domain).await {
-            Some(rules) => {
-                // fetch 成功 → 缓存 Rules（即使空规则，避免下次重复 fetch）
-                self.cache.insert(domain, CacheEntry::Rules(rules.clone()));
-                rules
-            }
-            None => {
-                // fetch 失败 → 缓存 Failed + TTL，避免频繁重试（反检测场景）
-                self.cache.insert(
-                    domain,
-                    CacheEntry::Failed {
-                        expires_at: Instant::now() + self.negative_ttl,
-                    },
-                );
-                RobotsRules::default()
-            }
+        if let Some(rules) = self.fetch_robots(client, &domain).await {
+            // fetch 成功 → 缓存 Rules（即使空规则，避免下次重复 fetch）
+            self.cache.insert(domain, CacheEntry::Rules(rules.clone()));
+            rules
+        } else {
+            // fetch 失败 → 缓存 Failed + TTL，避免频繁重试（反检测场景）
+            self.cache.insert(
+                domain,
+                CacheEntry::Failed {
+                    expires_at: Instant::now() + self.negative_ttl,
+                },
+            );
+            RobotsRules::default()
         }
     }
 
     /// fetch robots.txt。成功返回 `Some(rules)`（可能空规则），失败返回 `None`。
     async fn fetch_robots(&self, client: &Client, domain: &str) -> Option<RobotsRules> {
-        let robots_url = format!("{}/robots.txt", domain);
+        let robots_url = format!("{domain}/robots.txt");
         let resp = client.get(&robots_url, &[]).await.ok()?;
         let text = resp.text().ok()?;
         Some(parse_robots_text(&text))
@@ -184,6 +190,7 @@ impl RobotsCache {
 /// 仅采集 `User-agent: *` 段下的指令，支持 RFC 9309 的 `Disallow`，以及
 /// `Crawl-delay`（秒）和 `Request-rate`（`N/D` 格式，转换为每秒请求数 N/D）。
 /// 非法数值被静默忽略。空行和以 `#` 开头的注释行被跳过。
+#[must_use]
 pub fn parse_robots_text(text: &str) -> RobotsRules {
     let mut rules = RobotsRules::default();
     let mut in_our_section = false;
@@ -193,8 +200,8 @@ pub fn parse_robots_text(text: &str) -> RobotsRules {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line.starts_with("User-agent:") {
-            let agent = line["User-agent:".len()..].trim();
+        if let Some(agent) = line.strip_prefix("User-agent:") {
+            let agent = agent.trim();
             in_our_section = agent == "*";
         } else if in_our_section {
             if let Some(path) = line.strip_prefix("Disallow:") {
@@ -366,7 +373,7 @@ mod tests {
         let client = Client::new().unwrap();
         // TTL 100ms，测试不用等太久
         let cache = RobotsCache::with_negative_ttl(Duration::from_millis(100));
-        let url = format!("http://{}/page", addr);
+        let url = format!("http://{addr}/page");
 
         // 第一次：fetch 失败 → 缓存 Failed
         let rules1 = cache.rules_for(&client, &url).await;
@@ -428,8 +435,8 @@ mod tests {
         });
 
         let client = Client::new().unwrap();
-        let cache = RobotsCache::with_negative_ttl(Duration::from_secs(60));
-        let url = format!("http://{}/page", addr);
+        let cache = RobotsCache::with_negative_ttl(Duration::from_mins(1));
+        let url = format!("http://{addr}/page");
 
         // 第一次：fetch 成功 → 缓存 Rules
         let rules1 = cache.rules_for(&client, &url).await;

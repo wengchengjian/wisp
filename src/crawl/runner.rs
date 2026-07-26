@@ -8,7 +8,10 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::stats::SpiderStats;
-use super::*;
+use super::{
+    auto, control, engine, middleware, robots, scheduler, stop, CrawlEvent, CrawlState, CrawlStats,
+    CrawlStream, Request, Spider,
+};
 use crate::error::Result;
 use crate::fetcher::{FetchClient, FetchClientConfig};
 
@@ -75,6 +78,7 @@ impl Engine {
     ///
     /// 替代原 `Engine::new(spider)` / `Engine::spiders(vec)` / `Engine::builder(spider)`。
     /// Engine 不再持有 Spider，长期持有共享底层资源。
+    #[must_use]
     pub fn infra() -> EngineBuilder {
         EngineBuilder {
             fetch_client_config: FetchClientConfig::default(),
@@ -154,15 +158,9 @@ impl Engine {
                 }
                 tokio::select! {
                     biased;
-                    event = rx.next() => match event {
-                        Some(e) => Some((e, (driver, rx, false))),
-                        None => None,
-                    },
-                    _ = &mut driver => {
-                        match rx.next().await {
-                            Some(e) => Some((e, (driver, rx, true))),
-                            None => None,
-                        }
+                    event = rx.next() => event.map(|e| (e, (driver, rx, false))),
+                    () = &mut driver => {
+                        rx.next().await.map(|e| (e, (driver, rx, true)))
                     }
                 }
             },
@@ -171,6 +169,7 @@ impl Engine {
     }
 
     /// 获取控制句柄（用于外部 pause/resume/cancel/shutdown）。
+    #[must_use]
     pub fn control(&self) -> &Arc<control::EngineControl> {
         &self.control
     }
@@ -424,17 +423,14 @@ impl Engine {
                             continue;
                         }
 
-                        let req = match ctx.shared.sched.pop().await {
-                            Some(req) => req,
-                            None => {
-                                if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
-                                    return None;
-                                }
-                                // ND-004-CORR/ND-007-PERF：scheduler 空但仍有 in-flight，
-                                // 纯 Notify 驱动等待新 work（follow 请求通过 process_response notify）。
-                                ctx.shared.work_notify.notified().await;
-                                continue;
+                        let req = if let Some(req) = ctx.shared.sched.pop().await { req } else {
+                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
+                                return None;
                             }
+                            // ND-004-CORR/ND-007-PERF：scheduler 空但仍有 in-flight，
+                            // 纯 Notify 驱动等待新 work（follow 请求通过 process_response notify）。
+                            ctx.shared.work_notify.notified().await;
+                            continue;
                         };
 
                         // 单 Spider：直接派发，无路由
@@ -538,26 +534,31 @@ impl Engine {
 
 impl EngineBuilder {
     /// 设置最大并发数。
+    #[must_use]
     pub fn max_concurrent(mut self, n: usize) -> Self {
         self.max_concurrent = n;
         self
     }
     /// 设置最大爬取页数。
+    #[must_use]
     pub fn max_pages(mut self, n: usize) -> Self {
         self.max_pages = n;
         self
     }
     /// 设置 FetchClient 配置（HTTP 连接池/超时/浏览器等基础设施配置，跨 Spider 共享）。
+    #[must_use]
     pub fn fetch_client_config(mut self, config: FetchClientConfig) -> Self {
         self.fetch_client_config = config;
         self
     }
     /// 设置代理（作用于共享 FetchClient 的所有 HTTP 请求）。
+    #[must_use]
     pub fn proxy(mut self, proxy: &str) -> Self {
         self.fetch_client_config.proxy = Some(proxy.to_string());
         self
     }
     /// 设置中间件 Refetch 最大轮数（默认 5）。
+    #[must_use]
     pub fn max_refetch_rounds(mut self, n: usize) -> Self {
         self.max_refetch_rounds = n;
         self
@@ -577,6 +578,7 @@ impl EngineBuilder {
 
     /// 启用自适应并发池。min 为初始/下限，max 为上限。
     /// 启用后 run_inner 会启动后台 autoscaler，根据饱和度动态调整并发数。
+    #[must_use]
     pub fn autoscale(mut self, min: usize, max: usize) -> Self {
         self.autoscale = Some(crate::crawl::runtime::autoscale::AutoscaledPool::new(
             min,
@@ -587,6 +589,7 @@ impl EngineBuilder {
     }
 
     /// 同 autoscale(min, max) 但可自定义配置。
+    #[must_use]
     pub fn autoscale_with_config(
         mut self,
         min: usize,
@@ -604,12 +607,14 @@ impl EngineBuilder {
     /// 设置抓取模式（Http/Dynamic/Stealth/Auto，默认 Auto）。
     ///
     /// 这是引擎行为配置，决定如何抓取页面，与 Spider 的解析逻辑无关。
+    #[must_use]
     pub fn fetch_mode(mut self, mode: crate::fetcher::FetchMode) -> Self {
         self.fetch_mode = mode;
         self
     }
 
     /// 是否遵守 robots.txt（默认 true）。
+    #[must_use]
     pub fn obey_robots(mut self, obey: bool) -> Self {
         self.obey_robots = obey;
         self
@@ -618,18 +623,21 @@ impl EngineBuilder {
     /// 设置网络错误重试上限（默认 3）。
     ///
     /// fetch_page 失败后，engine 在 fetch_dispatch 内同步重试，计数 `req.retry_count`。
+    #[must_use]
     pub fn max_retries(mut self, n: u32) -> Self {
         self.max_retries = n;
         self
     }
 
     /// 设置下载延迟（默认 0，即无延迟）。
+    #[must_use]
     pub fn download_delay(mut self, d: Duration) -> Self {
         self.download_delay = d;
         self
     }
 
     /// 设置下载延迟（毫秒）。
+    #[must_use]
     pub fn download_delay_ms(mut self, ms: u64) -> Self {
         self.download_delay = Duration::from_millis(ms);
         self
@@ -638,6 +646,7 @@ impl EngineBuilder {
     /// Auto 模式：添加 URL 正则规则（优先级最高，跳过嗅探）。
     ///
     /// 匹配该规则的 URL 直接使用指定模式，不经过 Auto 嗅探。
+    #[must_use]
     pub fn auto_rule(mut self, pattern: &str, mode: crate::fetcher::FetchMode) -> Self {
         self.auto_rules.push((pattern.to_string(), mode));
         self
@@ -710,7 +719,11 @@ mod tests {
             flag_clone.fetch_add(1, Ordering::SeqCst);
         });
 
-        assert_eq!(flag.load(Ordering::SeqCst), 0, "主循环不应等待 spawn 的任务");
+        assert_eq!(
+            flag.load(Ordering::SeqCst),
+            0,
+            "主循环不应等待 spawn 的任务"
+        );
 
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(flag.load(Ordering::SeqCst), 1, "spawn 任务应完成");

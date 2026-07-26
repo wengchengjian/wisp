@@ -5,6 +5,7 @@
 /// - 已经是 `http://` 或 `https://` 开头的绝对 URL 直接返回。
 /// - 相对链接基于 `base` 解析。
 /// - 仅接受 `http` / `https` scheme（过滤 `javascript:` `mailto:` `data:` 等）。
+#[must_use]
 pub fn resolve_href(base: &str, href: &str) -> Option<String> {
     if href.starts_with("http://") || href.starts_with("https://") {
         return Some(href.to_string());
@@ -24,23 +25,24 @@ pub fn resolve_href(base: &str, href: &str) -> Option<String> {
 /// 解析失败时回退为 `page_{counter}.md`。
 ///
 /// ND-004-SEC：过滤 Windows 保留名和路径分隔符，提升跨平台兼容性。
+#[must_use]
 pub fn url_to_filename(url: &str, counter: usize) -> String {
     let parsed = url::Url::parse(url);
-    let base = parsed
-        .as_ref()
-        .map(|u| {
+    let base = parsed.as_ref().map_or_else(
+        |_| format!("page_{counter}"),
+        |u| {
             let host = u.host_str().unwrap_or("page");
             // ND-004-SEC：用 sanitize_filename_component 过滤路径分隔符和 Windows 保留名
             let path = sanitize_filename_component(u.path().trim_matches('/'));
             if path.is_empty() {
-                format!("{}_index", host)
+                format!("{host}_index")
             } else {
-                format!("{}_{}", host, path)
+                format!("{host}_{path}")
             }
-        })
-        .unwrap_or_else(|_| format!("page_{}", counter));
+        },
+    );
     let truncated: String = base.chars().take(100).collect();
-    format!("{}.md", truncated)
+    format!("{truncated}.md")
 }
 
 /// ND-004-SEC：过滤文件名组件，防止路径穿越和 Windows 保留名冲突。
@@ -48,19 +50,36 @@ pub fn url_to_filename(url: &str, counter: usize) -> String {
 /// - 替换 `/` 和 `\` 为 `_`（防止路径分隔符穿越）
 /// - Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）加 `wisp_` 前缀
 fn sanitize_filename_component(s: &str) -> String {
-    let s = s.replace('/', "_").replace('\\', "_");
+    let s = s.replace(['/', '\\'], "_");
     // Windows 保留名检查（不区分大小写）
     let upper = s.to_uppercase();
     let is_reserved = matches!(
         upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
-        | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
-        | "COM6" | "COM7" | "COM8" | "COM9"
-        | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5"
-        | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
     );
     if is_reserved {
-        format!("wisp_{}", s)
+        format!("wisp_{s}")
     } else {
         s
     }

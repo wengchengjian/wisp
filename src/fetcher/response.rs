@@ -4,15 +4,15 @@
 //! 用户无需关心底层实现即可使用 `.css()` / `.json()` 等 API。
 //! Spider 引擎也复用同一套 Request/Response，避免类型重复。
 
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use serde::{Serialize, Deserialize};
-use serde_json::Value;
 
-use crate::error::{WispError, Result, ParseError};
+use super::FetchMode;
+use crate::error::{ParseError, Result, WispError};
 use crate::parser::{Node, NodeList};
 use crate::utils::resolve_href;
-use super::FetchMode;
 
 /// 自定义 serde：把 `serde_json::Value` 编码为 `Vec<u8>` JSON 字节，
 /// 绕过 bincode 1.x 不支持 `deserialize_any` 的限制，使 meta 随 checkpoint 往返。
@@ -46,6 +46,7 @@ pub enum Method {
 
 impl Method {
     /// 返回标准 HTTP 动词字符串（大写）。
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Method::Get => "GET",
@@ -112,6 +113,7 @@ impl Default for Request {
 
 impl Request {
     /// 创建 GET 请求。
+    #[must_use]
     pub fn get(url: &str) -> Self {
         Self {
             url: url.to_string(),
@@ -129,6 +131,7 @@ impl Request {
     }
 
     /// 创建 POST 请求。
+    #[must_use]
     pub fn post(url: &str, body: Option<String>) -> Self {
         Self {
             url: url.to_string(),
@@ -146,36 +149,42 @@ impl Request {
     }
 
     /// 设置自定义 header。
+    #[must_use]
     pub fn with_header(mut self, key: &str, value: &str) -> Self {
         self.headers.insert(key.to_string(), value.to_string());
         self
     }
 
     /// 设置元数据。
+    #[must_use]
     pub fn with_meta(mut self, meta: Value) -> Self {
         self.meta = meta;
         self
     }
 
     /// 设置优先级。
+    #[must_use]
     pub fn with_priority(mut self, p: i32) -> Self {
         self.priority = p;
         self
     }
 
     /// 设置回调名称。
+    #[must_use]
     pub fn with_callback(mut self, cb: &str) -> Self {
         self.callback = Some(cb.to_string());
         self
     }
 
     /// 设置深度。
+    #[must_use]
     pub fn with_depth(mut self, d: u32) -> Self {
         self.depth = d;
         self
     }
 
     /// 设置代理 URL。
+    #[must_use]
     pub fn with_proxy(mut self, proxy: &str) -> Self {
         self.proxy = Some(proxy.to_string());
         self
@@ -261,6 +270,7 @@ impl std::fmt::Debug for Response {
 impl Response {
     /// 从所有字段构建（内部使用，如 Engine 组装响应）。
     #[doc(hidden)]
+    #[must_use]
     pub fn from_parts(
         status: u16,
         url: String,
@@ -287,6 +297,7 @@ impl Response {
     }
 
     /// 从 HTTP 响应构建。
+    #[must_use]
     pub fn from_http(
         status: u16,
         url: String,
@@ -310,6 +321,7 @@ impl Response {
     }
 
     /// 从浏览器响应构建。
+    #[must_use]
     pub fn from_browser(
         status: u16,
         url: String,
@@ -336,7 +348,10 @@ impl Response {
 
     /// 解码响应体为文本（自动字符集检测）。
     pub fn text(&self) -> Result<String> {
-        Ok(crate::http::encoding::decode(&self.body, &self.content_type))
+        Ok(crate::http::encoding::decode(
+            &self.body,
+            &self.content_type,
+        ))
     }
 
     /// 解析响应体为 JSON。
@@ -375,13 +390,12 @@ impl Response {
     /// # }
     /// ```
     pub fn parse(&self) -> Node {
-        if self.parsed.swap(true, Ordering::Relaxed) {
-            panic!(
-                "Response::parse() 已被调用过。每个 Response 只允许解析一次，\
-                 请在一次 parse() 返回的 Node 上执行多次查询，\
-                 而非多次调用 css()/select_one()/find_by_text()。"
-            );
-        }
+        assert!(
+            !self.parsed.swap(true, Ordering::Relaxed),
+            "Response::parse() 已被调用过。每个 Response 只允许解析一次，\
+             请在一次 parse() 返回的 Node 上执行多次查询，\
+             而非多次调用 css()/select_one()/find_by_text()。"
+        );
         let text = self.text().unwrap_or_default();
         Node::from_html(&text)
     }
@@ -424,17 +438,23 @@ impl Response {
     /// 创建带 callback 的跟随请求（depth 自动 +1）。
     pub fn follow_with(&self, href: &str, callback: &str) -> Option<Request> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(Request::get(&absolute).with_callback(callback).with_depth(self.request.depth + 1))
+        Some(
+            Request::get(&absolute)
+                .with_callback(callback)
+                .with_depth(self.request.depth + 1),
+        )
     }
 
     /// 创建带 meta 的跟随请求（depth 自动 +1）。
     pub fn follow_meta(&self, href: &str, meta: Value) -> Option<Request> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(Request::get(&absolute).with_meta(meta).with_depth(self.request.depth + 1))
+        Some(
+            Request::get(&absolute)
+                .with_meta(meta)
+                .with_depth(self.request.depth + 1),
+        )
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -474,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_response_find_by_text() {
-        let resp = make_response(r#"<div>Apple</div><div>Banana</div>"#);
+        let resp = make_response(r"<div>Apple</div><div>Banana</div>");
         let found = resp.find_by_text("Apple", Some("div"), true);
         assert_eq!(found.len(), 1);
     }

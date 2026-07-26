@@ -108,6 +108,7 @@ pub struct EventBus {
 
 impl EventBus {
     /// 创建空事件总线。
+    #[must_use]
     pub fn new() -> Self {
         Self {
             listeners: Vec::new(),
@@ -138,11 +139,13 @@ impl EventBus {
     }
 
     /// 是否有监听器。
+    #[must_use]
     pub fn has_listeners(&self) -> bool {
         !self.listeners.is_empty()
     }
 
     /// 监听器数量。
+    #[must_use]
     pub fn listener_count(&self) -> usize {
         self.listeners.len()
     }
@@ -155,6 +158,7 @@ impl Default for EventBus {
 }
 
 /// 便捷构造：日志监听器（tracing 输出）。
+#[must_use]
 pub fn logging_listener() -> EventListener {
     Arc::new(|event: Arc<EngineEvent>| {
         Box::pin(async move {
@@ -240,6 +244,7 @@ pub struct Metrics {
 
 impl Metrics {
     /// 创建新的指标收集器。
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

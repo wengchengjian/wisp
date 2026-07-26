@@ -7,21 +7,25 @@
 //! - `test_multiple_runs_independent_stats`: 同一 Engine 多次 run，stats 独立。
 //! - `test_until_stops_one_spider_without_affecting_other`: per-spider until 隔离。
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
-use wisp::crawl::{
-    Engine, MaxPages, Spider, Request, Response,
-    StopCondition, StopContext,
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use wisp::crawl::{Engine, MaxPages, Request, Response, Spider, StopCondition, StopContext};
 
 #[test]
 fn test_max_pages_condition() {
     // 不实际跑爬虫，只验证 StopCondition 逻辑
     let cond = MaxPages(50);
-    let ctx = StopContext { pages: 50, items: 0, errors: 0, in_flight: 0, elapsed: Duration::ZERO, queue_size: 0 };
+    let ctx = StopContext {
+        pages: 50,
+        items: 0,
+        errors: 0,
+        in_flight: 0,
+        elapsed: Duration::ZERO,
+        queue_size: 0,
+    };
     assert!(cond.should_stop(&ctx));
 }
 
@@ -33,7 +37,9 @@ async fn spawn_html_server(html: &'static str) -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { return };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
             tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
                 let _ = socket.read(&mut buf).await;
@@ -54,22 +60,36 @@ async fn test_multiple_runs_independent_stats() {
     let server_a = spawn_html_server("<html><body>page A</body></html>").await;
     let server_b = spawn_html_server("<html><body>page B</body></html>").await;
 
-    struct SpiderA { url: String, parsed: Arc<AtomicUsize> }
+    struct SpiderA {
+        url: String,
+        parsed: Arc<AtomicUsize>,
+    }
     #[async_trait]
     impl Spider for SpiderA {
-        fn name(&self) -> &str { "spider-a" }
-        fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
+        fn name(&self) -> &str {
+            "spider-a"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            vec![self.url.clone()]
+        }
         async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }
     }
 
-    struct SpiderB { url: String, parsed: Arc<AtomicUsize> }
+    struct SpiderB {
+        url: String,
+        parsed: Arc<AtomicUsize>,
+    }
     #[async_trait]
     impl Spider for SpiderB {
-        fn name(&self) -> &str { "spider-b" }
-        fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
+        fn name(&self) -> &str {
+            "spider-b"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            vec![self.url.clone()]
+        }
         async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
@@ -85,11 +105,17 @@ async fn test_multiple_runs_independent_stats() {
         .unwrap();
 
     let (stats_a, _) = engine
-        .run(SpiderA { url: server_a, parsed: parsed_a.clone() })
+        .run(SpiderA {
+            url: server_a,
+            parsed: parsed_a.clone(),
+        })
         .await
         .unwrap();
     let (stats_b, _) = engine
-        .run(SpiderB { url: server_b, parsed: parsed_b.clone() })
+        .run(SpiderB {
+            url: server_b,
+            parsed: parsed_b.clone(),
+        })
         .await
         .unwrap();
 
@@ -105,11 +131,17 @@ async fn test_until_stops_one_spider_without_affecting_other() {
     // until 应阻止 StoppingSpider 后续请求派发，但不影响同 Engine 下 NormalSpider 的 run。
     let server = spawn_html_server("<html><body>page</body></html>").await;
 
-    struct StoppingSpider { url: String }
+    struct StoppingSpider {
+        url: String,
+    }
     #[async_trait]
     impl Spider for StoppingSpider {
-        fn name(&self) -> &str { "stopping" }
-        fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
+        fn name(&self) -> &str {
+            "stopping"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            vec![self.url.clone()]
+        }
         async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             // follow 一个 URL，验证 until 会阻止它被处理
             (vec![], vec![Request::get(&format!("{}/2", self.url))])
@@ -119,11 +151,18 @@ async fn test_until_stops_one_spider_without_affecting_other() {
         }
     }
 
-    struct NormalSpider { url: String, parsed: Arc<AtomicUsize> }
+    struct NormalSpider {
+        url: String,
+        parsed: Arc<AtomicUsize>,
+    }
     #[async_trait]
     impl Spider for NormalSpider {
-        fn name(&self) -> &str { "normal" }
-        fn start_urls(&self) -> Vec<String> { vec![self.url.clone()] }
+        fn name(&self) -> &str {
+            "normal"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            vec![self.url.clone()]
+        }
         async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
@@ -138,15 +177,27 @@ async fn test_until_stops_one_spider_without_affecting_other() {
         .unwrap();
 
     let (stats_stopping, _) = engine
-        .run(StoppingSpider { url: format!("{}/stop", server) })
+        .run(StoppingSpider {
+            url: format!("{}/stop", server),
+        })
         .await
         .unwrap();
     let (stats_normal, _) = engine
-        .run(NormalSpider { url: format!("{}/normal", server), parsed: parsed.clone() })
+        .run(NormalSpider {
+            url: format!("{}/normal", server),
+            parsed: parsed.clone(),
+        })
         .await
         .unwrap();
 
-    assert_eq!(stats_stopping.pages_crawled, 1, "StoppingSpider 应只爬 1 页");
+    assert_eq!(
+        stats_stopping.pages_crawled, 1,
+        "StoppingSpider 应只爬 1 页"
+    );
     assert_eq!(stats_normal.pages_crawled, 1, "NormalSpider 应爬 1 页");
-    assert_eq!(parsed.load(Ordering::SeqCst), 1, "NormalSpider parse 应被调用 1 次");
+    assert_eq!(
+        parsed.load(Ordering::SeqCst),
+        1,
+        "NormalSpider parse 应被调用 1 次"
+    );
 }

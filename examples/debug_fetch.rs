@@ -6,13 +6,16 @@ use wisp::parser::Node;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder()
         .proxy("http://127.0.0.1:7897")
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         .build()?;
 
     // 模拟引擎的 cookie 挑战解决流程
     let mut cookies: Vec<String> = Vec::new();
-    let mut resp = loop {
+    let resp = loop {
         let headers: Vec<(String, String)> = if cookies.is_empty() {
             vec![]
         } else {

@@ -6,13 +6,13 @@
 //! CR-10: 默认使用精确 URL 去重（HashSet<String>），可选 Fingerprint 模式省内存。
 
 use crate::crawl::Request;
+use dashmap::DashSet;
+use parking_lot::Mutex;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use dashmap::DashSet;
-use parking_lot::Mutex;
 
 /// 去重策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,13 +79,21 @@ pub struct Scheduler {
     warned: Arc<std::sync::atomic::AtomicBool>,
 }
 
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scheduler {
     /// 创建默认调度器（精确去重）。
+    #[must_use]
     pub fn new() -> Self {
         Self::with_strategy(DedupStrategy::Exact)
     }
 
     /// 使用指定去重策略创建 Scheduler。
+    #[must_use]
     pub fn with_strategy(strategy: DedupStrategy) -> Self {
         Self::with_strategy_and_max_seen(strategy, usize::MAX)
     }
@@ -94,9 +102,13 @@ impl Scheduler {
     ///
     /// 当 seen 集合大小超过 `max_seen` 时，记录一次 warn 日志。
     /// 默认 `usize::MAX` 表示无告警。建议大规模爬取设置为 1_000_000。
+    #[must_use]
     pub fn with_strategy_and_max_seen(strategy: DedupStrategy, max_seen: usize) -> Self {
         Self {
-            heap: Arc::new(Mutex::new(HeapInner { heap: BinaryHeap::new(), seq: 0 })),
+            heap: Arc::new(Mutex::new(HeapInner {
+                heap: BinaryHeap::new(),
+                seq: 0,
+            })),
             seen_exact: Arc::new(DashSet::new()),
             seen_fp: Arc::new(DashSet::new()),
             strategy,
@@ -250,12 +262,8 @@ mod tests {
         use super::*;
         let sched = Scheduler::with_strategy(DedupStrategy::Fingerprint);
         // push 两个 URL：进入 heap 与 seen_fp
-        sched
-            .push(Request::get("https://example.com/a"))
-            .await;
-        sched
-            .push(Request::get("https://example.com/b"))
-            .await;
+        sched.push(Request::get("https://example.com/a")).await;
+        sched.push(Request::get("https://example.com/b")).await;
         // pop 模拟已爬取：heap 清空，但 seen_fp 保留正确指纹
         sched.pop().await;
         sched.pop().await;
@@ -271,14 +279,11 @@ mod tests {
 
         // 再 push 同样的 URL：应被 seen 判定为已爬，不入 heap
         let before = sched.len().await;
-        sched
-            .push(Request::get("https://example.com/a"))
-            .await;
+        sched.push(Request::get("https://example.com/a")).await;
         let after = sched.len().await;
         assert_eq!(
             before, after,
-            "Fingerprint 模式下 restore 后 seen 应仍能去重，实际 before={}, after={}",
-            before, after
+            "Fingerprint 模式下 restore 后 seen 应仍能去重，实际 before={before}, after={after}"
         );
     }
 }

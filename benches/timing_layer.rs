@@ -25,6 +25,12 @@ struct Inner {
     stats: DashMap<String, (Duration, usize)>,
 }
 
+impl Default for TimingLayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimingLayer {
     pub fn new() -> Self {
         Self {
@@ -53,12 +59,18 @@ impl TimingLayer {
             .iter()
             .map(|r| (r.key().clone(), *r.value()))
             .collect();
-        entries.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.1 .0));
         let total = entries
             .iter()
             .find(|(name, _)| name == "process_request")
             .map(|(_, (dur, _))| *dur)
-            .unwrap_or_else(|| entries.iter().map(|(_, (d, _))| *d).max().unwrap_or_default());
+            .unwrap_or_else(|| {
+                entries
+                    .iter()
+                    .map(|(_, (d, _))| *d)
+                    .max()
+                    .unwrap_or_default()
+            });
         for (name, (dur, count)) in entries {
             let pct = if total.as_nanos() > 0 {
                 dur.as_secs_f64() / total.as_secs_f64() * 100.0
@@ -80,12 +92,7 @@ impl<S> Layer<S> for TimingLayer
 where
     S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    fn on_new_span(
-        &self,
-        _attrs: &tracing::span::Attributes<'_>,
-        id: &Id,
-        _ctx: Context<'_, S>,
-    ) {
+    fn on_new_span(&self, _attrs: &tracing::span::Attributes<'_>, id: &Id, _ctx: Context<'_, S>) {
         self.inner.create_times.insert(id.clone(), Instant::now());
     }
 

@@ -4,13 +4,13 @@
 
 pub mod tools;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::{Arc, LazyLock};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::error::{WispError, Result, McpError, ParseError};
-use crate::storage::Store;
 use crate::crawl::Engine;
+use crate::error::{McpError, ParseError, Result, WispError};
+use crate::storage::Store;
 
 /// MCP 工具定义
 pub struct Tool {
@@ -25,78 +25,80 @@ pub struct Tool {
 /// 5 个工具覆盖核心场景
 // 注：计划原写 `pub const TOOLS: &[Tool]`，但 serde_json::json! 宏非 const fn，
 // 无法在 const 上下文求值。改用 std::sync::LazyLock（Rust 1.80+ 稳定）。
-pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| vec![
-    Tool {
-        name: "fetch_page",
-        description: "抓取单个网页，返回 HTML 文本。支持 wreq TLS 指纹模拟绕过轻度反 bot。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "url": { "type": "string", "description": "目标 URL" },
-                "emulation": {
-                    "type": "string",
-                    "enum": ["chrome", "firefox", "safari"],
-                    "description": "浏览器指纹模拟，默认 chrome"
-                }
-            },
-            "required": ["url"]
-        }),
-    },
-    Tool {
-        name: "extract_css",
-        description: "用 CSS 选择器从 HTML 提取元素，返回文本/属性列表。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "html": { "type": "string", "description": "HTML 文本" },
-                "selector": { "type": "string", "description": "CSS 选择器" },
-                "attr": { "type": "string", "description": "可选：提取该属性而非文本" }
-            },
-            "required": ["html", "selector"]
-        }),
-    },
-    Tool {
-        name: "crawl_site",
-        description: "爬取站点，返回 JSONL。用内置 SimpleSpider 按 CSS 选择器提取。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "start_urls": { "type": "array", "items": { "type": "string" } },
-                "css_selector": { "type": "string", "description": "每页提取的 CSS 选择器" },
-                "max_pages": { "type": "integer", "default": 100 },
-                "follow_pattern": { "type": "string", "description": "可选：跟随链接的正则" }
-            },
-            "required": ["start_urls", "css_selector"]
-        }),
-    },
-    Tool {
-        name: "adaptive_scrape",
-        description: "自适应抓取：CSS 失败时用 SQLite 快照重定位元素（长期监控）。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "url": { "type": "string" },
-                "selector": { "type": "string" },
-                "key": { "type": "string", "description": "元素稳定标识" },
-                "db_path": { "type": "string", "default": "./wisp.db" }
-            },
-            "required": ["url", "selector", "key"]
-        }),
-    },
-    Tool {
-        name: "stealth_fetch",
-        description: "浏览器模式抓取（绕 CF Turnstile 等重度反 bot）。",
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "url": { "type": "string" },
-                "headless": { "type": "boolean", "default": true },
-                "human_mode": { "type": "boolean", "default": false, "description": "启用人类行为模拟" }
-            },
-            "required": ["url"]
-        }),
-    },
-]);
+pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
+    vec![
+        Tool {
+            name: "fetch_page",
+            description: "抓取单个网页，返回 HTML 文本。支持 wreq TLS 指纹模拟绕过轻度反 bot。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "目标 URL" },
+                    "emulation": {
+                        "type": "string",
+                        "enum": ["chrome", "firefox", "safari"],
+                        "description": "浏览器指纹模拟，默认 chrome"
+                    }
+                },
+                "required": ["url"]
+            }),
+        },
+        Tool {
+            name: "extract_css",
+            description: "用 CSS 选择器从 HTML 提取元素，返回文本/属性列表。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "html": { "type": "string", "description": "HTML 文本" },
+                    "selector": { "type": "string", "description": "CSS 选择器" },
+                    "attr": { "type": "string", "description": "可选：提取该属性而非文本" }
+                },
+                "required": ["html", "selector"]
+            }),
+        },
+        Tool {
+            name: "crawl_site",
+            description: "爬取站点，返回 JSONL。用内置 SimpleSpider 按 CSS 选择器提取。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "start_urls": { "type": "array", "items": { "type": "string" } },
+                    "css_selector": { "type": "string", "description": "每页提取的 CSS 选择器" },
+                    "max_pages": { "type": "integer", "default": 100 },
+                    "follow_pattern": { "type": "string", "description": "可选：跟随链接的正则" }
+                },
+                "required": ["start_urls", "css_selector"]
+            }),
+        },
+        Tool {
+            name: "adaptive_scrape",
+            description: "自适应抓取：CSS 失败时用 SQLite 快照重定位元素（长期监控）。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string" },
+                    "selector": { "type": "string" },
+                    "key": { "type": "string", "description": "元素稳定标识" },
+                    "db_path": { "type": "string", "default": "./wisp.db" }
+                },
+                "required": ["url", "selector", "key"]
+            }),
+        },
+        Tool {
+            name: "stealth_fetch",
+            description: "浏览器模式抓取（绕 CF Turnstile 等重度反 bot）。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string" },
+                    "headless": { "type": "boolean", "default": true },
+                    "human_mode": { "type": "boolean", "default": false, "description": "启用人类行为模拟" }
+                },
+                "required": ["url"]
+            }),
+        },
+    ]
+});
 
 /// MCP server 主循环（stdio JSON-RPC 2.0）
 pub async fn serve(store: Arc<dyn Store>) -> Result<()> {
@@ -105,7 +107,7 @@ pub async fn serve(store: Arc<dyn Store>) -> Result<()> {
     // 每次 crawl_site 的 per-call 上限由 SimpleSpider 的 until() 终止策略控制。
     // ND-031-ARCH：obey_robots 从 SimpleSpider 迁移到 Engine 配置
     let engine = Engine::infra()
-        .max_pages(100000)
+        .max_pages(100_000)
         .obey_robots(false)
         .build()?;
 
@@ -205,16 +207,26 @@ fn handle_initialize() -> Value {
 }
 
 fn handle_tools_list() -> Value {
-    let tools: Vec<Value> = TOOLS.iter().map(|t| json!({
-        "name": t.name,
-        "description": t.description,
-        "inputSchema": t.input_schema,
-    })).collect();
+    let tools: Vec<Value> = TOOLS
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": t.input_schema,
+            })
+        })
+        .collect();
     json!({"tools": tools})
 }
 
-async fn handle_tools_call(request: Value, store: &Arc<dyn Store>, engine: &Engine) -> Result<Value> {
-    let params = request.get("params")
+async fn handle_tools_call(
+    request: Value,
+    store: &Arc<dyn Store>,
+    engine: &Engine,
+) -> Result<Value> {
+    let params = request
+        .get("params")
         .ok_or_else(|| WispError::Mcp(McpError::General("missing params".into())))?;
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
@@ -246,7 +258,8 @@ mod tests {
         let list = handle_tools_list();
         let tools = list.get("tools").unwrap().as_array().unwrap();
         assert_eq!(tools.len(), 5, "应有 5 个工具");
-        let names: Vec<&str> = tools.iter()
+        let names: Vec<&str> = tools
+            .iter()
             .map(|t| t.get("name").unwrap().as_str().unwrap())
             .collect();
         assert!(names.contains(&"fetch_page"));
@@ -278,7 +291,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             WispError::Mcp(McpError::UnknownTool(n)) => assert_eq!(n, "nonexistent"),
-            other => panic!("预期 McpUnknownTool, 得到 {:?}", other),
+            other => panic!("预期 McpUnknownTool, 得到 {other:?}"),
         }
     }
 }

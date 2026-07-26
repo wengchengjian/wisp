@@ -37,6 +37,7 @@ pub struct EngineControl {
 
 impl EngineControl {
     /// 创建新的引擎控制器。
+    #[must_use]
     pub fn new() -> Self {
         let (tx, _rx) = watch::channel(0u64);
         Self {
@@ -131,7 +132,7 @@ impl EngineControl {
                         return !self.shutdown.load(Ordering::SeqCst);
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                () = tokio::time::sleep(Duration::from_mins(1)) => {
                     // safety fallback：60 秒后重新检查状态
                 }
             }
@@ -153,9 +154,17 @@ mod tests {
     async fn test_engine_control_pause_resume() {
         let ctrl = EngineControl::new();
         ctrl.pause("https://example.com/a").await;
-        assert!(ctrl.paused_urls.read().await.contains("https://example.com/a"));
+        assert!(ctrl
+            .paused_urls
+            .read()
+            .await
+            .contains("https://example.com/a"));
         ctrl.resume("https://example.com/a").await;
-        assert!(!ctrl.paused_urls.read().await.contains("https://example.com/a"));
+        assert!(!ctrl
+            .paused_urls
+            .read()
+            .await
+            .contains("https://example.com/a"));
     }
 
     #[tokio::test]

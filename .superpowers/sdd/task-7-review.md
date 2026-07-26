@@ -1,77 +1,40 @@
-# Task 7 Review: Scheduler 改造为 async + Mutex
+# Task 7 Review
 
-## Spec Compliance
+## Spec compliance
+1. ✅ `Cargo.toml:43`: `turso = { version = "=0.7.0-pre.18", optional = true }`，`rusqlite` 已完全移除（`src/` 与 `Cargo.toml` 均无残留匹配）
+2. ✅ `Cargo.toml:11`: `sqlite = ["dep:turso"]`，feature gate 名称为 `sqlite` 未变
+3. ✅ `src/storage/sqlite.rs:22`: `pub async fn open(path: &Path) -> Result<Self>`
+4. ✅ `src/storage/sqlite.rs:36`: `pub async fn open_in_memory() -> Result<Self>`
+5. ✅ `init_schema` 运行 `PRAGMA journal_mode=WAL` (line 51) 与 `PRAGMA synchronous=NORMAL` (line 56)。实施者用 `conn.query("PRAGMA journal_mode=WAL", ())` + 循环消费 rows 替代 `execute_batch`，原因在代码注释 line 50 与报告 §5.2 中说明：turso 的 `execute_batch` 不能消费返回行，而 `PRAGMA journal_mode=WAL` 返回一行新 mode。这是合理的 turso-specific 适配。
+6. ✅ `init_schema` 检测旧三表 `element_snapshots/crawl_checkpoints/response_cache` 并 `tracing::warn!` (lines 60-76)
+7. ✅ `init_schema` 运行 `super::migrations::SCHEMA_V1` (line 78)，与 `src/storage/migrations.rs` 中 SCHEMA_V1 一致（单表 kv 结构）
+8. ✅ `Store::set` 用 `INSERT OR REPLACE INTO kv ... VALUES (?1, ?2, ?3, NULL, ?4)` + `turso::params![namespace, key, value.to_vec(), now]` (lines 91-94)
+9. ✅ `Store::get` TTL 检查 `ttl_secs IS NULL OR cached_at + ttl_secs >= CAST(strftime('%s','now') AS INTEGER)` (lines 104-107)
+10. ✅ `Store::get` 对 `TursoValue::Blob(b)` 返回 `Some(b)`，对 `Null`/无行返回 `None` (lines 110-121)
+11. ✅ `Store::delete` 执行 `DELETE FROM kv WHERE namespace = ?1 AND key = ?2`（实际删除，硬约束满足）(lines 127-130)
+12. ✅ `Store::set_with_ttl` 设置 `ttl_secs` 与 `cached_at` (lines 138-145)
+13. ✅ `src/bin/wisp.rs:125`: `Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db)).await?)`
+14. ✅ `src/storage/sqlite.rs` 中无 `spawn_blocking`（仅在 line 4 注释中提及）
+15. ✅ 无 `parking_lot::Mutex` / `tokio::sync::Mutex` 包裹 Connection；`SqliteStore` 直接持有 `Database`
 
-- ✅ **Spec compliant** — 全部要求已实现，与 brief verbatim 代码一致（仅 2 处必要的 borrow 修复）。
+## Code quality
+16. ✅ 错误映射统一为 `WispError::Storage(StorageError::General(...))`。已验证 `src/error.rs:169-173` 中 `StorageError::General(String)` 变体存在，且 `WispError::Storage(#[from] StorageError)` 在 line 209
+17. ✅ 生产代码无 `unwrap()`；所有 26 处 `unwrap()` 均在 `#[cfg(test)] mod tests` 内（lines 163-251），符合项目规则
+18. ✅ 无 backward-compat shim，无 `#[deprecated]` 标记
+19. ✅ 无未使用导入：`Path`/`Duration`/`async_trait`/`turso::{Builder, Database, Value as TursoValue}`/`Result`/`StorageError`/`WispError`/`Store` 均在生成代码中引用。`use std::sync::Arc;` 仅在 `#[cfg(test)] mod tests` (line 153) 内导入，用于 `Arc<AtomicU32>` 跨 task 计数器，是测试必需（与 brief §7 提示一致）
+20. ✅ 中文注释保留且与既有风格一致（`//! SQLite 存储后端（基于 turso，原生 async）。单表 KV 结构。`、`/// 打开或创建数据库文件。`、`// 旧 schema 检测`、`// PRAGMA journal_mode=WAL 返回一行...`）
+21. ✅ PRAGMA WAL 偏差在报告 §5.2 中明确文档化，是 turso API 限制的合理适配
 
-逐项验证：
+## Test quality
+22. ✅ 所有 6 个测试均为 `#[tokio::test] async fn`（lines 160, 169, 183, 190, 199, 229）
+23. ✅ `make_store()` 为 `async fn` (line 156)
+24. ✅ 既有 5 个测试保留：`checkpoint_roundtrip`、`ttl_expiry`、`ttl_none_never_expires`、`namespace_isolation`、`old_schema_detection_does_not_break_new_store`
+25. ✅ 新测试 `test_sqlite_store_async_does_not_block_runtime` (lines 229-256) 验证 counter > 10 且 write_elapsed < 5s
+26. ✅ 报告 §3 显示 sqlite 模块 6/6 PASS，全量 435 passed / 0 failed / 64 ignored
 
-| Brief 要求 | 实现位置 | 状态 |
-|---|---|---|
-| 完全替换 `src/crawl/scheduler.rs` | 全文重写，91+ / 13- | ✅ |
-| `Scheduler: #[derive(Clone)]` | scheduler.rs:41 | ✅ |
-| `Scheduler` 包装 `Arc<Mutex<SchedulerInner>>` | scheduler.rs:43 | ✅ |
-| `SchedulerInner` 私有 + 3 字段 | scheduler.rs:34-38 | ✅ |
-| 8 个 async 方法 | scheduler.rs:47/58/69/75/86/97/101/106 | ✅ |
-| `PrioritizedRequest` 私有 + 手动 Clone | scheduler.rs:14-17, 128-132 | ✅ |
-| `fingerprint(url: &str) -> u64` | scheduler.rs:134-138 | ✅ |
-| `push` 用 `seen.insert(fp)` 去重 | scheduler.rs:61 | ✅ |
-| `pop` 返回最高优先级 | scheduler.rs:69-72 | ✅ |
-| `restore` 重建 heap + seen | scheduler.rs:106-124 | ✅ |
-| 未修改 `src/crawl/mod.rs` | `git diff --name-only` 仅 scheduler.rs | ✅ |
-| 仅提交 scheduler.rs | `git show --stat 602f76e` 仅 1 文件 | ✅ |
+## Verdict
+APPROVED
 
-补充验证（cargo check）：
-- scheduler.rs 编译错误数：**0** ✅
-- mod.rs 编译错误数：**1**（line 132 `sched.pop()` 需要 `.await`）✅ 预期内
-- 其余 2 个 warning 与本 task 无关（browser/mod.rs、scraper/mod.rs）
-
-## Strengths
-
-1. **零偏差实现 brief**：除 borrow 修复外，结构体定义、trait impls、方法签名、字段类型、注释文案都与 brief verbatim 代码一致，便于后续 review 与 Task 8/9 对接。
-2. **Borrow 修复是最小且语义保持的**：
-   - `push` (scheduler.rs:62-64)：`let seq = g.seq;` → `g.heap.push(PrioritizedRequest { req, seq });` → `g.seq += 1;`
-   - `restore` (scheduler.rs:119-122)：同样模式
-   - 仅多出 `let seq = g.seq;` 一行局部变量绑定，运行时行为与 brief 原意图完全一致（push 时取当前 seq，push 后递增）。
-3. **正确的 async 选择**：使用 `tokio::sync::Mutex`（async-aware）而非 `std::sync::Mutex`，避免在 `.await` 持锁导致死锁/阻塞 runtime 的常见陷阱。
-4. **接口语义正确**：
-   - `push` 通过 `g.seen.insert(fp)` 的返回值（true 表示新插入）决定是否入堆，去重语义符合 brief。
-   - `pop` 通过 `BinaryHeap::pop` 自然返回 max-heap 顶（最高优先级）。
-   - `pending_urls` 使用 `b.cmp(a)` 排序 = 降序 = 最高优先级在前，与 `pop` 顺序一致。
-   - `restore` 注释明确"Force insert even if seen"，且代码确实无条件 `g.heap.push`（不依赖 `seen.insert` 的返回值），符合 brief 要求。
-5. **Edge cases 处理正确**：
-   - 空 heap：`pop` 返回 `None`，`pending_urls` 返回空 `Vec`，`is_empty` 返回 `true`。
-   - 重复 URL：`push` 第二次同 URL 不会入堆。
-   - `restore` 空输入：`clear` + `seq = 0`，两个 for 循环均不执行。
-6. **`SpiderRequest` 已 `#[derive(Clone)]`**（crawl/mod.rs:22），手动 `Clone for PrioritizedRequest` 调用 `self.req.clone()` 合法可用。
-
-## Issues
-
-### Critical (Must Fix)
-无。
-
-### Important (Should Fix)
-无。
-
-### Minor (Nice to Have)
-
-1. **`new()` 不是 async 方法**（scheduler.rs:47）
-   - Brief 描述为"8 个 async 方法"包含 `new`，但 brief verbatim 代码本身 `new` 也是 sync 的（`pub fn new() -> Self`）。
-   - 实现与 brief verbatim 代码一致，不算偏差；只是 brief 文字描述与 verbatim 代码本身有出入。
-   - 不需要在本 task 修复——`new` 不需要 await 任何东西，sync 构造是 idiomatic Rust。
-
-2. **`seen_urls` 是 placeholder**（scheduler.rs:86-94）
-   - 返回 `HashSet<String>`，内容是 `u64` 哈希值的 `to_string()`，不是真实 URL。
-   - Brief 第 99 行注释明确说"For simplicity in stage 1, we store the full URL set here"——但代码实际只存了 hash。这是 brief 自身的设计缺陷，非 implementer 之责。
-   - 已在"Known limitations"中列出，不作为问题。
-
-3. **`pending_urls` 注释"Need Clone bound on PrioritizedRequest - add it"**（scheduler.rs:80）
-   - 注释像是 TODO 留下的痕迹，实际已在文件末尾添加 `impl Clone for PrioritizedRequest`（scheduler.rs:128-132）。
-   - Brief verbatim 代码就有这句注释，implementer 原样保留。
-   - 微小可读性问题，非功能性，无需修复。
-
-## Assessment
-
-**Task quality:** Approved
-
-**Reasoning:** 实现严格匹配 brief 的 verbatim 代码，仅在 `push`/`restore` 两处对 `g.seq` 做了最小且语义保持的 borrow 修复（brief 原代码无法通过 E0502）。`cargo check` 确认 scheduler.rs 零编译错误，mod.rs 的 1 个 `.await` 错误是 Task 8 的预期工作。`tokio::sync::Mutex` 选择正确，async 接口签名符合 `&self + Mutex` 内部可变性模式，去重 / 优先级 / restore 语义全部正确。
+## Findings (if any)
+- [Minor] `clippy::cast_possible_wrap` 警告（`d.as_secs() as i64`，sqlite.rs:139）— 报告 §6 已确认原 rusqlite 版本同位置已有此警告，非本次回归。如需修复可后续统一用 `i64::try_from(d.as_secs()).unwrap_or(i64::MAX)` 或 `cast_signed()`，但属于无关清理，不应阻塞本次合并。
+- [Minor] turso 为 pre-release 版本 `=0.7.0-pre.18`，API 可能后续变动 — 报告 §6 已提示需在 turso 正式版发布后跟踪迁移。

@@ -1,185 +1,215 @@
-### Task 8: 修复 RequestCache 键忽略 HTTP 方法
+# Task 8 (Round 2): Clippy 自动修复 + Code Review
 
 **Files:**
-- Modify: `src/crawl/runtime/request_cache.rs:40-52`（get/put/invalidate 签名加 method）
-- Modify: `src/crawl/engine.rs:142-157, 241-250`（调用处传 method）
-- Test: `src/crawl/runtime/request_cache.rs` 内 `#[cfg(test)]`
+- Modify: 全项目（自动修复 + 手动补充）
 
 **Interfaces:**
-- Consumes: `Method`（crawl/mod.rs:53），`RequestCache.inner: moka::Cache<String, CachedEntry>`
-- Produces: `RequestCache::{get,put,invalidate}` 新增 `method: &str` 参数；键为 `"{method} {url}"`；POST/GET 同 URL 不冲突
+- Consumes: `cargo clippy --fix`、`cargo fmt`
+- Produces: 0 clippy 警告
 
-**背景：** `RequestCache`（request_cache.rs:40-47）键只用 URL。`process_request`（engine.rs:142-157）查询时也只用 `req.url`。导致 POST 与 GET 同 URL 共享缓存，返回错误响应。dev_mode 的 SQLite 缓存用 `(url, method)` 正确，两者不一致。
+## 当前 clippy 基线
 
-- [ ] **Step 1: 写失败测试 — POST 与 GET 同 URL 不共享缓存**
+- lib test: 601 warnings (523 duplicates, 56 auto-fixable suggestions)
+- 集成测试: ~15 warnings
+- benches: ~3 warnings
+- examples: 1 warning
 
-在 `src/crawl/runtime/request_cache.rs` 的 `#[cfg(test)]` 末尾追加：
+主要类别：
+- `uninlined_format_args`（最多，`format!("{}", x)` → `format!("{x}")`）
+- `unnecessary_literal_bound`（trait 方法返回 `&str` 但实际是字面量 → `&'static str`）
+- `type_complexity`（`Mutex<HashMap<(String, String), (Vec<u8>, Option<Instant>)>>` → 抽 type alias）
+- `duration_suboptimal_units`（`Duration::from_secs(3600)` → `Duration::from_hours(1)`）
+- `items_after_statements`（测试中 struct/impl 定义在语句之后）
+- `expect_fun_call`（`.expect(&format!(...))` → `.unwrap_or_else(|_| panic!(...))`）
+- `unnecessary_sort_by`（`sort_by(|a,b| b.cmp(a))` → `sort_by_key(|b| Reverse(b))`）
+- `new_without_default`（`TimingLayer::new` 缺 `Default` impl）
+- `doc_lazy_continuation`（doc 注释续行未缩进）
+- `unnecessary_get_then_check`（`.get(&x).is_some()` → `.contains_key(&x)`）
+- `unused_imports`、`unused_mut`
 
-```rust
-    #[tokio::test]
-    async fn cache_key_includes_method() {
-        let cache = RequestCache::new(100, Duration::from_secs(60));
-        let get_entry = CachedEntry {
-            status: 200,
-            headers: HashMap::new(),
-            body: b"GET-RESPONSE".to_vec(),
-        };
-        // 存 GET 响应
-        cache.put("GET", "https://example.com/api", get_entry).await;
+## Steps
 
-        // GET 命中
-        let got = cache.get("GET", "https://example.com/api").await;
-        assert!(got.is_some(), "GET 应命中");
+### Step 1: 自动修复
 
-        // POST 不应命中 GET 的缓存
-        let post = cache.get("POST", "https://example.com/api").await;
-        assert!(post.is_none(), "POST 不应命中 GET 缓存，实际 {:?}", post);
-    }
+```bash
+cd /home/weng/wisp
+cargo clippy --fix --all-targets --all-features --allow-dirty --allow-no-vcs
+cargo fmt --all
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+Expected: 自动修复 `uninlined_format_args`、`duration_suboptimal_units`、`unnecessary_get_then_check`、`unused_mut`、`unused_imports`、`unnecessary_sort_by`、`doc_lazy_continuation` 等。
 
-Run: `cargo test --lib crawl::runtime::request_cache::tests::cache_key_includes_method 2>&1 | tail -15`
-Expected: 编译失败（put/get 签名不匹配）或 FAIL（同 URL 命中）。
+### Step 2: 编译验证
 
-- [ ] **Step 3: 修改 RequestCache 签名加 method**
+Run: `cd /home/weng/wisp && cargo build --all-features`
+Expected: 编译通过
 
-修改 `src/crawl/runtime/request_cache.rs` L26-58：
+如果自动修复引入编译错误（如 `format!("{url}")` 但 `url` 是 `&Url` 类型无 `Display` 内联支持），手动修复：
 
 ```rust
-impl RequestCache {
-    pub fn new(max_entries: u64, ttl: Duration) -> Self {
-        Self {
-            inner: Cache::builder()
-                .max_capacity(max_entries)
-                .time_to_live(ttl)
-                .build(),
-        }
-    }
+// 自动修复误改
+format!("{url}")  // 编译失败
 
-    /// 构造缓存键："{method} {url}"，区分不同 HTTP 方法的响应。
-    fn cache_key(method: &str, url: &str) -> String {
-        format!("{} {}", method, url)
-    }
+// 手动修复
+format!("{}", url)  // 恢复
+// 或
+format!("{}", url.as_str())  // 显式转 &str
+```
 
-    /// Get a cached response for the given (method, url).
-    pub async fn get(&self, method: &str, url: &str) -> Option<CachedEntry> {
-        self.inner.get(&Self::cache_key(method, url)).await
-    }
+### Step 3: 全量回归
 
-    /// Store a response in the cache.
-    pub async fn put(&self, method: &str, url: &str, entry: CachedEntry) {
-        self.inner.insert(Self::cache_key(method, url), entry).await;
-    }
+Run: `cd /home/weng/wisp && cargo test --all-features`
+Expected: 全部测试 PASS
 
-    /// Invalidate a specific (method, url) entry.
-    pub async fn invalidate(&self, method: &str, url: &str) {
-        self.inner.invalidate(&Self::cache_key(method, url)).await;
-    }
+### Step 4: 检查剩余 clippy 警告
 
-    pub fn entry_count(&self) -> u64 {
-        self.inner.entry_count()
-    }
+Run: `cd /home/weng/wisp && cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee /tmp/clippy_remaining.log | tail -100`
+Expected: 列出剩余无法自动修复的警告
+
+### Step 5: 手动修复 type_complexity
+
+搜索 `type_complexity` 警告，抽取 type alias：
+
+```rust
+// 旧（src/storage/mod.rs:224）
+struct MockStore {
+    data: Mutex<HashMap<(String, String), (Vec<u8>, Option<Instant>)>>,
+}
+
+// 新
+type MockStoreData = HashMap<(String, String), (Vec<u8>, Option<Instant>)>;
+struct MockStore {
+    data: Mutex<MockStoreData>,
 }
 ```
 
-- [ ] **Step 4: 更新现有 request_cache 测试调用**
+### Step 6: 处理 unnecessary_literal_bound（不要改 trait 签名）
 
-修改 `src/crawl/runtime/request_cache.rs` 内现有 4 个测试，给 put/get/invalidate 加 method 参数。例如 `test_cache_put_and_get`：
+**已确认决策：不修改 Spider trait 签名**。
 
-```rust
-    #[tokio::test]
-    async fn test_cache_put_and_get() {
-        let cache = RequestCache::new(100, Duration::from_secs(60));
-        let entry = CachedEntry {
-            status: 200,
-            headers: HashMap::from([("content-type".to_string(), "text/html".to_string())]),
-            body: b"<html>hello</html>".to_vec(),
-        };
-        cache.put("GET", "https://example.com", entry.clone()).await;
+原因：`src/crawl/builder.rs:239` 的 `ClosureSpider` 返回 `&self.name`（动态 String），改 trait 为 `&'static str` 会破坏该实现。`ClosureSpider` 是生产代码核心路径，不能为消除警告而破坏。
 
-        let got = cache.get("GET", "https://example.com").await;
-        assert!(got.is_some());
-        let got = got.unwrap();
-        assert_eq!(got.status, 200);
-        assert_eq!(got.body, b"<html>hello</html>");
-    }
-```
+`unnecessary_literal_bound` 警告出现在测试中的 Spider 实现（如 `src/crawl/mod.rs:258,366,405`、`src/crawl/engine.rs:863`、`src/mcp/tools.rs:108`），它们返回字面量 `"dummy"`/`"count"`/`"one"`/`"mcp_simple"`。
 
-对其余 3 个测试（`test_cache_miss`、`test_cache_invalidate`、`test_cache_entry_count`）同样加 `"GET"` 参数。
-
-- [ ] **Step 5: 更新 engine.rs 调用处**
-
-修改 `src/crawl/engine.rs` 的 `process_request`。先定义 method_str（已有，L161-166，但定义在缓存查询之后）。把 method_str 提前到 RequestCache 查询之前。
-
-当前 L142-157（RequestCache 查询）在 L161（method_str 定义）之前。调整顺序：把 method_str 定义移到 L141 之前。
+**修复方式**：在每个被警告的 impl 上加 `#[allow(clippy::unnecessary_literal_bound)]`：
 
 ```rust
-    // 1.85. 提前计算 method_str（RequestCache 查询需要）
-    let method_str = match req.method {
-        Method::Get => "GET",
-        Method::Post => "POST",
-        Method::Put => "PUT",
-        Method::Delete => "DELETE",
-    };
-
-    // 2. 内存缓存检查 (RequestCache) — 键含 method
-    if let Some(ref rc) = ctx.request_cache {
-        if let Some(entry) = rc.get(method_str, &req.url).await {
-            let resp = SpiderResponse {
-                url: req.url.clone(),
-                status: entry.status,
-                headers: entry.headers,
-                body: entry.body,
-                request: req.clone(),
-                tracker: None,
-                from_cache: true,
-            };
-            stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-            record_status(stats, resp.status).await;
-            return process_response(ctx, resp, &req).await;
-        }
-    }
+#[allow(clippy::unnecessary_literal_bound)]
+impl Spider for FooSpider {
+    fn name(&self) -> &str { "foo" }
+}
 ```
 
-删除原 L161-166 的 method_str 定义（已上移）。保留 dev_mode SQLite 缓存段（L167-237）使用已有的 method_str。
+或者，如果测试中的 struct 已经被 `items_after_statements` 标记，可以同时把 struct/impl 移出函数外（一并举解决两个警告）。
 
-修改 RequestCache 写入（L241-250）：
+**绝对不要**：
+- 修改 `Spider` trait 的 `name` 签名为 `&'static str`
+- 修改 `ClosureSpider` 的 `name` 字段类型
+
+### Step 7: 手动修复 items_after_statements（测试中）
+
+测试函数中的 struct/impl 定义在语句之后会触发此警告。修复方式：
 
 ```rust
-        // 7.5. 写入 RequestCache
-        if let Some(ref rc) = ctx.request_cache {
-            if let Some(ref resp) = final_resp {
-                rc.put(method_str, &req.url, super::request_cache::CachedEntry {
-                    status: resp.status,
-                    headers: resp.headers.clone(),
-                    body: resp.body.clone(),
-                }).await;
-            }
-        }
+// 旧
+#[tokio::test]
+async fn test_foo() {
+    let url = "http://example.com";
+    struct FooSpider { ... }
+    impl Spider for FooSpider { ... }
+    // ...
+}
+
+// 新（struct/impl 移到函数顶部或函数外）
+struct FooSpider { ... }
+impl Spider for FooSpider { ... }
+
+#[tokio::test]
+async fn test_foo() {
+    let url = "http://example.com";
+    // ...
+}
 ```
 
-- [ ] **Step 6: 运行测试确认通过**
+或者用 `#[allow(clippy::items_after_statements)]` 标注测试函数（如果移动会破坏测试可读性）。
 
-Run: `cargo build 2>&1 | tail -10`
-Expected: 编译通过（所有 RequestCache 调用点已更新）。
+### Step 8: 手动修复 expect_fun_call
 
-Run: `cargo test --lib crawl::runtime::request_cache 2>&1 | tail -10`
-Expected: PASS（含新测试 + 现有 4 个）。
+```rust
+// 旧
+.expect(&format!("invalid json: {}", stdout))
 
-Run: `cargo test --test unified_fetcher_test 2>&1 | tail -10`（若有用 RequestCache）
-Expected: 通过。
+// 新
+.unwrap_or_else(|_| panic!("invalid json: {}", stdout))
+```
 
-- [ ] **Step 7: Commit**
+### Step 9: 手动修复 new_without_default
+
+```rust
+// 旧
+impl TimingLayer {
+    pub fn new() -> Self { ... }
+}
+
+// 新
+impl Default for TimingLayer {
+    fn default() -> Self { Self::new() }
+}
+
+impl TimingLayer {
+    pub fn new() -> Self { ... }
+}
+```
+
+### Step 10: 验证 0 警告
+
+Run: `cd /home/weng/wisp && cargo clippy --all-targets --all-features -- -D warnings`
+Expected: 命令成功退出（exit code 0），0 警告
+
+### Step 11: 集成验证（banzhu-rs）
 
 ```bash
-git add src/crawl/runtime/request_cache.rs src/crawl/engine.rs
-git commit -m "fix(cache): RequestCache 键含 HTTP 方法
-
-- get/put/invalidate 新增 method 参数，键为 \"{method} {url}\"
-- engine.rs 调用处传入 method_str，与 dev_mode SQLite 缓存一致
-- 修复 POST 与 GET 同 URL 共享缓存返回错误响应的问题"
+cd /home/weng/banzhu-rs && cargo build
 ```
 
----
+Expected: 编译通过（如果 Spider trait 签名改了 `&'static str`，banzhu-rs 的实现也需要同步改）
 
+如果 banzhu-rs 编译失败，修复 banzhu-rs 中对应的 trait 实现（`fn name(&self) -> &str` → `fn name(&self) -> &'static str`）。
+
+### Step 12: 最终全量回归
+
+Run: `cd /home/weng/wisp && cargo test --all-features`
+Expected: 全部测试 PASS
+
+### Step 13: 提交
+
+```bash
+cd /home/weng/wisp
+git add -A
+git commit -m "chore(clippy): 修复全部 clippy 警告 + 自动格式化"
+```
+
+如果 banzhu-rs 也改了，单独提交：
+```bash
+cd /home/weng/banzhu-rs
+git add -A
+git commit -m "chore: 同步 clippy 自动修复"
+```
+
+**注意**：由于 Step 6 已确认不修改 Spider trait 签名，banzhu-rs 应该不需要因 trait 签名变更而修改。但如果 clippy --fix 在 wisp 中改了公共 API（如 pub fn 签名），需要同步修复 banzhu-rs。
+
+## 验证
+
+- `cargo clippy --all-targets --all-features -- -D warnings` 退出码 0
+- `cargo test --all-features` 全部 PASS
+- `cd /home/weng/banzhu-rs && cargo build` 编译通过
+- 提交信息符合规范
+
+## 注意事项
+
+1. **不要为了一味消除警告而破坏功能** — 如果某个警告修复会改变语义，用 `#[allow(clippy::xxx)]` 标注并加注释说明原因
+2. **`unnecessary_literal_bound` 涉及 trait 签名变更** — 这会影响 banzhu-rs，需要同步修复
+3. **`items_after_statements` 在测试中** — 如果移动 struct 会破坏测试结构，用 `#[allow]` 标注
+4. **保留中文注释** — `cargo fmt` 不会动注释，但自动修复可能调整代码位置
+5. **不要删除 `#![warn(missing_docs)]`** — 保持文档警告开启
+6. 如果某个警告是 clippy 误判，用 `#[expect(clippy::xxx)]`（Rust 1.81+）而非 `#[allow]`

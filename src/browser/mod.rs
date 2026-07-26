@@ -1,34 +1,33 @@
 //! Browser process management. Launches Chrome directly with stealth args.
 
+/// CDP WebSocket 会话管理。
+pub mod cdp;
+/// DOM 元素封装。
+pub mod element;
+/// Chrome for Testing 自动下载安装。
+pub mod installer;
 /// 浏览器可执行文件查找与启动参数构建。
 pub mod launch;
 /// 页面操作（导航、JS 执行、截图等）。
 pub mod page;
-/// CDP WebSocket 会话管理。
-pub mod cdp;
 /// 反检测 JS 补丁注入。
 pub mod patches;
-/// DOM 元素封装。
-pub mod element;
 /// 浏览器实例池（复用 + 并发控制）。
 pub mod pool;
-/// Chrome for Testing 自动下载安装。
-pub mod installer;
 
-pub use page::Page;
 pub use cdp::CdpSession;
+pub use page::Page;
 pub use pool::BrowserPool;
 
-use std::sync::Arc;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use serde_json::json;
 use tokio::process::Child;
 
 use crate::config::LaunchOptions;
-use crate::error::{WispError, Result, BrowserError};
-
+use crate::error::{BrowserError, Result, WispError};
 
 /// 浏览器实例：封装 Chrome 进程 + CDP 会话。
 ///
@@ -64,7 +63,9 @@ impl Browser {
             let td = tempfile::Builder::new()
                 .prefix(&format!("wisp-{}-", std::process::id()))
                 .tempdir()
-                .map_err(|e| WispError::Browser(BrowserError::LaunchFailed(format!("create temp dir: {e}"))))?;
+                .map_err(|e| {
+                    WispError::Browser(BrowserError::LaunchFailed(format!("create temp dir: {e}")))
+                })?;
             let path = td.path().to_path_buf();
             (path, Some(td))
         };
@@ -98,15 +99,22 @@ impl Browser {
             }
         }
 
-        let child = cmd.spawn()
-            .map_err(|e| WispError::Browser(BrowserError::LaunchFailed(format!("spawn chrome: {e}"))))?;
+        let child = cmd.spawn().map_err(|e| {
+            WispError::Browser(BrowserError::LaunchFailed(format!("spawn chrome: {e}")))
+        })?;
 
         // Wait for DevToolsActivePort file (contains random port + ws path)
         let ws_url = Self::wait_for_devtools_url(&user_data_path).await?;
         tracing::info!("Chrome DevTools: {}", ws_url);
 
         let session = CdpSession::connect(&ws_url).await?;
-        Ok(Self { session, process: child, user_data_path, _temp_dir: temp_dir, headless: options.headless })
+        Ok(Self {
+            session,
+            process: child,
+            user_data_path,
+            _temp_dir: temp_dir,
+            headless: options.headless,
+        })
     }
 
     async fn wait_for_devtools_url(user_data_dir: &std::path::Path) -> Result<String> {
@@ -117,15 +125,27 @@ impl Browser {
             if port_file.exists() {
                 // Small delay to ensure file is fully written
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let content = tokio::fs::read_to_string(&port_file).await
-                    .map_err(|e| WispError::Browser(BrowserError::LaunchFailed(format!("read DevToolsActivePort: {e}"))))?;
+                let content = tokio::fs::read_to_string(&port_file).await.map_err(|e| {
+                    WispError::Browser(BrowserError::LaunchFailed(format!(
+                        "read DevToolsActivePort: {e}"
+                    )))
+                })?;
                 let mut lines = content.lines();
-                let port = lines.next().ok_or_else(|| WispError::Browser(BrowserError::LaunchFailed("empty DevToolsActivePort".into())))?.trim();
+                let port = lines
+                    .next()
+                    .ok_or_else(|| {
+                        WispError::Browser(BrowserError::LaunchFailed(
+                            "empty DevToolsActivePort".into(),
+                        ))
+                    })?
+                    .trim();
                 let ws_path = lines.next().unwrap_or("/devtools/browser");
-                return Ok(format!("ws://127.0.0.1:{}{}", port, ws_path));
+                return Ok(format!("ws://127.0.0.1:{port}{ws_path}"));
             }
             if tokio::time::Instant::now() > deadline {
-                return Err(WispError::Browser(BrowserError::LaunchFailed("Chrome did not start within 15s".into())));
+                return Err(WispError::Browser(BrowserError::LaunchFailed(
+                    "Chrome did not start within 15s".into(),
+                )));
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -145,10 +165,7 @@ impl Browser {
         // 无论 CDP 是否成功，确保进程被 kill（close 消费 self，Drop 不再运行）
         let _ = self.process.start_kill();
         // 等待进程退出（最多 3 秒）
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            self.process.wait()
-        ).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), self.process.wait()).await;
         Ok(())
     }
 }
@@ -224,7 +241,8 @@ mod tests {
         assert_eq!(result.as_i64(), Some(2));
 
         // 获取字符串
-        let text = page.evaluate_as_string("document.querySelector('h1').textContent")
+        let text = page
+            .evaluate_as_string("document.querySelector('h1').textContent")
             .await
             .expect("获取文本应成功");
         assert_eq!(text, "Test");
@@ -271,12 +289,13 @@ mod tests {
         let mut page2 = browser.new_page().await.expect("创建页面 2");
 
         // 两个页面应有不同的 session_id
-        assert_ne!(page1.session_id, page2.session_id, "不同页面应有不同 session_id");
+        assert_ne!(
+            page1.session_id, page2.session_id,
+            "不同页面应有不同 session_id"
+        );
 
         let _ = page1.close().await;
         let _ = page2.close().await;
         browser.close().await.expect("关闭浏览器");
     }
 }
-
-

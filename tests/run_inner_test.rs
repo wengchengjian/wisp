@@ -19,7 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::crawl::{CrawlEvent, Request, Response, Spider};
 use wisp::fetcher::FetchMode;
-use wisp::storage::{MemoryStore, Store};
+use wisp::storage::MemoryStore;
 use wisp::Engine;
 
 /// 最小 Spider：handle 返回空，不产出 items/follows。
@@ -200,7 +200,9 @@ async fn run_clears_checkpoint_on_successful_completion() {
     assert_eq!(items.len(), 1, "应产出 1 个 item");
 
     // 爬取成功完成后 checkpoint 应被清理
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-clear-test").await.unwrap();
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-clear-test")
+        .await
+        .unwrap();
     assert!(
         ckpt.is_none(),
         "爬取成功完成后 checkpoint 应被清理，但仍然存在"
@@ -242,7 +244,9 @@ async fn run_clears_checkpoint_on_shutdown_interrupt() {
     let _ = engine.run(spider).await;
 
     // run 结束（shutdown 中断）后 checkpoint 也被清理
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-shutdown-test").await.unwrap();
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-shutdown-test")
+        .await
+        .unwrap();
     assert!(
         ckpt.is_none(),
         "run_inner 结束时总是清理 checkpoint（当前设计），实际: {:?}",

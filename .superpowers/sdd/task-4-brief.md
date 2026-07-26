@@ -1,361 +1,231 @@
-### Task 4: P1-2 Scheduler seen/heap 锁分离
+# Task 4: fetch_dispatch 退避抖动 + rule_engine 单次锁（M1 + M4）
 
 **Files:**
-- Modify: `src/crawl/scheduling/scheduler.rs:1-189`
-- Test: `tests/p1_scheduler_test.rs`（新建）
+- Modify: `src/crawl/engine.rs`（fetch_dispatch AutoFallback + Retry 分支）
+- Modify: `src/crawl/middleware/builtin.rs`（RetryMiddleware 移除 retry_delay + sleep）
+- Modify: `src/crawl/middleware/mod.rs`（doc 示例更新）
+- Test: `src/crawl/engine.rs`
 
 **Interfaces:**
-- Consumes: `dashmap::DashSet`（dashmap crate 提供，无需新增依赖）。
-- Produces: `Scheduler` 内部结构拆为 `heap: Arc<Mutex<HeapInner>>` + `seen_exact: Arc<DashSet<String>>` + `seen_fp: Arc<DashSet<u64>>`；公开方法签名（`push`/`pop`/`pending_urls`/`seen_urls`/`len`/`is_empty`/`restore`）不变。
+- Consumes: `rand` crate（检查 Cargo.toml）
+- Produces: `RetryMiddleware::new(max_retries: u32)`（删除 retry_delay 参数）
 
-- [ ] **Step 1: 写失败测试 — 并发 push/pop 不死锁且去重正确**
+## Steps
 
-新建 `tests/p1_scheduler_test.rs`：
+### Step 1: 检查 rand 依赖
+
+Run: `grep -n "^rand" /home/weng/wisp/Cargo.toml`
+若无 rand，需在 [dependencies] 添加 `rand = "0.9"`。wisp 应已有 rand，先检查。
+
+### Step 2: 写失败测试 — 指数退避
+
+在 `src/crawl/engine.rs` 的 `#[cfg(test)]` 模块追加：
 
 ```rust
-//! P1-2: Scheduler seen/heap 分离，并发不死锁。
+#[test]
+fn test_retry_exponential_backoff() {
+    fn compute_backoff(attempt: u32) -> u64 {
+        let base_ms = 100u64;
+        let cap_ms = 30_000u64;
+        base_ms
+            .saturating_mul(1u64 << attempt.min(10))
+            .min(cap_ms)
+    }
 
-use wisp::crawl::scheduler::{Scheduler, DedupStrategy};
-use wisp::crawl::SpiderRequest;
+    assert_eq!(compute_backoff(1), 200, "attempt=1 → 200ms");
+    assert_eq!(compute_backoff(2), 400, "attempt=2 → 400ms");
+    assert_eq!(compute_backoff(3), 800, "attempt=3 → 800ms");
+    assert_eq!(compute_backoff(8), 25_600, "attempt=8 → 25.6s");
+    assert_eq!(compute_backoff(10), 30_000, "attempt=10 → 封顶 30s");
+    assert_eq!(compute_backoff(20), 30_000, "attempt=20 → 仍封顶 30s");
+}
+```
 
+### Step 3: 验证测试通过
+
+Run: `cargo test --lib crawl::engine::tests::test_retry_exponential_backoff --all-features`
+
+### Step 4: 写失败测试 — 抖动范围
+
+```rust
+#[test]
+fn test_retry_jitter_range() {
+    fn compute_jitter_bound(exp_delay: u64) -> u64 {
+        exp_delay / 2 + 1
+    }
+
+    assert_eq!(compute_jitter_bound(200), 101);
+    assert_eq!(compute_jitter_bound(400), 201);
+    assert_eq!(compute_jitter_bound(30_000), 15_001);
+}
+```
+
+### Step 5: 验证测试通过
+
+### Step 6: 写失败测试 — rule_engine 单次锁
+
+```rust
 #[tokio::test]
-async fn scheduler_concurrent_push_pop_dedup_correct() {
-    let sched = Scheduler::new();
-    // 并发 push 1000 个 URL（含 50% 重复），再 pop 全部
-    let pushers: Vec<_> = (0..10)
-        .map(|tid| {
-            let s = sched.clone();
-            tokio::spawn(async move {
-                for i in 0..100 {
-                    // tid*100+i，偶数为重复（0,2,4.. 跨线程共享同一组 URL）
-                    let url = format!("https://example.com/{}", if tid % 2 == 0 { i } else { 1000 + tid * 100 + i });
-                    s.push(SpiderRequest::get(&url)).await;
-                }
-            })
-        })
-        .collect();
-    for h in pushers { h.await.unwrap(); }
+async fn test_rule_engine_single_lock_for_autofallback() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::sync::Mutex;
 
-    // pop 全部，验证无 panic、数量 = 唯一 URL 数
-    let mut popped = 0;
-    while sched.pop().await.is_some() {
-        popped += 1;
+    struct MockRuleEngine {
+        lock_count: AtomicU32,
     }
-    // 5 个偶数 tid 各推 0..99（100 个，但跨偶数 tid 重复同一组 0..99）→ 去重后 100 个
-    // 5 个奇数 tid 各推 1000+tid*100+i（500 个唯一）→ 500 个
-    // 总计 600 个唯一
-    assert_eq!(popped, 600, "去重后应剩 600 个唯一 URL");
-}
+    impl MockRuleEngine {
+        async fn resolve_and_learn(&self) -> bool {
+            self.lock_count.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
 
-#[tokio::test]
-async fn scheduler_fingerprint_strategy_seen_split_works() {
-    let sched = Scheduler::with_strategy(DedupStrategy::Fingerprint);
-    sched.push(SpiderRequest::get("https://example.com/a")).await;
-    // 重复 push 同 URL 应被去重
-    sched.push(SpiderRequest::get("https://example.com/a")).await;
-    assert_eq!(sched.len().await, 1);
-    let seen = sched.seen_urls().await;
-    assert_eq!(seen.len(), 1, "Fingerprint 模式 seen 应含 1 个 hash");
+    let engine = Arc::new(MockRuleEngine {
+        lock_count: AtomicU32::new(0),
+    });
+
+    let should_upgrade = engine.resolve_and_learn().await;
+
+    assert!(should_upgrade);
+    assert_eq!(engine.lock_count.load(Ordering::SeqCst), 1, "应只抢一次锁");
 }
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+### Step 7: 验证测试通过
 
-Run: `cargo test --test p1_scheduler_test`
-Expected: 并发测试可能 PASS（原 Mutex 也不死锁，只是串行）或 PASS 但慢。关键看后续 Step 重构后仍 PASS。先记录基线时间。
+### Step 8: 实现 fetch_dispatch AutoFallback 单次锁
 
-Run: `cargo test --test p1_scheduler_test -- --nocapture 2>&1 | grep "test result"`
-Expected: 2 passed（基线）。
-
-- [ ] **Step 3: 重构 scheduler.rs — 拆分 seen 与 heap**
-
-`src/crawl/scheduling/scheduler.rs` 顶部 imports（line 8-14）当前：
+定位 `fetch_dispatch` 函数中 AutoFallback 段（搜索 `AutoFallback` 或 `rule_engine.lock`），替换为单次锁：
 
 ```rust
-use crate::crawl::SpiderRequest;
-use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{BinaryHeap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-```
-
-替换为（新增 DashSet）：
-
-```rust
-use crate::crawl::SpiderRequest;
-use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{BinaryHeap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-use dashmap::DashSet;
-use tokio::sync::Mutex;
-```
-
-`SchedulerInner` 与 `Scheduler` 定义（line 50-65）当前：
-
-```rust
-struct SchedulerInner {
-    heap: BinaryHeap<PrioritizedRequest>,
-    seen_exact: HashSet<String>,
-    seen_fp: HashSet<u64>,
-    strategy: DedupStrategy,
-    seq: u64,
-}
-
-#[derive(Clone)]
-pub struct Scheduler {
-    inner: Arc<Mutex<SchedulerInner>>,
+// OPTIMIZE: 合并 resolve+learn 到单次锁，避免两次锁争用。
+if ctx.config.fetch_mode == FetchMode::Auto
+    && current_req.fetch_mode_override.is_none()
+    && current_req.retry_count == 0
+{
+    let should_upgrade = {
+        let mut engine = ctx.shared.rule_engine.lock().await;
+        if engine.resolve(&current_req.url) != Some(FetchMode::Stealth) {
+            engine.learn(&current_req.url, FetchMode::Stealth);
+            true
+        } else {
+            false
+        }
+    };
+    if should_upgrade {
+        tracing::info!(
+            "AutoFallback: '{}' 首次抓取失败 ({}), 升级 Stealth 重试",
+            sanitize_url(&current_req.url),
+            e
+        );
+        current_req.fetch_mode_override = Some(FetchMode::Stealth);
+        continue;
+    }
 }
 ```
 
-替换为（seen 用 DashSet 独立，heap + seq 共享一个 Mutex，strategy 是 Copy 存外部）：
+### Step 9: 实现 Retry 路径指数退避 + 抖动
+
+定位 `fetch_dispatch` 中 `ErrorAction::Retry` 分支，在 `continue` 前添加：
 
 ```rust
-/// heap 与 seq 共享一个 Mutex（push/pop 需要原子读 seq + push/pop）。
-struct HeapInner {
-    heap: BinaryHeap<PrioritizedRequest>,
-    seq: u64,
+middleware::ErrorAction::Retry if current_req.retry_count < max_retries => {
+    current_req.retry_count += 1;
+    stats.retries.fetch_add(1, Ordering::SeqCst);
+
+    // OPTIMIZE: 指数退避 + 抖动，避免失败场景下的 Thundering Herd。
+    let attempt = current_req.retry_count;
+    let base_ms = 100u64;
+    let cap_ms = 30_000u64;
+    let exp_delay = base_ms
+        .saturating_mul(1u64 << attempt.min(10))
+        .min(cap_ms);
+    // 抖动：[0, exp_delay/2)，避免所有失败请求同步重试
+    let jitter = rand::rngs::SmallRng::try_from_rng(&mut rand::rngs::SysRng)
+        .expect("OS RNG failed")
+        .random_range(0..exp_delay / 2 + 1);
+    let total_delay = std::time::Duration::from_millis(exp_delay + jitter);
+    tracing::debug!(
+        "retry {}/{}: {} (backoff {:?})",
+        attempt,
+        max_retries,
+        sanitize_url(&current_req.url),
+        total_delay
+    );
+    tokio::time::sleep(total_delay).await;
+
+    if let Some(ref tx) = ctx.state.tx {
+        let _ = tx.try_send(CrawlEvent::Retry {
+            url: sanitize_url(&current_req.url),
+            attempt,
+            max: max_retries,
+            error: e.to_string(),
+        });
+    }
+    continue;
+}
+```
+
+**注意**：rand API 需根据实际版本调整。若 `try_from_rng`/`random_range` 不可用，改用 `rand::thread_rng().gen_range(0..exp_delay/2+1)` 或类似 API。
+
+### Step 10: 修改 RetryMiddleware — 移除 sleep 和 retry_delay
+
+**10a. 修改结构体和 new**：
+
+```rust
+pub struct RetryMiddleware {
+    max_retries: u32,
 }
 
-/// Scheduler：seen 集合（DashSet，无锁）与 heap（独立 Mutex）分离。
-///
-/// push 时先查/插 seen（DashSet，无锁），命中才锁 heap 入队；
-/// pop 时只锁 heap。两者不再串行于同一锁。
-#[derive(Clone)]
-pub struct Scheduler {
-    heap: Arc<Mutex<HeapInner>>,
-    seen_exact: Arc<DashSet<String>>,
-    seen_fp: Arc<DashSet<u64>>,
-    strategy: DedupStrategy,
+impl RetryMiddleware {
+    /// 创建重试中间件。退避策略由 engine 统一负责（指数退避 + 抖动）。
+    pub fn new(max_retries: u32) -> Self {
+        Self { max_retries }
+    }
 }
 ```
 
-- [ ] **Step 4: 重构 with_strategy 构造**
-
-`src/crawl/scheduling/scheduler.rs:73-83` 当前：
+**10b. 修改 process_error — 删除内部 sleep**：
 
 ```rust
-    pub fn with_strategy(strategy: DedupStrategy) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(SchedulerInner {
-                heap: BinaryHeap::new(),
-                seen_exact: HashSet::new(),
-                seen_fp: HashSet::new(),
-                strategy,
-                seq: 0,
-            })),
-        }
+async fn process_error(&self, req: &Request, _error: &str) -> ErrorAction {
+    // OPTIMIZE: 退避由 engine 统一负责（指数退避 + 抖动），中间件仅决定是否重试。
+    if req.retry_count < self.max_retries {
+        ErrorAction::Retry
+    } else {
+        ErrorAction::Propagate
     }
+}
 ```
 
-替换为：
+### Step 11: 更新 mod.rs doc 示例
 
 ```rust
-    pub fn with_strategy(strategy: DedupStrategy) -> Self {
-        Self {
-            heap: Arc::new(Mutex::new(HeapInner { heap: BinaryHeap::new(), seq: 0 })),
-            seen_exact: Arc::new(DashSet::new()),
-            seen_fp: Arc::new(DashSet::new()),
-            strategy,
-        }
-    }
+// 旧：.middleware(RetryMiddleware::new(3, std::time::Duration::from_secs(1)))
+// 新：.middleware(RetryMiddleware::new(3))
 ```
 
-- [ ] **Step 5: 重构 push — seen 先查再锁 heap**
+### Step 12: 检查所有 RetryMiddleware::new 调用点
 
-`src/crawl/scheduling/scheduler.rs:86-97` 当前：
+Run: `grep -rn "RetryMiddleware::new" /home/weng/wisp/src/`
+所有调用点更新为单参数版本。
 
-```rust
-    pub async fn push(&self, req: SpiderRequest) {
-        let mut g = self.inner.lock().await;
-        let is_new = match g.strategy {
-            DedupStrategy::Exact => g.seen_exact.insert(req.url.clone()),
-            DedupStrategy::Fingerprint => g.seen_fp.insert(fingerprint(&req.url)),
-        };
-        if is_new {
-            let seq = g.seq;
-            g.heap.push(PrioritizedRequest { req, seq });
-            g.seq += 1;
-        }
-    }
-```
+### Step 13: 验证测试通过
 
-替换为（先 DashSet 去重，命中才锁 heap）：
+Run: `cargo test --lib crawl::engine::tests --all-features && cargo test --lib crawl::middleware --all-features`
 
-```rust
-    pub async fn push(&self, req: SpiderRequest) {
-        // seen 去重（DashSet 无锁，不阻塞 pop）
-        let is_new = match self.strategy {
-            DedupStrategy::Exact => self.seen_exact.insert(req.url.clone()),
-            DedupStrategy::Fingerprint => self.seen_fp.insert(fingerprint(&req.url)),
-        };
-        if is_new {
-            let mut g = self.heap.lock().await;
-            let seq = g.seq;
-            g.heap.push(PrioritizedRequest { req, seq });
-            g.seq += 1;
-        }
-    }
-```
+### Step 14: 全量回归
 
-- [ ] **Step 6: 重构 pop**
+Run: `cargo test --all-features`
 
-`src/crawl/scheduling/scheduler.rs:100-103` 当前：
+### Step 15: Clippy 检查
 
-```rust
-    pub async fn pop(&self) -> Option<SpiderRequest> {
-        let mut g = self.inner.lock().await;
-        g.heap.pop().map(|p| p.req)
-    }
-```
+Run: `cargo clippy --all-targets --all-features -- -D warnings`
 
-替换为：
-
-```rust
-    pub async fn pop(&self) -> Option<SpiderRequest> {
-        let mut g = self.heap.lock().await;
-        g.heap.pop().map(|p| p.req)
-    }
-```
-
-- [ ] **Step 7: 重构 pending_urls**
-
-`src/crawl/scheduling/scheduler.rs:106-114` 当前：
-
-```rust
-    pub async fn pending_urls(&self) -> Vec<SpiderRequest> {
-        let g = self.inner.lock().await;
-        let mut reqs: Vec<PrioritizedRequest> = g.heap.iter().cloned().collect();
-        reqs.sort_by(|a, b| b.cmp(a));
-        reqs.into_iter().map(|p| p.req).collect()
-    }
-```
-
-替换为：
-
-```rust
-    pub async fn pending_urls(&self) -> Vec<SpiderRequest> {
-        let g = self.heap.lock().await;
-        let mut reqs: Vec<PrioritizedRequest> = g.heap.iter().cloned().collect();
-        reqs.sort_by(|a, b| b.cmp(a));
-        reqs.into_iter().map(|p| p.req).collect()
-    }
-```
-
-- [ ] **Step 8: 重构 seen_urls**
-
-`src/crawl/scheduling/scheduler.rs:119-125` 当前：
-
-```rust
-    pub async fn seen_urls(&self) -> HashSet<String> {
-        let g = self.inner.lock().await;
-        match g.strategy {
-            DedupStrategy::Exact => g.seen_exact.clone(),
-            DedupStrategy::Fingerprint => g.seen_fp.iter().map(|h| h.to_string()).collect(),
-        }
-    }
-```
-
-替换为（DashSet 快照不阻塞 heap）：
-
-```rust
-    pub async fn seen_urls(&self) -> HashSet<String> {
-        match self.strategy {
-            DedupStrategy::Exact => self.seen_exact.iter().map(|s| s.clone()).collect(),
-            DedupStrategy::Fingerprint => self.seen_fp.iter().map(|h| h.to_string()).collect(),
-        }
-    }
-```
-
-- [ ] **Step 9: 重构 len / is_empty**
-
-`src/crawl/scheduling/scheduler.rs:128-134` 当前：
-
-```rust
-    pub async fn len(&self) -> usize {
-        self.inner.lock().await.heap.len()
-    }
-
-    pub async fn is_empty(&self) -> bool {
-        self.inner.lock().await.heap.is_empty()
-    }
-```
-
-替换为：
-
-```rust
-    pub async fn len(&self) -> usize {
-        self.heap.lock().await.heap.len()
-    }
-
-    pub async fn is_empty(&self) -> bool {
-        self.heap.lock().await.heap.is_empty()
-    }
-```
-
-- [ ] **Step 10: 重构 restore**
-
-`src/crawl/scheduling/scheduler.rs:137-172` 当前 `restore` 整段引用 `g.strategy`、`g.heap`、`g.seen_exact`、`g.seen_fp`、`g.seq`。替换为（清 seen DashSet + 清 heap Mutex + 重建）：
-
-```rust
-    /// Replace inner state (for checkpoint restore).
-    pub async fn restore(&self, pending: Vec<SpiderRequest>, seen: HashSet<String>) {
-        // 清 seen（DashSet）
-        self.seen_exact.clear();
-        self.seen_fp.clear();
-        // 清 heap + seq（Mutex）
-        {
-            let mut g = self.heap.lock().await;
-            g.heap.clear();
-            g.seq = 0;
-        }
-        // Rebuild seen set
-        for url in &seen {
-            match self.strategy {
-                DedupStrategy::Exact => {
-                    self.seen_exact.insert(url.clone());
-                }
-                DedupStrategy::Fingerprint => {
-                    // seen_urls() 在 Fingerprint 模式下返回 u64 哈希的十进制字符串，
-                    // 直接 parse 回 u64 即可，不能再 fingerprint（会产生不同 u64）。
-                    if let Ok(h) = url.parse::<u64>() {
-                        self.seen_fp.insert(h);
-                    }
-                }
-            }
-        }
-        // Re-queue pending (force insert even if in seen set)
-        let mut g = self.heap.lock().await;
-        for req in pending {
-            match self.strategy {
-                DedupStrategy::Exact => {
-                    self.seen_exact.insert(req.url.clone());
-                }
-                DedupStrategy::Fingerprint => {
-                    self.seen_fp.insert(fingerprint(&req.url));
-                }
-            }
-            let seq = g.seq;
-            g.heap.push(PrioritizedRequest { req, seq });
-            g.seq += 1;
-        }
-    }
-```
-
-- [ ] **Step 11: 运行测试验证通过**
-
-Run: `cargo test --test p1_scheduler_test && cargo test --lib crawl::scheduling && cargo test --lib`
-Expected: 新 2 测试 PASS；scheduler 现有单元测试全绿；lib 206 全绿。
-
-- [ ] **Step 12: 提交**
+### Step 16: 提交
 
 ```bash
-git add src/crawl/scheduling/scheduler.rs tests/p1_scheduler_test.rs
-git commit -m "perf: Scheduler seen/heap 锁分离 (P1-2)"
+cd /home/weng/wisp
+git add src/crawl/engine.rs src/crawl/middleware/builtin.rs src/crawl/middleware/mod.rs
+git commit -m "perf(engine): fetch_dispatch 退避抖动 + rule_engine 单次锁"
 ```
-
----
-

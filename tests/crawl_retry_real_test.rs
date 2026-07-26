@@ -1,13 +1,15 @@
 //! 真实环境测试：重试机制。cargo test --test crawl_retry_real_test -- --ignored 运行。
 
 use async_trait::async_trait;
-use wisp::crawl::{Spider, Request, Response, Engine};
 use serde_json::Value;
+use wisp::crawl::{Engine, Request, Response, Spider};
 
 struct RetrySpider;
 #[async_trait]
 impl Spider for RetrySpider {
-    fn name(&self) -> &str { "retry-test" }
+    fn name(&self) -> &str {
+        "retry-test"
+    }
     fn start_urls(&self) -> Vec<String> {
         // httpbin.org/status/403 返回 403，应触发重试
         vec!["https://httpbin.org/status/403".to_string()]
@@ -42,9 +44,15 @@ async fn test_retry_on_500_then_success() {
     struct OkSpider;
     #[async_trait]
     impl Spider for OkSpider {
-        fn name(&self) -> &str { "ok-test" }
-        fn start_urls(&self) -> Vec<String> { vec!["https://httpbin.org/status/200".to_string()] }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) { (vec![], vec![]) }
+        fn name(&self) -> &str {
+            "ok-test"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            vec!["https://httpbin.org/status/200".to_string()]
+        }
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+            (vec![], vec![])
+        }
     }
     let engine = Engine::infra()
         .max_pages(1)

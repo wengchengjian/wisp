@@ -36,8 +36,12 @@ pub struct DomainBlocker {
 
 impl DomainBlocker {
     /// 创建空的域名拦截器。
+    #[must_use]
     pub fn new() -> Self {
-        Self { blocked: HashSet::new(), ad_blocking_enabled: false }
+        Self {
+            blocked: HashSet::new(),
+            ad_blocking_enabled: false,
+        }
     }
 
     /// 拦截指定域名及其所有子域名。
@@ -70,6 +74,7 @@ impl DomainBlocker {
     ///
     /// 匹配规则：URL 的域名等于 blocked 集合中的某项，或是其子域名。
     /// 使用 HashSet contains 查找（O(k)，k=域名标签数），避免 O(n) 全量遍历。
+    #[must_use]
     pub fn should_block(&self, url: &str) -> bool {
         let host = match url::Url::parse(url) {
             Ok(u) => u.host_str().unwrap_or("").to_lowercase(),
@@ -79,6 +84,7 @@ impl DomainBlocker {
     }
 
     /// 判断给定域名是否应被拦截（不解析 URL）。
+    #[must_use]
     pub fn should_block_host(&self, host: &str) -> bool {
         self.matches_host(&host.to_lowercase())
     }
@@ -102,16 +108,19 @@ impl DomainBlocker {
     }
 
     /// 被拦截域名数量。
+    #[must_use]
     pub fn len(&self) -> usize {
         self.blocked.len()
     }
 
     /// 拦截列表是否为空。
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.blocked.is_empty()
     }
 
     /// 是否已启用广告拦截。
+    #[must_use]
     pub fn is_ad_blocking_enabled(&self) -> bool {
         self.ad_blocking_enabled
     }
@@ -119,13 +128,17 @@ impl DomainBlocker {
     /// 生成 Chrome CDP Fetch.enable 的 patterns 参数（用于浏览器模式拦截）。
     ///
     /// 返回适用于 `Fetch.enable` 的 urlPattern 列表。
+    #[must_use]
     pub fn to_cdp_patterns(&self) -> Vec<serde_json::Value> {
-        self.blocked.iter().map(|domain| {
-            serde_json::json!({
-                "urlPattern": format!("*://*.{}/*", domain),
-                "requestStage": "Request"
+        self.blocked
+            .iter()
+            .map(|domain| {
+                serde_json::json!({
+                    "urlPattern": format!("*://*.{}/*", domain),
+                    "requestStage": "Request"
+                })
             })
-        }).collect()
+            .collect()
     }
 }
 

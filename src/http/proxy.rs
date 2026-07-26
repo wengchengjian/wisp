@@ -23,7 +23,12 @@ impl fmt::Debug for ParsedProxy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // 脱敏：URL 和 password 可能包含凭据，不直接输出
         let masked_url = if self.username.is_some() {
-            format!("{}://***@{}:{}", self.url.split("://").next().unwrap_or("http"), self.host, self.port)
+            format!(
+                "{}://***@{}:{}",
+                self.url.split("://").next().unwrap_or("http"),
+                self.host,
+                self.port
+            )
         } else {
             self.url.clone()
         };
@@ -44,6 +49,7 @@ impl ParsedProxy {
     /// - `http://host:port`
     /// - `http://user:pass@host:port`
     /// - `socks5://host:port`
+    #[must_use]
     pub fn parse(url: &str) -> Option<Self> {
         let parsed = url::Url::parse(url).ok()?;
         let host = parsed.host_str()?.to_string();
@@ -53,7 +59,7 @@ impl ParsedProxy {
         } else {
             Some(parsed.username().to_string())
         };
-        let password = parsed.password().map(|p| p.to_string());
+        let password = parsed.password().map(std::string::ToString::to_string);
 
         Some(Self {
             url: url.to_string(),
@@ -65,14 +71,19 @@ impl ParsedProxy {
     }
 
     /// Format as a wreq-compatible proxy URL.
+    #[must_use]
     pub fn to_proxy_url(&self) -> String {
         self.url.clone()
     }
 }
 
 /// Convert a list of proxy strings to ParsedProxy list.
+#[must_use]
 pub fn parse_proxies(proxies: &[String]) -> Vec<ParsedProxy> {
-    proxies.iter().filter_map(|p| ParsedProxy::parse(p)).collect()
+    proxies
+        .iter()
+        .filter_map(|p| ParsedProxy::parse(p))
+        .collect()
 }
 
 #[cfg(test)]

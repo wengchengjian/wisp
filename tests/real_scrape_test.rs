@@ -5,11 +5,11 @@
 //! 使用真实网站验证 wisp 的抓取、解析、编码检测等功能。
 //! 代理：127.0.0.1:7897（网络不通时自动使用）。
 
-use std::time::Duration;
-use wisp::http::Client;
-use wisp::crawl::{Engine, SpiderBuilder, Response, Request};
-use wreq_util::Profile;
 use serde_json::Value;
+use std::time::Duration;
+use wisp::crawl::{Engine, Request, Response, SpiderBuilder};
+use wisp::http::Client;
+use wreq_util::Profile;
 
 const PROXY: &str = "http://127.0.0.1:7897";
 
@@ -22,7 +22,11 @@ async fn smart_client() -> Client {
         .build()
         .unwrap();
 
-    if direct.get("https://quotes.toscrape.com/", &[]).await.is_ok() {
+    if direct
+        .get("https://quotes.toscrape.com/", &[])
+        .await
+        .is_ok()
+    {
         return direct;
     }
 
@@ -53,19 +57,25 @@ async fn test_quotes_full_crawl_10_pages() {
         .start_urls(vec!["https://quotes.toscrape.com/"])
         .on("default", |resp| async move {
             let doc = resp.parse();
-            let items: Vec<Value> = doc.select(".quote").iter().map(|q| {
-                serde_json::json!({
-                    "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
-                    "author": q.select_one(".author").map(|n| n.text()).unwrap_or_default(),
-                    "tags": q.select(".tag").text(),
+            let items: Vec<Value> = doc
+                .select(".quote")
+                .iter()
+                .map(|q| {
+                    serde_json::json!({
+                        "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
+                        "author": q.select_one(".author").map(|n| n.text()).unwrap_or_default(),
+                        "tags": q.select(".tag").text(),
+                    })
                 })
-            }).collect();
+                .collect();
 
             // 跟踪分页
-            let follows: Vec<Request> = doc.select_one(".next a")
+            let follows: Vec<Request> = doc
+                .select_one(".next a")
                 .and_then(|a| a.attr("href"))
                 .and_then(|href| resp.follow(&href))
-                .into_iter().collect();
+                .into_iter()
+                .collect();
 
             (items, follows)
         })
@@ -80,7 +90,11 @@ async fn test_quotes_full_crawl_10_pages() {
     let (stats, _items) = engine.run(spider).await.unwrap();
 
     assert_eq!(stats.pages_crawled, 10, "应爬取 10 页");
-    assert!(stats.items_scraped >= 80, "10 页应至少 80 条名言, 实际: {}", stats.items_scraped);
+    assert!(
+        stats.items_scraped >= 80,
+        "10 页应至少 80 条名言, 实际: {}",
+        stats.items_scraped
+    );
     assert_eq!(stats.errors, 0, "不应有错误");
     println!("完整抓取: {}", stats.summary());
 }
@@ -102,16 +116,23 @@ async fn test_books_toscrape_extraction() {
 
     // 提取书籍信息
     let books = doc.select("article.product_pod");
-    assert!(books.len() >= 10, "首页应至少 10 本书, 实际: {}", books.len());
+    assert!(
+        books.len() >= 10,
+        "首页应至少 10 本书, 实际: {}",
+        books.len()
+    );
 
     for book in books.iter() {
-        let title = book.select_one("h3 a")
+        let title = book
+            .select_one("h3 a")
             .and_then(|a| a.attr("title"))
             .unwrap_or_default();
-        let price = book.select_one(".price_color")
+        let price = book
+            .select_one(".price_color")
             .map(|n| n.text())
             .unwrap_or_default();
-        let rating = book.select_one("p.star-rating")
+        let rating = book
+            .select_one("p.star-rating")
             .and_then(|n| n.attr("class"))
             .unwrap_or_default();
 
@@ -144,7 +165,10 @@ async fn test_find_by_text_real_page() {
 
     // 包含匹配
     let einstein_mentions = doc.find_by_text("Einstein", None, false);
-    assert!(!einstein_mentions.is_empty(), "应找到含 Einstein 文本的元素");
+    assert!(
+        !einstein_mentions.is_empty(),
+        "应找到含 Einstein 文本的元素"
+    );
 
     println!("PASS: find_by_text 真实页面测试通过");
 }
@@ -204,14 +228,17 @@ async fn test_response_follow_pagination() {
     );
 
     // 获取下一页链接
-    let next_href = doc.select_one(".next a")
-        .and_then(|a| a.attr("href"));
+    let next_href = doc.select_one(".next a").and_then(|a| a.attr("href"));
 
     if let Some(href) = next_href {
         let follow_req = spider_resp.follow(&href);
         assert!(follow_req.is_some(), "follow() 应返回 Some");
         let req = follow_req.unwrap();
-        assert!(req.url.starts_with("https://quotes.toscrape.com/"), "URL 应为绝对路径: {}", req.url);
+        assert!(
+            req.url.starts_with("https://quotes.toscrape.com/"),
+            "URL 应为绝对路径: {}",
+            req.url
+        );
         println!("PASS: follow() 生成 URL: {}", req.url);
     } else {
         eprintln!("WARN: 未找到下一页链接");
@@ -235,7 +262,10 @@ async fn test_encoding_detection() {
     let text = resp.text().unwrap();
 
     // 验证 UTF-8 内容正确解码（含特殊字符）
-    assert!(text.contains('\u{201C}') || text.contains("\""), "应正确解码 UTF-8 引号");
+    assert!(
+        text.contains('\u{201C}') || text.contains("\""),
+        "应正确解码 UTF-8 引号"
+    );
     assert!(!text.contains('\u{FFFD}'), "不应有 UTF-8 解码失败标记");
 
     println!("PASS: 编码检测正常");
@@ -284,6 +314,10 @@ async fn test_spider_builder_engine_integration() {
     let (stats, _items) = engine.run(spider).await.unwrap();
 
     assert_eq!(stats.pages_crawled, 3, "应爬取 3 页");
-    assert!(stats.items_scraped >= 40, "3 页应至少 40 本书, 实际: {}", stats.items_scraped);
+    assert!(
+        stats.items_scraped >= 40,
+        "3 页应至少 40 本书, 实际: {}",
+        stats.items_scraped
+    );
     println!("Books 抓取: {}", stats.summary());
 }

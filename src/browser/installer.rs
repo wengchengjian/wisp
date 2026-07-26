@@ -96,6 +96,7 @@ fn find_executable_in_dir(version_dir: &Path) -> Result<Option<PathBuf>> {
 }
 
 /// 获取当前平台的标识
+#[must_use]
 pub fn get_platform_id() -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -151,11 +152,13 @@ async fn get_latest_version() -> Result<String> {
         )))
     })?;
 
-    let version = json["channels"]["Stable"]["version"].as_str().ok_or_else(|| {
-        WispError::Browser(BrowserError::LaunchFailed(
-            "无法解析 Chrome for Testing 版本号".into(),
-        ))
-    })?;
+    let version = json["channels"]["Stable"]["version"]
+        .as_str()
+        .ok_or_else(|| {
+            WispError::Browser(BrowserError::LaunchFailed(
+                "无法解析 Chrome for Testing 版本号".into(),
+            ))
+        })?;
 
     Ok(version.to_string())
 }
@@ -173,7 +176,7 @@ async fn download_and_install(version: &str, install_root: &Path) -> Result<Path
     // 下载 zip 文件
     tracing::info!("下载 Chrome for Testing {version} ({platform})");
     let client = wreq::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(std::time::Duration::from_mins(5))
         .build()
         .map_err(|e| {
             WispError::Browser(BrowserError::LaunchFailed(format!(
@@ -181,11 +184,10 @@ async fn download_and_install(version: &str, install_root: &Path) -> Result<Path
             )))
         })?;
 
-    let resp = client.get(&url).send().await.map_err(|e| {
-        WispError::Browser(BrowserError::LaunchFailed(format!(
-            "下载失败: {e}"
-        )))
-    })?;
+    let resp =
+        client.get(&url).send().await.map_err(|e| {
+            WispError::Browser(BrowserError::LaunchFailed(format!("下载失败: {e}")))
+        })?;
 
     if !resp.status().is_success() {
         return Err(WispError::Browser(BrowserError::LaunchFailed(format!(
@@ -204,25 +206,21 @@ async fn download_and_install(version: &str, install_root: &Path) -> Result<Path
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
     let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(&temp_zip)
-        .await
-        .map_err(|e| WispError::Browser(BrowserError::LaunchFailed(format!("创建临时文件失败: {e}"))))?;
+    let mut file = tokio::fs::File::create(&temp_zip).await.map_err(|e| {
+        WispError::Browser(BrowserError::LaunchFailed(format!("创建临时文件失败: {e}")))
+    })?;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
             WispError::Browser(BrowserError::LaunchFailed(format!("下载流读取失败: {e}")))
         })?;
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| {
-                WispError::Browser(BrowserError::LaunchFailed(format!(
-                    "写入临时文件失败: {e}"
-                )))
-            })?;
+        file.write_all(&chunk).await.map_err(|e| {
+            WispError::Browser(BrowserError::LaunchFailed(format!("写入临时文件失败: {e}")))
+        })?;
     }
-    file.flush().await.map_err(|e| {
-        WispError::Browser(BrowserError::LaunchFailed(format!("flush 失败: {e}")))
-    })?;
+    file.flush()
+        .await
+        .map_err(|e| WispError::Browser(BrowserError::LaunchFailed(format!("flush 失败: {e}"))))?;
     drop(file);
 
     // 解压
@@ -262,20 +260,22 @@ fn fix_permissions(dir: &Path) -> Result<()> {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                    .map_err(|e| {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).map_err(
+                    |e| {
                         WispError::Browser(BrowserError::LaunchFailed(format!(
                             "设置目录权限失败: {e}"
                         )))
-                    })?;
+                    },
+                )?;
                 walk(&path)?;
             } else {
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                    .map_err(|e| {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).map_err(
+                    |e| {
                         WispError::Browser(BrowserError::LaunchFailed(format!(
                             "设置文件权限失败: {e}"
                         )))
-                    })?;
+                    },
+                )?;
             }
         }
         Ok(())
@@ -308,27 +308,19 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
 
         if entry.is_dir() {
             std::fs::create_dir_all(&outpath).map_err(|e| {
-                WispError::Browser(BrowserError::LaunchFailed(format!(
-                    "创建目录失败: {e}"
-                )))
+                WispError::Browser(BrowserError::LaunchFailed(format!("创建目录失败: {e}")))
             })?;
         } else {
             if let Some(parent) = outpath.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    WispError::Browser(BrowserError::LaunchFailed(format!(
-                        "创建父目录失败: {e}"
-                    )))
+                    WispError::Browser(BrowserError::LaunchFailed(format!("创建父目录失败: {e}")))
                 })?;
             }
             let mut outfile = std::fs::File::create(&outpath).map_err(|e| {
-                WispError::Browser(BrowserError::LaunchFailed(format!(
-                    "创建文件失败: {e}"
-                )))
+                WispError::Browser(BrowserError::LaunchFailed(format!("创建文件失败: {e}")))
             })?;
             std::io::copy(&mut entry, &mut outfile).map_err(|e| {
-                WispError::Browser(BrowserError::LaunchFailed(format!(
-                    "写入文件失败: {e}"
-                )))
+                WispError::Browser(BrowserError::LaunchFailed(format!("写入文件失败: {e}")))
             })?;
             drop(outfile);
 
@@ -338,7 +330,8 @@ fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
                 let mode = entry.unix_mode();
                 if let Some(mode) = mode {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode));
+                    let _ =
+                        std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode));
                 }
             }
         }
@@ -357,7 +350,10 @@ mod tests {
         assert!(!platform.is_empty(), "平台标识不应为空");
         // 应该是已知平台之一
         assert!(
-            matches!(platform, "linux64" | "mac-x64" | "mac-arm64" | "win64" | "win32"),
+            matches!(
+                platform,
+                "linux64" | "mac-x64" | "mac-arm64" | "win64" | "win32"
+            ),
             "未知平台: {platform}"
         );
     }
@@ -399,10 +395,7 @@ mod tests {
         // 网络测试：可能因网络环境失败
         let result = get_latest_version().await;
         if let Ok(version) = result {
-            assert!(
-                version.contains('.'),
-                "版本号应包含点号: {version}"
-            );
+            assert!(version.contains('.'), "版本号应包含点号: {version}");
             tracing::info!("最新 Chrome for Testing 版本: {version}");
         } else {
             // 网络不可用时跳过

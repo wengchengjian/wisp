@@ -1,10 +1,10 @@
 //! Per-spider 统计计数器。
 
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use dashmap::DashMap;
 
 /// 单个 Spider 的运行时统计。引擎为每个 Spider 持有一个实例。
 pub struct SpiderStats {
@@ -32,6 +32,7 @@ pub struct SpiderStats {
 
 impl SpiderStats {
     /// 创建新的统计实例。
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pages: AtomicUsize::new(0),
@@ -48,15 +49,25 @@ impl SpiderStats {
     }
 
     /// 已爬取页面数。
-    pub fn pages(&self) -> usize { self.pages.load(Ordering::SeqCst) }
+    pub fn pages(&self) -> usize {
+        self.pages.load(Ordering::SeqCst)
+    }
     /// 已爬取 item 数。
-    pub fn items(&self) -> usize { self.items.load(Ordering::SeqCst) }
+    pub fn items(&self) -> usize {
+        self.items.load(Ordering::SeqCst)
+    }
     /// 错误数。
-    pub fn errors(&self) -> usize { self.errors.load(Ordering::SeqCst) }
+    pub fn errors(&self) -> usize {
+        self.errors.load(Ordering::SeqCst)
+    }
     /// 在飞请求数。
-    pub fn in_flight(&self) -> usize { self.in_flight.load(Ordering::SeqCst) }
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
+    }
     /// 已耗时。
-    pub fn elapsed(&self) -> Duration { self.start.elapsed() }
+    pub fn elapsed(&self) -> Duration {
+        self.start.elapsed()
+    }
 
     /// 无锁快照状态码计数为 HashMap<u16, usize>。
     pub fn status_codes_snapshot(&self) -> HashMap<u16, usize> {
@@ -68,5 +79,7 @@ impl SpiderStats {
 }
 
 impl Default for SpiderStats {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

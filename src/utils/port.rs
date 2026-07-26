@@ -5,6 +5,7 @@ use std::net::TcpListener;
 /// 检查端口是否可用（未被占用）。
 ///
 /// 尝试绑定 `0.0.0.0:port`，成功则端口可用。
+#[must_use]
 pub fn is_port_available(port: u16) -> bool {
     TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
@@ -28,19 +29,16 @@ pub fn is_port_available(port: u16) -> bool {
 ///     println!("Using port: {}", port);
 /// }
 /// ```
+#[must_use]
 pub fn find_available_port(start_port: u16, max_attempts: u16) -> Option<u16> {
     let end_port = start_port.saturating_add(max_attempts);
-    for port in start_port..=end_port {
-        if is_port_available(port) {
-            return Some(port);
-        }
-    }
-    None
+    (start_port..=end_port).find(|&port| is_port_available(port))
 }
 
 /// 获取系统分配的随机可用端口。
 ///
 /// 绑定 `0.0.0.0:0` 让操作系统分配一个空闲端口。
+#[must_use]
 pub fn get_random_port() -> Option<u16> {
     TcpListener::bind(("0.0.0.0", 0))
         .ok()

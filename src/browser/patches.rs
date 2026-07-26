@@ -8,9 +8,7 @@ const REMOVE_ARGS: &[&str] = &[
 ];
 
 /// Flags that must be added for stealth.
-const ADD_ARGS: &[&str] = &[
-    "--disable-blink-features=AutomationControlled",
-];
+const ADD_ARGS: &[&str] = &["--disable-blink-features=AutomationControlled"];
 
 /// Patch browser launch arguments to remove detection vectors.
 /// Removes automation-revealing flags and adds stealth flags.
@@ -23,51 +21,8 @@ pub fn patch_launch_args(args: &mut Vec<String>) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_removes_automation_flags() {
-        let mut args = vec![
-            "--enable-automation".to_string(),
-            "--disable-popup-blocking".to_string(),
-            "--disable-component-update".to_string(),
-            "--disable-default-apps".to_string(),
-            "--disable-extensions".to_string(),
-            "--no-first-run".to_string(),
-        ];
-        patch_launch_args(&mut args);
-        assert!(!args.contains(&"--enable-automation".to_string()));
-        assert!(!args.contains(&"--disable-popup-blocking".to_string()));
-        assert!(!args.contains(&"--disable-component-update".to_string()));
-        assert!(!args.contains(&"--disable-default-apps".to_string()));
-        assert!(!args.contains(&"--disable-extensions".to_string()));
-        assert!(args.contains(&"--no-first-run".to_string()));
-    }
-
-    #[test]
-    fn test_adds_stealth_flags() {
-        let mut args = vec!["--no-first-run".to_string()];
-        patch_launch_args(&mut args);
-        assert!(args.contains(&"--disable-blink-features=AutomationControlled".to_string()));
-    }
-
-    #[test]
-    fn test_no_duplicate_stealth_flags() {
-        let mut args = vec![
-            "--disable-blink-features=AutomationControlled".to_string(),
-        ];
-        patch_launch_args(&mut args);
-        let count = args.iter()
-            .filter(|a| *a == "--disable-blink-features=AutomationControlled")
-            .count();
-        assert_eq!(count, 1);
-    }
-}
-
 /// JavaScript that forces all shadow roots to be created as 'open'.
-pub const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
+pub const SHADOW_DOM_PATCH_SCRIPT: &str = r"
 (() => {
     const originalAttachShadow = Element.prototype.attachShadow;
     Element.prototype.attachShadow = function(init) {
@@ -77,7 +32,7 @@ pub const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
         return originalAttachShadow.call(this, init);
     };
 })();
-"#;
+";
 
 // Stealth JavaScript patches.
 //
@@ -92,7 +47,7 @@ pub const SHADOW_DOM_PATCH_SCRIPT: &str = r#"
 /// Stealth script for HEADED mode.
 /// Full navigator property injection (matching banzhu-rs proven approach).
 /// Does NOT override attachShadow (Turnstile detects it).
-pub const HEADED_STEALTH_SCRIPT: &str = r#"
+pub const HEADED_STEALTH_SCRIPT: &str = r"
 (() => {
     const o = (obj, prop, value) => Object.defineProperty(obj, prop, {
         get: () => value, enumerable: true, configurable: true
@@ -111,12 +66,12 @@ pub const HEADED_STEALTH_SCRIPT: &str = r#"
     }
     delete navigator.__proto__.webdriver;
 })();
-"#;
+";
 
 /// Full stealth script for HEADLESS mode.
 /// Includes all patches needed to hide headless-specific signals.
 /// Still does NOT override navigator.webdriver (relies on --disable-blink-features).
-pub const HEADLESS_STEALTH_SCRIPT: &str = r#"
+pub const HEADLESS_STEALTH_SCRIPT: &str = r"
 (() => {
     // chrome.runtime + chrome.app
     if (!window.chrome) { window.chrome = {}; }
@@ -238,7 +193,7 @@ pub const HEADLESS_STEALTH_SCRIPT: &str = r#"
         }
     } catch(e) {}
 })();
-"#;
+";
 /// JavaScript that hides all automation traces from the page.
 /// Injected before any page scripts run via Page.addScriptToEvaluateOnNewDocument.
 ///
@@ -248,7 +203,7 @@ pub const HEADLESS_STEALTH_SCRIPT: &str = r#"
 /// 3. navigator.plugins (non-empty for headed Chrome)
 /// 4. navigator.permissions query fix
 /// 5. navigator.languages fix
-pub const STEALTH_SCRIPT: &str = r#"
+pub const STEALTH_SCRIPT: &str = r"
 (() => {
     // Patch 1: Override navigator.webdriver at PROTOTYPE level
     // This is more robust than instance-level override because detection scripts
@@ -476,4 +431,46 @@ pub const STEALTH_SCRIPT: &str = r#"
         }
     } catch(e) {}
 })();
-"#;
+";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_removes_automation_flags() {
+        let mut args = vec![
+            "--enable-automation".to_string(),
+            "--disable-popup-blocking".to_string(),
+            "--disable-component-update".to_string(),
+            "--disable-default-apps".to_string(),
+            "--disable-extensions".to_string(),
+            "--no-first-run".to_string(),
+        ];
+        patch_launch_args(&mut args);
+        assert!(!args.contains(&"--enable-automation".to_string()));
+        assert!(!args.contains(&"--disable-popup-blocking".to_string()));
+        assert!(!args.contains(&"--disable-component-update".to_string()));
+        assert!(!args.contains(&"--disable-default-apps".to_string()));
+        assert!(!args.contains(&"--disable-extensions".to_string()));
+        assert!(args.contains(&"--no-first-run".to_string()));
+    }
+
+    #[test]
+    fn test_adds_stealth_flags() {
+        let mut args = vec!["--no-first-run".to_string()];
+        patch_launch_args(&mut args);
+        assert!(args.contains(&"--disable-blink-features=AutomationControlled".to_string()));
+    }
+
+    #[test]
+    fn test_no_duplicate_stealth_flags() {
+        let mut args = vec!["--disable-blink-features=AutomationControlled".to_string()];
+        patch_launch_args(&mut args);
+        let count = args
+            .iter()
+            .filter(|a| *a == "--disable-blink-features=AutomationControlled")
+            .count();
+        assert_eq!(count, 1);
+    }
+}

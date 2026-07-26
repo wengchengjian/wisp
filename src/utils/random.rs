@@ -9,7 +9,7 @@ use rand::{RngExt, SeedableRng};
 pub fn rand_suffix() -> String {
     let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
     let val: u64 = rng.random();
-    format!("{:x}", val)
+    format!("{val:x}")
 }
 
 #[cfg(test)]

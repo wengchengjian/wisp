@@ -1,7 +1,7 @@
 //! SQLite schema migrations for the unified KV store.
 
 /// 单表 KV schema。所有命名空间共享一张表。
-pub const SCHEMA_V1: &str = r#"
+pub const SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS kv (
     namespace  TEXT NOT NULL,
     key        TEXT NOT NULL,
@@ -11,4 +11,4 @@ CREATE TABLE IF NOT EXISTS kv (
     PRIMARY KEY (namespace, key)
 );
 CREATE INDEX IF NOT EXISTS idx_kv_namespace ON kv(namespace);
-"#;
+";

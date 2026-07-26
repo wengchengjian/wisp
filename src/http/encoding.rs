@@ -1,8 +1,9 @@
 //! Character encoding detection and decoding.
 
-use encoding_rs::{UTF_8, GBK, BIG5, EUC_JP, EUC_KR, SHIFT_JIS, WINDOWS_1251, WINDOWS_1252};
+use encoding_rs::{BIG5, EUC_JP, EUC_KR, GBK, SHIFT_JIS, UTF_8, WINDOWS_1251, WINDOWS_1252};
 
 /// Decode bytes to string using Content-Type header and BOM detection.
+#[must_use]
 pub fn decode(body: &[u8], content_type: &str) -> String {
     // 1. Check BOM
     if body.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -44,9 +45,14 @@ fn extract_charset(content_type: &str) -> Option<String> {
     if let Some(idx) = lower.find("charset=") {
         let rest = &content_type[idx + 8..];
         // 跳过可能的引号
-        let rest = rest.trim_start_matches(|c| c == '"' || c == '\'');
-        let charset: String = rest.chars().take_while(|c| *c != ';' && *c != ' ' && *c != '"' && *c != '\'').collect();
-        if !charset.is_empty() { return Some(charset); }
+        let rest = rest.trim_start_matches(['"', '\'']);
+        let charset: String = rest
+            .chars()
+            .take_while(|c| *c != ';' && *c != ' ' && *c != '"' && *c != '\'')
+            .collect();
+        if !charset.is_empty() {
+            return Some(charset);
+        }
     }
     None
 }
@@ -56,11 +62,14 @@ fn extract_meta_charset(html: &str) -> Option<String> {
     let lower = html.to_lowercase();
     if let Some(idx) = lower.find("charset=") {
         let rest = &html[idx + 8..];
-        let charset: String = rest.chars()
+        let charset: String = rest
+            .chars()
             .skip_while(|c| *c == '"' || *c == '\'')
             .take_while(|c| *c != '"' && *c != '\'' && *c != '>' && *c != ' ' && *c != ';')
             .collect();
-        if !charset.is_empty() { return Some(charset); }
+        if !charset.is_empty() {
+            return Some(charset);
+        }
     }
     None
 }
@@ -191,7 +200,10 @@ mod tests {
         body.extend_from_slice(&[0xC4, 0xE3, 0xBA, 0xC3]); // "你好" in GBK
         body.extend_from_slice(b"</body></html>");
         let result = decode(&body, "");
-        assert!(result.contains("你好"), "应通过 meta charset 解码 GBK，实际: {}", result);
+        assert!(
+            result.contains("你好"),
+            "应通过 meta charset 解码 GBK，实际: {result}"
+        );
     }
 
     #[test]
@@ -215,15 +227,24 @@ mod tests {
 
     #[test]
     fn test_extract_charset_basic() {
-        assert_eq!(extract_charset("text/html; charset=utf-8"), Some("utf-8".to_string()));
-        assert_eq!(extract_charset("text/html; charset=GBK"), Some("GBK".to_string()));
+        assert_eq!(
+            extract_charset("text/html; charset=utf-8"),
+            Some("utf-8".to_string())
+        );
+        assert_eq!(
+            extract_charset("text/html; charset=GBK"),
+            Some("GBK".to_string())
+        );
         assert_eq!(extract_charset("text/html"), None);
         assert_eq!(extract_charset(""), None);
     }
 
     #[test]
     fn test_extract_charset_with_quotes() {
-        assert_eq!(extract_charset("text/html; charset=\"utf-8\""), Some("utf-8".to_string()));
+        assert_eq!(
+            extract_charset("text/html; charset=\"utf-8\""),
+            Some("utf-8".to_string())
+        );
     }
 
     // === extract_meta_charset 单元测试 ===
@@ -238,7 +259,10 @@ mod tests {
             extract_meta_charset("<meta charset='gbk'>"),
             Some("gbk".to_string())
         );
-        assert_eq!(extract_meta_charset("<html><body>No charset</body></html>"), None);
+        assert_eq!(
+            extract_meta_charset("<html><body>No charset</body></html>"),
+            None
+        );
     }
 
     // === encoding_from_label 单元测试 ===

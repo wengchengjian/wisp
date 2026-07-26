@@ -1,17 +1,18 @@
 //! MCP 工具实现。
 
-use serde_json::{Value, json};
-use std::sync::Arc;
-use crate::error::{WispError, Result, McpError};
-use crate::storage::Store;
-use crate::parser::Node;
-use crate::http::Client;
 use crate::crawl::Engine;
+use crate::error::{McpError, Result, WispError};
+use crate::http::Client;
+use crate::parser::Node;
+use crate::storage::Store;
+use serde_json::{json, Value};
+use std::sync::Arc;
 use wreq_util::Profile;
 
 /// 抓取单个网页，返回 HTML 文本。
 pub async fn fetch_page(args: Value) -> Result<Value> {
-    let url = args.get("url")
+    let url = args
+        .get("url")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'url' argument".into())))?;
 
@@ -39,10 +40,12 @@ pub async fn fetch_page(args: Value) -> Result<Value> {
 
 /// CSS 选择器提取元素。
 pub async fn extract_css(args: Value) -> Result<Value> {
-    let html = args.get("html")
+    let html = args
+        .get("html")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'html' argument".into())))?;
-    let selector = args.get("selector")
+    let selector = args
+        .get("selector")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'selector' argument".into())))?;
     let attr: Option<&str> = args.get("attr").and_then(|v| v.as_str());
@@ -51,14 +54,13 @@ pub async fn extract_css(args: Value) -> Result<Value> {
     let nodes = doc.select(selector);
 
     if let Some(a) = attr {
-        let attrs: Vec<Value> = nodes.iter()
+        let attrs: Vec<Value> = nodes
+            .iter()
             .map(|n| json!(n.attr(a).unwrap_or_default()))
             .collect();
         Ok(json!({"attrs": attrs}))
     } else {
-        let texts: Vec<Value> = nodes.iter()
-            .map(|n| json!(n.text()))
-            .collect();
+        let texts: Vec<Value> = nodes.iter().map(|n| json!(n.text())).collect();
         Ok(json!({"texts": texts}))
     }
 }
@@ -69,14 +71,17 @@ pub async fn extract_css(args: Value) -> Result<Value> {
 /// 不再每次调用新建 Engine。per-call `max_pages` 通过 Spider 的 `until()` 终止策略生效，
 /// Engine 自身的 `max_pages` 作为全局兜底。
 pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
-    let start_urls: Vec<String> = args.get("start_urls")
+    let start_urls: Vec<String> = args
+        .get("start_urls")
         .and_then(|v| v.as_array())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'start_urls' array".into())))?
         .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
         .collect();
     if start_urls.is_empty() {
-        return Err(WispError::Mcp(McpError::General("start_urls 不能为空".into())));
+        return Err(WispError::Mcp(McpError::General(
+            "start_urls 不能为空".into(),
+        )));
     }
     // ND-003-SEC：严格 URL 校验（scheme + host + 拒绝内网 IP），防止 SSRF。
     // 替换原 starts_with 校验，处理大小写/前导空格/内网地址。
@@ -84,17 +89,19 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
         crate::utils::validate_url(url)?;
     }
 
-    let css_selector = args.get("css_selector")
+    let css_selector = args
+        .get("css_selector")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'css_selector'".into())))?
         .to_string();
 
-    let max_pages = args.get("max_pages")
-        .and_then(|v| v.as_u64())
+    let max_pages = args
+        .get("max_pages")
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(100)
         .min(1000) as usize; // 硬上限 1000，防止恶意调用
 
-    use crate::crawl::{Spider, Request, Response, MaxPages, StopCondition};
+    use crate::crawl::{MaxPages, Request, Response, Spider, StopCondition};
     use async_trait::async_trait;
 
     struct SimpleSpider {
@@ -105,13 +112,18 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
 
     #[async_trait]
     impl Spider for SimpleSpider {
-        fn name(&self) -> &str { "mcp_simple" }
-        fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
+        fn name(&self) -> &'static str {
+            "mcp_simple"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            self.start_urls.clone()
+        }
         async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
             let text = resp.text().unwrap_or_default();
             let doc = Node::from_html(&text);
             let nodes = doc.select(&self.css);
-            let items: Vec<Value> = nodes.iter()
+            let items: Vec<Value> = nodes
+                .iter()
                 .map(|n| json!({"text": n.text(), "html": n.html()}))
                 .collect();
             (items, vec![])
@@ -124,10 +136,15 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
 
     // 复用共享 Engine（ND-031-ARCH：obey_robots 在 Engine 上配置），run() 返回 (stats, items)
     // 注意：调用方应确保 Engine 已通过 EngineBuilder::obey_robots(false) 配置
-    let spider = SimpleSpider { css: css_selector, start_urls, max_pages };
+    let spider = SimpleSpider {
+        css: css_selector,
+        start_urls,
+        max_pages,
+    };
     let (_stats, items) = engine.run(spider).await?;
 
-    let jsonl: String = items.iter()
+    let jsonl: String = items
+        .iter()
         .map(|v| serde_json::to_string(v).unwrap_or_default())
         .collect::<Vec<_>>()
         .join("\n");
@@ -140,13 +157,16 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
 
 /// 自适应抓取：CSS 失败时用 SQLite 快照重定位。
 pub async fn adaptive_scrape(args: Value, store: &Arc<dyn Store>) -> Result<Value> {
-    let url = args.get("url")
+    let url = args
+        .get("url")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'url'".into())))?;
-    let selector = args.get("selector")
+    let selector = args
+        .get("selector")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'selector'".into())))?;
-    let key = args.get("key")
+    let key = args
+        .get("key")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'key'".into())))?;
 
@@ -175,23 +195,33 @@ pub async fn adaptive_scrape(args: Value, store: &Arc<dyn Store>) -> Result<Valu
 
 /// 浏览器模式抓取（绕 CF Turnstile）。
 pub async fn stealth_fetch(args: Value) -> Result<Value> {
-    let url = args.get("url")
+    let url = args
+        .get("url")
         .and_then(|v| v.as_str())
         .ok_or_else(|| WispError::Mcp(McpError::General("missing 'url'".into())))?;
-    let headless = args.get("headless")
-        .and_then(|v| v.as_bool())
+    let headless = args
+        .get("headless")
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
-    let human_mode = args.get("human_mode")
-        .and_then(|v| v.as_bool())
+    let human_mode = args
+        .get("human_mode")
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     use crate::{Browser, LaunchOptions};
 
-    let browser = Browser::launch(LaunchOptions { headless, ..Default::default() }).await
-        .map_err(|e| WispError::Mcp(McpError::General(format!("browser launch: {e}"))))?;
-    let mut page = browser.new_page().await
+    let browser = Browser::launch(LaunchOptions {
+        headless,
+        ..Default::default()
+    })
+    .await
+    .map_err(|e| WispError::Mcp(McpError::General(format!("browser launch: {e}"))))?;
+    let mut page = browser
+        .new_page()
+        .await
         .map_err(|e| WispError::Mcp(McpError::General(format!("new page: {e}"))))?;
-    page.goto(url).await
+    page.goto(url)
+        .await
         .map_err(|e| WispError::Mcp(McpError::General(format!("goto: {e}"))))?;
 
     if human_mode {
@@ -199,12 +229,18 @@ pub async fn stealth_fetch(args: Value) -> Result<Value> {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    let html = page.evaluate_as_string("document.documentElement.outerHTML").await
+    let html = page
+        .evaluate_as_string("document.documentElement.outerHTML")
+        .await
         .map_err(|e| WispError::Mcp(McpError::General(format!("get html: {e}"))))?;
-    let title = page.evaluate_as_string("document.title").await
+    let title = page
+        .evaluate_as_string("document.title")
+        .await
         .unwrap_or_default();
 
-    browser.close().await
+    browser
+        .close()
+        .await
         .map_err(|e| WispError::Mcp(McpError::General(format!("close: {e}"))))?;
 
     Ok(json!({

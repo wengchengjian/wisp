@@ -3,11 +3,11 @@
 //! Port of Python Scrapling's adaptive relocation: capture element snapshots,
 //! persist to SQLite, and relocate when site markup changes.
 
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
-use super::Node;
 use super::difflib::SequenceMatcher;
-use crate::storage::{Store, ElementSnapshotRow};
+use super::Node;
+use crate::storage::{ElementSnapshotRow, Store};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Saved element data for adaptive relocation.
 /// Stage 1 uses scraper::ElementRef directly to capture parent/sibling context,
@@ -35,6 +35,7 @@ pub struct ElementSnapshot {
 
 impl ElementSnapshot {
     /// 从 Node 捕获快照（用 Node 导航 API，不再重复解析 outer_html）。
+    #[must_use]
     pub fn capture(node: &Node) -> Self {
         let tag = node.tag();
         let attrs = node.attrs();
@@ -46,7 +47,8 @@ impl ElementSnapshot {
         };
 
         // ancestor_path: 从父节点到根，每级 "tag" 或 "tag.firstclass"，最后 rev() 使根在前
-        let ancestor_path: Vec<String> = node.ancestors()
+        let ancestor_path: Vec<String> = node
+            .ancestors()
             .filter_map(|n| {
                 let t = n.tag();
                 if t.is_empty() {
@@ -56,11 +58,12 @@ impl ElementSnapshot {
                 if class.is_empty() {
                     Some(t)
                 } else {
-                    let first_class: String = class.split_whitespace().next().unwrap_or("").to_string();
+                    let first_class: String =
+                        class.split_whitespace().next().unwrap_or("").to_string();
                     if first_class.is_empty() {
                         Some(t)
                     } else {
-                        Some(format!("{}.{}", t, first_class))
+                        Some(format!("{t}.{first_class}"))
                     }
                 }
             })
@@ -71,12 +74,19 @@ impl ElementSnapshot {
 
         // parent context
         let parent_node = node.parent();
-        let parent_tag = parent_node.as_ref().map(|p| p.tag()).unwrap_or_default();
-        let parent_attrs = parent_node.as_ref().map(|p| p.attrs()).unwrap_or_default();
+        let parent_tag = parent_node
+            .as_ref()
+            .map(super::Node::tag)
+            .unwrap_or_default();
+        let parent_attrs = parent_node
+            .as_ref()
+            .map(super::Node::attrs)
+            .unwrap_or_default();
 
         // sibling_tags: 父节点的所有元素子节点的 tag 列表
-        let sibling_tags: Vec<String> = parent_node.as_ref()
-            .map(|p| p.children().iter().map(|c| c.tag()).collect())
+        let sibling_tags: Vec<String> = parent_node
+            .as_ref()
+            .map(|p| p.children().iter().map(super::Node::tag).collect())
             .unwrap_or_default();
 
         // position_in_parent: 当前节点在父节点子元素中的索引
@@ -84,7 +94,8 @@ impl ElementSnapshot {
         let position_in_parent = match &parent_node {
             Some(p) => {
                 let target_html = node.outer_html();
-                p.children().iter()
+                p.children()
+                    .iter()
                     .position(|c| c.outer_html() == target_html)
                     .unwrap_or(0)
             }
@@ -104,12 +115,14 @@ impl ElementSnapshot {
     }
 
     /// Convert to a storage row for SQLite persistence.
+    #[must_use]
     pub fn to_row(&self, captured_at: i64) -> ElementSnapshotRow {
         ElementSnapshotRow {
             tag: self.tag.clone(),
             attrs: serde_json::to_value(&self.attrs).unwrap_or(serde_json::json!({})),
             text_preview: self.text_preview.clone(),
-            ancestor_path: serde_json::to_value(&self.ancestor_path).unwrap_or(serde_json::json!([])),
+            ancestor_path: serde_json::to_value(&self.ancestor_path)
+                .unwrap_or(serde_json::json!([])),
             sibling_tags: serde_json::to_value(&self.sibling_tags).unwrap_or(serde_json::json!([])),
             position_in_parent: self.position_in_parent as i64,
             parent_tag: self.parent_tag.clone(),
@@ -119,11 +132,15 @@ impl ElementSnapshot {
     }
 
     /// Reconstruct from a storage row.
+    #[must_use]
     pub fn from_row(row: ElementSnapshotRow) -> Self {
         let attrs: HashMap<String, String> = serde_json::from_value(row.attrs).unwrap_or_default();
-        let ancestor_path: Vec<String> = serde_json::from_value(row.ancestor_path).unwrap_or_default();
-        let sibling_tags: Vec<String> = serde_json::from_value(row.sibling_tags).unwrap_or_default();
-        let parent_attrs: HashMap<String, String> = serde_json::from_value(row.parent_attrs).unwrap_or_default();
+        let ancestor_path: Vec<String> =
+            serde_json::from_value(row.ancestor_path).unwrap_or_default();
+        let sibling_tags: Vec<String> =
+            serde_json::from_value(row.sibling_tags).unwrap_or_default();
+        let parent_attrs: HashMap<String, String> =
+            serde_json::from_value(row.parent_attrs).unwrap_or_default();
         Self {
             tag: row.tag,
             attrs,
@@ -149,6 +166,7 @@ pub const DEFAULT_TOLERANCE: f64 = 0.5;
 /// - Ancestor path similarity: 1.5
 /// - Sibling tag sequence similarity: 1.0
 /// - Parent attribute similarity: 0.5
+#[must_use]
 pub fn similarity(node: &Node, saved: &ElementSnapshot) -> f64 {
     let mut score = 0.0_f64;
     let mut max = 0.0_f64;
@@ -163,8 +181,11 @@ pub fn similarity(node: &Node, saved: &ElementSnapshot) -> f64 {
     // 2. Attribute overlap + class value similarity (weight 2.0)
     max += 2.0;
     let node_attrs = node.attrs();
-    let key_overlap = saved.attrs.keys()
-        .filter(|k| node_attrs.contains_key(*k)).count();
+    let key_overlap = saved
+        .attrs
+        .keys()
+        .filter(|k| node_attrs.contains_key(*k))
+        .count();
     let denom = (saved.attrs.len() + node_attrs.len() - key_overlap).max(1);
     let key_jaccard = key_overlap as f64 / denom as f64;
 
@@ -201,25 +222,29 @@ pub fn similarity(node: &Node, saved: &ElementSnapshot) -> f64 {
     // 6. Parent attribute similarity (weight 0.5, key Jaccard)
     max += 0.5;
     let parent_attrs = parent_attrs_of(node);
-    let p_overlap = saved.parent_attrs.keys()
-        .filter(|k| parent_attrs.contains_key(*k)).count();
+    let p_overlap = saved
+        .parent_attrs
+        .keys()
+        .filter(|k| parent_attrs.contains_key(*k))
+        .count();
     let p_denom = (saved.parent_attrs.len() + parent_attrs.len() - p_overlap).max(1);
     let p_jaccard = p_overlap as f64 / p_denom as f64;
     score += 0.5 * p_jaccard;
 
-    if max == 0.0 { 0.0 } else { score / max }
+    if max == 0.0 {
+        0.0
+    } else {
+        score / max
+    }
 }
 
 /// Relocate the best-matching element in `doc` against `saved` snapshot.
 /// Returns None if no candidate reaches `tolerance`.
-pub fn relocate_with_snapshot(
-    doc: &Node,
-    saved: &ElementSnapshot,
-    tolerance: f64,
-) -> Option<Node> {
+#[must_use]
+pub fn relocate_with_snapshot(doc: &Node, saved: &ElementSnapshot, tolerance: f64) -> Option<Node> {
     // Strategy 1: try exact id match first
     if let Some(id) = saved.attrs.get("id") {
-        if let Some(node) = doc.select_one(&format!("#{}", id)) {
+        if let Some(node) = doc.select_one(&format!("#{id}")) {
             if similarity(&node, saved) >= tolerance {
                 return Some(node);
             }
@@ -230,12 +255,12 @@ pub fn relocate_with_snapshot(
     if let Some(class) = saved.attrs.get("class") {
         if let Some(first) = class.split_whitespace().next() {
             if !first.is_empty() {
-                let selector = format!(".{}", first);
+                let selector = format!(".{first}");
                 let candidates = doc.select_all(&selector);
                 let mut best: Option<(f64, Node)> = None;
                 for cand in candidates {
                     let s = similarity(&cand, saved);
-                    if s >= tolerance && best.as_ref().map(|(b, _)| s > *b).unwrap_or(true) {
+                    if s >= tolerance && best.as_ref().is_none_or(|(b, _)| s > *b) {
                         best = Some((s, cand));
                     }
                 }
@@ -251,7 +276,7 @@ pub fn relocate_with_snapshot(
     let mut best: Option<(f64, Node)> = None;
     for cand in candidates {
         let s = similarity(&cand, saved);
-        if s >= tolerance && best.as_ref().map(|(b, _)| s > *b).unwrap_or(true) {
+        if s >= tolerance && best.as_ref().is_none_or(|(b, _)| s > *b) {
             best = Some((s, cand));
         }
     }
@@ -282,13 +307,16 @@ pub async fn css_adaptive(
         if auto_save {
             let snap = ElementSnapshot::capture(&node);
             let now = chrono::Utc::now().timestamp();
-            let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now)).await;
+            let _ = crate::storage::save_element(store, url, key, &snap.to_row(now)).await;
         }
         return Some(node);
     }
 
     // 2. CSS failed - try relocate from saved snapshot
-    let saved_row = crate::storage::load_element(&*store, url, key).await.ok().flatten()?;
+    let saved_row = crate::storage::load_element(store, url, key)
+        .await
+        .ok()
+        .flatten()?;
     let saved = ElementSnapshot::from_row(saved_row);
     let found = relocate_with_snapshot(doc, &saved, tolerance)?;
 
@@ -296,7 +324,7 @@ pub async fn css_adaptive(
     if auto_save {
         let snap = ElementSnapshot::capture(&found);
         let now = chrono::Utc::now().timestamp();
-        let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now)).await;
+        let _ = crate::storage::save_element(store, url, key, &snap.to_row(now)).await;
     }
 
     Some(found)
@@ -329,7 +357,7 @@ fn ancestor_path_of(node: &Node) -> Vec<String> {
                 if first_class.is_empty() {
                     Some(t)
                 } else {
-                    Some(format!("{}.{}", t, first_class))
+                    Some(format!("{t}.{first_class}"))
                 }
             }
         })
@@ -345,7 +373,7 @@ fn sibling_tags_of(node: &Node) -> Vec<String> {
         Some(p) => p,
         None => return Vec::new(),
     };
-    parent.children().iter().map(|c| c.tag()).collect()
+    parent.children().iter().map(super::Node::tag).collect()
 }
 
 fn parent_attrs_of(node: &Node) -> HashMap<String, String> {

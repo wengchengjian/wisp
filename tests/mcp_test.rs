@@ -1,15 +1,19 @@
 //! MCP server 端到端测试：通过 stdin/stdout 验证 JSON-RPC 协议。
 
 use std::io::Write;
-use std::process::Command;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn wisp_bin() -> Option<PathBuf> {
     // CARGO_BIN_EXE_wisp 由 cargo 在编译 integration test 时自动注入，
     // 指向 wisp bin target 的绝对路径（兼容非默认 target 目录）。
     // 若测试未通过 cargo 运行（手动执行二进制），回退到 target/debug/wisp。
     let p = PathBuf::from(env!("CARGO_BIN_EXE_wisp"));
-    if p.exists() { Some(p) } else { None }
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 #[test]
@@ -39,11 +43,13 @@ fn test_mcp_tools_list_via_cli() {
     let output = child.wait_with_output().expect("failed to wait");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let resp: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap_or(""))
-        .expect(&format!("invalid json: {}", stdout));
+        .unwrap_or_else(|_| panic!("invalid json: {}", stdout));
 
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 1);
-    let tools = resp["result"]["tools"].as_array().expect("tools should be array");
+    let tools = resp["result"]["tools"]
+        .as_array()
+        .expect("tools should be array");
     assert_eq!(tools.len(), 5, "应有 5 个工具: {}", stdout);
 }
 
@@ -72,7 +78,7 @@ fn test_mcp_extract_css_via_cli() {
     let output = child.wait_with_output().expect("wait");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let resp: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap_or(""))
-        .expect(&format!("invalid json: {}", stdout));
+        .unwrap_or_else(|_| panic!("invalid json: {}", stdout));
 
     assert_eq!(resp["id"], 2);
     let content = resp["result"]["content"][0]["text"]
@@ -109,7 +115,7 @@ fn test_mcp_unknown_method_returns_error() {
     let output = child.wait_with_output().expect("wait");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let resp: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap_or(""))
-        .expect(&format!("invalid json: {}", stdout));
+        .unwrap_or_else(|_| panic!("invalid json: {}", stdout));
 
     assert_eq!(resp["id"], 3);
     assert!(resp.get("error").is_some(), "应返回 error: {}", stdout);

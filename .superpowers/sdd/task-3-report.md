@@ -1,136 +1,114 @@
-# Task 3 报告 — P1-1b proxy_clients 改用 DashMap
+# Task 3 报告：follow_rx Mutex 移除（H5）
 
-## 步骤执行（按 brief 1-10 顺序）
+## 状态
 
-### Step 1: 写失败测试
-新建 `tests/p1_proxy_clients_test.rs`，内容依据 brief。注意：brief 原始测试代码 import 了
-`std::sync::atomic::{AtomicUsize, Ordering}` 与 `wisp::crawl::Method`，但测试体未使用。
-依据任务验证要求 "check unused-import warnings — fix any"，在写测试阶段即移除这两行未用 import，
-避免引入新警告。最终 import 块为：
-```rust
-use std::sync::Arc;
-use wisp::crawl::engine::fetch_page_inner;
-use wisp::crawl::SpiderRequest;
-use wisp::fetcher::FetchMode;
-use wisp::http::{Client, Config};
-```
+DONE
 
-### Step 2: 验证测试失败
-```
-error[E0603]: function `fetch_page_inner` is private
-   --> tests/p1_proxy_clients_test.rs:5:26
-    |
-  5 | use wisp::crawl::engine::fetch_page_inner;
-    |                          ^^^^^^^^^^^^^^^^ private function
-```
-编译失败，符合预期（`fetch_page_inner` 为 `pub(crate)`，`proxy_clients` 类型为 `Mutex`）。
+## Commit
 
-### Step 3: engine.rs proxy_clients 字段类型
-`src/crawl/engine.rs:66`：
-```rust
-pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
-```
-→
-```rust
-pub proxy_clients: Arc<dashmap::DashMap<String, Arc<Client>>>,
-```
-采用全限定 `dashmap::DashMap`，与同结构体 `domain_sems` 字段（line 64 `Arc<DashMap<...>>`，
-该处用顶部 `use dashmap::DashMap;`）风格略有差异，但与 brief 要求一致且更明确。
+- Hash: `b1d5c88`
+- Message: `perf(runner): follow_rx 移入 unfold 状态移除 Mutex`
+- 父提交: `a50f2f7`（Task 1+2 完成）
 
-### Step 4: fetch_page / fetch_page_inner 签名
-两个函数末参 `proxy_clients: &Mutex<HashMap<String, Arc<Client>>>` →
-`proxy_clients: &dashmap::DashMap<String, Arc<Client>>`；
-`pub(crate) async fn` → `pub async fn`。
+## 测试结果摘要
 
-### Step 5: fetch_page_inner 内部锁逻辑
-将原 `proxy_clients.lock().await` + `contains_key` + `insert` + `get().unwrap().clone()`
-替换为 brief 指定的 DashMap 双路径：
-- 快路径 `proxy_clients.get(proxy)` 返回 `Some(c)` 时 `c.clone()` 释放 Ref
-- 慢路径 `Client::builder()...build()?` 失败向上传播；成功后 `entry(proxy.to_string()).or_insert(arc).clone()`
+- `cargo test --all-features --no-fail-fast`: **426 passed, 5 failed (pre-existing), 64 ignored**
+- 目标测试 `crawl::runner::tests::test_follow_rx_drained_without_mutex`: **PASS**
+- `cargo build --all-features`: **编译通过，无新 warning**
+- `cargo clippy --all-targets --all-features`: engine.rs / runner.rs **无新 warning**
 
-借用法：`get` 的 Ref 在 `if let Some(c) = ...` 分支内通过 `c.clone()` 立即释放，进入 else 分支时
-不再持有该 Ref，`entry()` 调用安全。
+### Pre-existing 失败（与本次改动无关，已通过 stash 验证）
 
-### Step 6: runner.rs 构造
-`src/crawl/runner.rs:225`（原行号）`Arc::new(Mutex::new(HashMap::new()))` →
-`Arc::new(dashmap::DashMap::new())`。
-同时移除文件顶部 `use std::collections::HashMap;`（runner.rs 中 HashMap 仅此一处使用，
-保留会触发 unused-import 警告）。
+1. `auto_mode_test::test_generalize_uuid` — auto 模式 URL 泛化逻辑
+2. `auto_mode_test::test_generalize_mixed` — auto 模式 URL 泛化逻辑
+3. doctest `src/crawl/middleware/mod.rs:11` — `follow_with` 类型不匹配
+4. doctest `src/crawl/builder.rs:7` — `follow_with` 类型不匹配
+5. doctest `src/crawl/builder.rs:27` — `follow_with` 类型不匹配
 
-### Step 7: engine.rs make_ctx 测试辅助
-`src/crawl/engine.rs:800`（原行号）同样替换为 `Arc::new(dashmap::DashMap::new())`。
+## 修改文件列表
 
-### Step 8: mod.rs re-export
-找到 Task 2 添加的 `pub use engine::record_status;`（mod.rs:34），替换为合并形式：
-```rust
-pub use engine::{record_status, fetch_page, fetch_page_inner};
-```
-未重复添加。
+### 1. `src/crawl/engine.rs`
 
-### Step 9: 验证通过
-所有验证命令输出如下（关键行）：
+**关键改动**：
+- 删除 `EngineShared` 结构体的 `follow_rx: Arc<Mutex<UnboundedReceiver<Request>>>` 字段，替换为 3 行注释说明设计原因（Receiver 单消费者无需 Mutex）
+- 删除 4 处测试构造函数中的 `follow_rx` 初始化：
+  - `make_ctx()` — 基础测试 ctx
+  - `make_ctx_with_retry(max_retries)` — 带 RetryMiddleware
+  - `make_ctx_auto(max_retries)` — Auto 模式
+  - `make_ctx_with_tx(max_retries)` — 带事件通道
+- 每处 `let (follow_tx, follow_rx) = mpsc::unbounded_channel::<Request>();` 改为 `let (follow_tx, _) = ...`（测试不需要单独持有 receiver）
+- `use tokio::sync::Mutex;` 保留（rule_engine/items/cf_domain_locks 仍用 Mutex）
 
-**`cargo test --test p1_proxy_clients_test`：**
-```
-running 1 test
-test proxy_clients_caches_client_per_proxy_url ... ok
+### 2. `src/crawl/runner.rs`
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-```
-（对 127.0.0.1:1 的 fetch 必然连接失败，但 Client 已被缓存，断言 `len() == 1` 与
-`contains_key` 通过，PASS 符合预期。）
+**关键改动**：
+- `run_inner` 中 `EngineShared` 构造删除 `follow_rx: Arc::new(Mutex::new(follow_rx)),` 行
+- unfold 状态从 `()` 改为 `(Arc<EngineContext>, UnboundedReceiver<Request>)`
+- unfold 闭包签名从 `move |_|` 改为 `move |(ctx, mut rx)|`
+- 删除外层闭包内 `let ctx = ctx.clone();`（ctx 直接从状态元组取出）
+- 删除 drain 逻辑的 Mutex 包装：
+  ```rust
+  // 旧：
+  let mut rx_guard = ctx.shared.follow_rx.lock().await;
+  while let Ok(req) = rx_guard.try_recv() { ... }
+  drop(rx_guard);
 
-**`cargo build`：**
-```
-warning: `wisp` (lib) generated 6 warnings (run `cargo fix --lib -p wisp` to apply 5 suggestions)
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.28s
-```
-退出码 0，无错误。6 条警告全部为 pre-existing 基线（`src/crawl/mod.rs:38,43,43,44,47`
-与 `src/crawl/middleware/builtin.rs:9`），通过 `git stash` + `cargo build` 对比 HEAD=`324b2a9`
-确认本任务未引入新警告。
+  // 新：
+  while let Ok(req) = rx.try_recv() { ... }
+  ```
+- unfold 返回值从 `Some((fut, ()))` 改为 `Some((fut, (ctx, rx)))`
+- 文件末尾新增 `#[cfg(test)] mod tests`，含 `test_follow_rx_drained_without_mutex` 测试
 
-**`cargo test --lib`：**
-```
-test result: ok. 207 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
-```
+### 3. `src/crawl/builder.rs`
 
-**`cargo clippy --lib 2>&1 | grep "generated.*warnings"`：**
-```
-warning: `wisp` (lib) generated 27 warnings
-```
-≤27 基线，无新增。
+- **无修改**（grep 确认无 follow_rx 引用）
 
-### Step 10: 提交
-```
-git add src/crawl/engine.rs src/crawl/runner.rs src/crawl/mod.rs tests/p1_proxy_clients_test.rs
-git commit -m "perf: proxy_clients 改用 DashMap 消除全局锁 (P1-1b)"
-```
-单提交，4 文件，+46/-13：
-- src/crawl/engine.rs            | 23 +++++++++++++----------
-- src/crawl/mod.rs               |  2 +-
-- src/crawl/runner.rs            |  3 +--
-- tests/p1_proxy_clients_test.rs | 31 +++++++++++++++++++++++++++++++
+## 编译错误与解决方式
 
-## 警告与处理
-- 测试文件初始按 brief 原文含 `AtomicUsize`, `Ordering`, `Method` 三个未用 import，
-  会在 `cargo build` / `cargo test` 触发 unused-import 警告。依据任务验证要求 "fix any"，
-  在 Step 1 即移除这些 import，最终测试文件无任何警告。
-- lib 层 6 条 unused-import 警告为 pre-existing 基线（HEAD=324b2a9 既有），
-  非 Task 3 引入，未在本任务范围内修改。
+### 1. 无编译错误
 
-## 最终 commit SHA
-`82b19bd9b5bfb85ff659869c03e27ec8cb17bb8c`
+本次改动一次编译通过，无错误。核心设计点：
 
-## Self-review
-- ✅ proxy_clients 字段类型：`Arc<dashmap::DashMap<String, Arc<Client>>>`，与 brief 一致。
-- ✅ fetch_page / fetch_page_inner 签名末参为 `&dashmap::DashMap<String, Arc<Client>>`，可见性 `pub`。
-- ✅ 内部逻辑：快路径 `get` → `clone()` 释放 Ref；慢路径 `entry().or_insert(arc).clone()`；
-  `build()?` 错误向上传播；并发安全（多 task 同时 miss 时 `or_insert` 保证仅一个 Client 生效）。
-- ✅ runner.rs / engine.rs make_ctx 两处构造同步更新为 `Arc::new(dashmap::DashMap::new())`。
-- ✅ runner.rs 移除未用 `use std::collections::HashMap;` 避免新警告。
-- ✅ mod.rs：合并为 `pub use engine::{record_status, fetch_page, fetch_page_inner};`，无重复行。
-- ✅ 仅 stage brief 指定的 4 个文件，未用 `git add -A`/`git add .`。
-- ✅ 一行 commit message 与 brief 完全一致。
-- ✅ master 直推，未建分支/worktree。
-- ✅ 未创建文档文件。
-- ✅ 验证全绿：新测试 1 passed；lib 207 passed；build 无错；clippy 27 ≤ 基线。
+- unfold 状态元组 `(ctx, follow_rx)` 中的 `ctx` 是 `Arc<EngineContext>`，从状态取出后通过 `let ctx_c = ctx.clone();` 克隆一份给 fut，原 `ctx` 仍可 move 回状态元组返回
+- `follow_rx` 是 `UnboundedReceiver<Request>`，move 进 unfold 闭包后每次循环通过状态传递，符合单消费者语义
+- 外层 `ctx` 在 unfold 启动后仍要用于 checkpoint/pipeline close/final stats，所以 unfold 内部用的是 `ctx.clone()`（原代码已有此模式）
+
+### 2. Clippy 对比
+
+通过 stash 对比 baseline (a50f2f7) 与 with_changes 的 clippy 输出：
+- baseline: 639 warnings
+- with_changes: 638 warnings（减少 1 个）
+- engine.rs/runner.rs 相关 warning 仅 `this function has too many lines` 行数从 274 减到 270（删除 4 行 follow_rx 代码导致，非新 warning）
+- 删除的 warning 类型：`matching over () is more explicit`（unfold 状态从 `()` 改为元组后自然消失）
+
+## 自审结果
+
+### 设计正确性
+
+1. **Receiver 单消费者语义**：`tokio::sync::mpsc::UnboundedReceiver` 实现是单消费者的，本身串行化所有 `try_recv` 调用，原 `Arc<Mutex<UnboundedReceiver>>` 的 Mutex 是冗余的。本次改动符合语义。
+2. **unfold 状态传递**：每次循环返回 `Some((fut, (ctx, rx)))`，状态 `(ctx, rx)` 被传递给下次循环。fut 内部用 `ctx.clone()` 持有独立的 Arc，与状态中的 ctx 互不影响。
+3. **buffer_unordered 兼容**：unfold 产出 `Stream<Item = Future>`，buffer_unordered 并发执行这些 Future。状态元组在每次循环结束时返回，不参与并发，符合 unfold 语义。
+
+### 性能改进
+
+1. **删除 Mutex 锁争用**：原实现每次 drain follow_rx 都要 `lock().await`，并发请求多时产生锁争用。新实现直接 `try_recv`，无锁。
+2. **删除无谓 await**：原 `lock().await` 是 await point，即使 channel 空也要切换任务。新实现 `try_recv` 是同步非阻塞调用。
+3. **删除 drop(rx_guard)**：原实现显式 drop guard 释放锁，新实现无需此操作。
+
+### 风险评估
+
+1. **并发安全**：UnboundedReceiver 不是 Clone，只能有一个消费者。unfold 是单线程驱动的（每次循环一个状态），不会有并发访问 rx 的情况。✓
+2. **向后兼容**：本次改动不向后兼容（按 CLAUDE.md 要求），EngineShared 字段删除会导致所有使用旧字段的代码编译失败。已确认 engine.rs/runner.rs/builder.rs 中所有引用已清理。✓
+3. **测试覆盖**：新增 `test_follow_rx_drained_without_mutex` 测试验证 try_recv drain 模式可行；全量回归 426 passed（含原有 runner/engine 测试），5 pre-existing failures 与本次改动无关。✓
+
+### 约束符合性
+
+- ✅ 不向后兼容
+- ✅ 现有测试全过（pre-existing 失败除外，已 stash 验证）
+- ✅ 修改文件无新 clippy warning（baseline 639 → with_changes 638）
+- ✅ commit message 中文简短一行
+- ✅ 工作目录 /home/weng/wisp
+
+## Concerns
+
+无。

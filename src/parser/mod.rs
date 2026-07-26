@@ -40,6 +40,7 @@ impl Node {
     }
 
     /// Parse HTML string into a Node (document root).
+    #[must_use]
     pub fn from_html(html: &str) -> Self {
         let doc = Document::from_html(html);
         let root_id = doc.html.root_element().id();
@@ -60,6 +61,7 @@ impl Node {
     ///
     /// 注意：裸文本/注释片段在 `html > *` 不匹配元素时会回退到 root_element
     /// （此时 `tag()` 返回 `<html>`，可能不是用户期望的结果）。
+    #[must_use]
     pub fn from_fragment(html: &str) -> Self {
         let trimmed_lower = html.trim_start().to_lowercase();
         // 提取片段开头的标签名（如 `<td>...` → "td"）
@@ -78,25 +80,23 @@ impl Node {
         if is_table_fragment {
             // 表格元素包裹 <table> 后用 parse_document（html5ever 会规范化表格结构），
             // 然后用原始片段的标签名作为选择器，深入找到实际的片段元素。
-            let wrapped = format!("<table>{}</table>", html);
+            let wrapped = format!("<table>{html}</table>");
             let doc = Document::from_html(&wrapped);
             // 标签名非法时回退到 root_element，不再静默回退到 *（避免匹配全部元素）
-            let selector = match CssSelector::parse(&inner_tag) {
-                Ok(s) => s,
-                Err(_) => {
-                    let root_id = doc.html.root_element().id();
-                    return Self {
-                        doc,
-                        node_id: root_id,
-                    };
-                }
+            let selector = if let Ok(s) = CssSelector::parse(&inner_tag) {
+                s
+            } else {
+                let root_id = doc.html.root_element().id();
+                return Self {
+                    doc,
+                    node_id: root_id,
+                };
             };
             let root_id = doc
                 .html
                 .select(&selector)
                 .next()
-                .map(|el| el.id())
-                .unwrap_or_else(|| doc.html.root_element().id());
+                .map_or_else(|| doc.html.root_element().id(), |el| el.id());
             Self {
                 doc,
                 node_id: root_id,
@@ -110,8 +110,7 @@ impl Node {
                 .html
                 .select(&selector)
                 .next()
-                .map(|el| el.id())
-                .unwrap_or_else(|| doc.html.root_element().id());
+                .map_or_else(|| doc.html.root_element().id(), |el| el.id());
             Self {
                 doc,
                 node_id: root_id,
@@ -123,6 +122,7 @@ impl Node {
     ///
     /// 使用 `element_ref().select()` 实现 scoped 查询，仅搜索当前节点的子孙元素。
     /// 对文档根节点（`from_html` 创建），等价于搜索整个文档。
+    #[must_use]
     pub fn select(&self, css: &str) -> NodeList {
         // 非法选择器返回空（与 select_one 返回 None 一致），不再静默回退到 *
         let Ok(selector) = CssSelector::parse(css) else {
@@ -139,11 +139,13 @@ impl Node {
     }
 
     /// Alias for select() returning Vec<Node> for ergonomic iteration.
+    #[must_use]
     pub fn select_all(&self, css: &str) -> Vec<Node> {
         self.select(css).nodes
     }
 
     /// Select the first element matching a CSS selector, scoped to this node's subtree.
+    #[must_use]
     pub fn select_one(&self, css: &str) -> Option<Node> {
         let selector = CssSelector::parse(css).ok()?;
         self.element_ref()?
@@ -168,6 +170,7 @@ impl Node {
     }
 
     /// Get the text content of the document/element.
+    #[must_use]
     pub fn text(&self) -> String {
         self.element_ref()
             .map(|e| e.text().collect::<String>())
@@ -175,6 +178,7 @@ impl Node {
     }
 
     /// Get the inner HTML.
+    #[must_use]
     pub fn html(&self) -> String {
         self.element_ref()
             .map(|e| e.inner_html())
@@ -182,17 +186,20 @@ impl Node {
     }
 
     /// Get the outer HTML.
+    #[must_use]
     pub fn outer_html(&self) -> String {
         self.element_ref().map(|e| e.html()).unwrap_or_default()
     }
 
     /// Get an attribute value.
+    #[must_use]
     pub fn attr(&self, name: &str) -> Option<String> {
         self.element_ref()
-            .and_then(|e| e.value().attr(name).map(|s| s.to_string()))
+            .and_then(|e| e.value().attr(name).map(std::string::ToString::to_string))
     }
 
     /// Get all attributes as a map.
+    #[must_use]
     pub fn attrs(&self) -> HashMap<String, String> {
         self.element_ref()
             .map(|e| {
@@ -205,6 +212,7 @@ impl Node {
     }
 
     /// Get the tag name of the element.
+    #[must_use]
     pub fn tag(&self) -> String {
         self.element_ref()
             .map(|e| e.value().name().to_string())
@@ -224,6 +232,7 @@ impl Node {
     }
 
     /// Get direct child elements.
+    #[must_use]
     pub fn children(&self) -> NodeList {
         let element = match self.element_ref() {
             Some(e) => e,
@@ -237,6 +246,7 @@ impl Node {
     }
 
     /// Get the next sibling element (skips non-element nodes like text/comment).
+    #[must_use]
     pub fn next_sibling(&self) -> Option<Node> {
         let element = self.element_ref()?;
         let mut sib = element.next_sibling();
@@ -250,6 +260,7 @@ impl Node {
     }
 
     /// Get the previous sibling element (skips non-element nodes like text/comment).
+    #[must_use]
     pub fn prev_sibling(&self) -> Option<Node> {
         let element = self.element_ref()?;
         let mut sib = element.prev_sibling();
@@ -265,6 +276,7 @@ impl Node {
     /// Get the first child element.
     ///
     /// 直接遍历子元素取第一个，避免构造完整 Vec。
+    #[must_use]
     pub fn first_child(&self) -> Option<Node> {
         let element = self.element_ref()?;
         element
@@ -276,6 +288,7 @@ impl Node {
     /// Get the last child element.
     ///
     /// 直接遍历子元素取最后一个，避免构造完整 Vec。
+    #[must_use]
     pub fn last_child(&self) -> Option<Node> {
         let element = self.element_ref()?;
         element
@@ -288,29 +301,30 @@ impl Node {
     ///
     /// 使用 `std::iter::successors` 链式调用 `parent()`，惰性迭代。
     pub fn ancestors(&self) -> impl Iterator<Item = Node> + '_ {
-        std::iter::successors(self.parent(), |node| node.parent())
+        std::iter::successors(self.parent(), Node::parent)
     }
 
     /// Check if element matches a CSS selector.
     ///
     /// 无效选择器返回 `false`（不 panic）。scraper 0.23 中 `Selector` 提供
     /// `matches(&ElementRef) -> bool` 方法（注意：方法在 `Selector` 上，不在 `Element` 上）。
+    #[must_use]
     pub fn matches(&self, css: &str) -> bool {
         let selector = match CssSelector::parse(css) {
             Ok(s) => s,
             Err(_) => return false,
         };
-        self.element_ref()
-            .map(|e| selector.matches(&e))
-            .unwrap_or(false)
+        self.element_ref().is_some_and(|e| selector.matches(&e))
     }
 
     /// Check if text content contains a substring.
+    #[must_use]
     pub fn contains_text(&self, text: &str) -> bool {
         self.text().contains(text)
     }
 
     /// 按文本内容查找元素。
+    #[must_use]
     pub fn find_by_text(&self, text: &str, tag: Option<&str>, exact: bool) -> NodeList {
         let selector_str = match tag {
             Some(t) => t.to_string(),
@@ -333,13 +347,13 @@ impl Node {
     }
 
     /// 查找与当前元素结构相似的同级元素。
+    #[must_use]
     pub fn find_similar(&self) -> NodeList {
         let tag = self.tag();
         let attrs = self.attrs();
         let class_count = attrs
             .get("class")
-            .map(|c| c.split_whitespace().count())
-            .unwrap_or(0);
+            .map_or(0, |c| c.split_whitespace().count());
         let parent = match self.parent() {
             Some(p) => p,
             None => return NodeList { nodes: Vec::new() },
@@ -359,8 +373,7 @@ impl Node {
                 let sib_class_count = sibling
                     .attrs()
                     .get("class")
-                    .map(|c| c.split_whitespace().count())
-                    .unwrap_or(0);
+                    .map_or(0, |c| c.split_whitespace().count());
                 if (sib_class_count as i32 - class_count as i32).abs() > 1 {
                     return false;
                 }
@@ -375,21 +388,25 @@ impl Node {
     }
 
     /// Generate a unique CSS selector for this element.
+    #[must_use]
     pub fn generate_selector(&self) -> String {
         generate::generate_css(self)
     }
 
     /// Get clean text (whitespace collapsed).
+    #[must_use]
     pub fn text_clean(&self) -> String {
         crate::text::Text(&self.text()).clean()
     }
 
     /// Extract regex matches from text.
+    #[must_use]
     pub fn text_regex(&self, pattern: &str) -> Vec<String> {
         crate::text::Text(&self.text()).extract_regex(pattern)
     }
 
     /// Access the underlying scraper::Html for advanced usage.
+    #[must_use]
     pub fn inner(&self) -> &Html {
         &self.doc.html
     }
@@ -403,46 +420,56 @@ pub struct NodeList {
 
 impl NodeList {
     /// 创建节点列表。
+    #[must_use]
     pub fn new(nodes: Vec<Node>) -> Self {
         Self { nodes }
     }
     /// 节点数量。
+    #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
     /// 是否为空。
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
     /// 获取第一个节点。
+    #[must_use]
     pub fn first(&self) -> Option<&Node> {
         self.nodes.first()
     }
     /// 获取最后一个节点。
+    #[must_use]
     pub fn last(&self) -> Option<&Node> {
         self.nodes.last()
     }
     /// 按索引获取节点。
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&Node> {
         self.nodes.get(index)
     }
 
     /// Get text of all nodes.
+    #[must_use]
     pub fn text(&self) -> Vec<String> {
-        self.nodes.iter().map(|n| n.text()).collect()
+        self.nodes.iter().map(Node::text).collect()
     }
 
     /// Get HTML of all nodes.
+    #[must_use]
     pub fn html(&self) -> Vec<String> {
-        self.nodes.iter().map(|n| n.html()).collect()
+        self.nodes.iter().map(Node::html).collect()
     }
 
     /// Get an attribute from all nodes.
+    #[must_use]
     pub fn attr(&self, name: &str) -> Vec<Option<String>> {
         self.nodes.iter().map(|n| n.attr(name)).collect()
     }
 
     /// Select within all nodes (union of results).
+    #[must_use]
     pub fn select(&self, css: &str) -> NodeList {
         let mut results = Vec::new();
         for node in &self.nodes {
@@ -529,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_html() {
-        let node = Node::from_fragment(r#"<div><span>inner</span></div>"#);
+        let node = Node::from_fragment(r"<div><span>inner</span></div>");
         let html = node.html();
         assert!(html.contains("<span>inner</span>"));
     }
@@ -551,9 +578,9 @@ mod tests {
     #[test]
     fn test_node_list_text() {
         let doc = Node::from_html(
-            r#"<html><body>
+            r"<html><body>
             <li>A</li><li>B</li><li>C</li>
-        </body></html>"#,
+        </body></html>",
         );
         let texts = doc.select("li").text();
         assert_eq!(texts, vec!["A", "B", "C"]);
@@ -593,7 +620,7 @@ mod tests {
 
     #[test]
     fn select_invalid_selector_returns_empty_not_all() {
-        let doc = Node::from_html(r#"<html><body><p>a</p><p>b</p></body></html>"#);
+        let doc = Node::from_html(r"<html><body><p>a</p><p>b</p></body></html>");
         // 非法选择器（未闭合括号）
         let nodes = doc.select("p[onclick=alert(");
         assert!(
@@ -605,7 +632,7 @@ mod tests {
 
     #[test]
     fn select_valid_selector_still_works() {
-        let doc = Node::from_html(r#"<html><body><p>a</p><p>b</p></body></html>"#);
+        let doc = Node::from_html(r"<html><body><p>a</p><p>b</p></body></html>");
         let nodes = doc.select("p");
         assert_eq!(nodes.iter().count(), 2);
     }

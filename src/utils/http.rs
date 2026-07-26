@@ -3,6 +3,7 @@
 /// 将 HTTP 状态码映射为标准 reason phrase。
 ///
 /// 覆盖常见状态码，未知状态码返回 `"Unknown"`。
+#[must_use]
 pub fn status_text(code: u16) -> &'static str {
     match code {
         100 => "Continue",

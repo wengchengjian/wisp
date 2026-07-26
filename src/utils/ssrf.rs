@@ -5,7 +5,7 @@
 
 use std::net::IpAddr;
 
-use crate::error::{Result, WispError, McpError};
+use crate::error::{McpError, Result, WispError};
 
 /// 校验 URL 是否安全可访问。
 ///
@@ -26,41 +26,40 @@ use crate::error::{Result, WispError, McpError};
 /// ```
 pub fn validate_url(url: &str) -> Result<()> {
     let trimmed = url.trim();
-    let parsed = url::Url::parse(trimmed).map_err(|e| {
-        WispError::Mcp(McpError::General(format!("URL 解析失败 '{url}': {e}")))
-    })?;
+    let parsed = url::Url::parse(trimmed)
+        .map_err(|e| WispError::Mcp(McpError::General(format!("URL 解析失败 '{url}': {e}"))))?;
 
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(WispError::Mcp(McpError::General(
-            format!("URL scheme 非法，仅支持 http/https，拒绝: {url}")
-        )));
+        return Err(WispError::Mcp(McpError::General(format!(
+            "URL scheme 非法，仅支持 http/https，拒绝: {url}"
+        ))));
     }
 
     // 使用 host() 而非 host_str()，正确处理 IPv6 字面量（host_str 返回 "[::1]" 带括号）
     // 注意：url crate 会将 "https:///path" 解析为 host=Some("")（空 domain），
     // 因此需要额外检查 host_str 是否为空字符串。
     let host_str = parsed.host_str();
-    if host_str.map(|s| s.is_empty()).unwrap_or(true) {
+    if host_str.is_none_or(str::is_empty) {
         return Err(WispError::Mcp(McpError::General(format!(
             "URL 缺少 host: {url}"
         ))));
     }
-    let host = parsed.host().ok_or_else(|| {
-        WispError::Mcp(McpError::General(format!("URL 缺少 host: {url}")))
-    })?;
+    let host = parsed
+        .host()
+        .ok_or_else(|| WispError::Mcp(McpError::General(format!("URL 缺少 host: {url}"))))?;
 
     // 若 host 是 IP，检查是否为内网/保留地址
     if let url::Host::Ipv4(ip) = host {
         if is_private_ip(&IpAddr::V4(ip)) {
-            return Err(WispError::Mcp(McpError::General(
-                format!("URL host 指向内网/保留 IP 地址，拒绝: {url} ({ip})")
-            )));
+            return Err(WispError::Mcp(McpError::General(format!(
+                "URL host 指向内网/保留 IP 地址，拒绝: {url} ({ip})"
+            ))));
         }
     } else if let url::Host::Ipv6(ip) = host {
         if is_private_ip(&IpAddr::V6(ip)) {
-            return Err(WispError::Mcp(McpError::General(
-                format!("URL host 指向内网/保留 IPv6 地址，拒绝: {url} ({ip})")
-            )));
+            return Err(WispError::Mcp(McpError::General(format!(
+                "URL host 指向内网/保留 IPv6 地址，拒绝: {url} ({ip})"
+            ))));
         }
     }
 

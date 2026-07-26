@@ -202,7 +202,7 @@ impl MiddlewareChain {
     ) -> MwAction {
         for mw in &self.middlewares {
             match mw.process_request(req, ctx).await {
-                MwAction::Continue | MwAction::Modified => continue,
+                MwAction::Continue | MwAction::Modified => {}
                 action => return action,
             }
         }
@@ -218,7 +218,7 @@ impl MiddlewareChain {
     ) -> MwAction {
         for mw in &self.middlewares {
             match mw.process_response(resp, ctx).await {
-                MwAction::Continue | MwAction::Modified => continue,
+                MwAction::Continue | MwAction::Modified => {}
                 action => return action,
             }
         }
@@ -234,7 +234,7 @@ impl MiddlewareChain {
     ) -> ErrorAction {
         for mw in &self.middlewares {
             match mw.process_error(req, err, ctx).await {
-                ErrorAction::Propagate => continue,
+                ErrorAction::Propagate => {}
                 action => return action,
             }
         }

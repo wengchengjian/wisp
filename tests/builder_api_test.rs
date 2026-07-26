@@ -1,12 +1,10 @@
 //! Builder pattern API tests (no network required).
 
-use serde_json::{json, Value};
-use wisp::crawl::{
-    Spider, SpiderBuilder, Engine, Request, Response,
-};
-use wisp::crawl::CrawlEvent;
-use wisp::parser::Node;
 use futures::StreamExt;
+use serde_json::{json, Value};
+use wisp::crawl::CrawlEvent;
+use wisp::crawl::{Engine, Request, Response, Spider, SpiderBuilder};
+use wisp::parser::Node;
 
 // === SpiderBuilder tests ===
 
@@ -30,7 +28,10 @@ async fn test_spider_builder_parse_with_follow() {
         .start_urls(vec!["https://example.com/"])
         .on("default", |resp| async move {
             let doc = resp.parse();
-            let items: Vec<Value> = doc.select("h1").text().into_iter()
+            let items: Vec<Value> = doc
+                .select("h1")
+                .text()
+                .into_iter()
                 .map(|t| json!({"title": t}))
                 .collect();
             let follows = vec![Request::get("https://example.com/page2")];
@@ -110,7 +111,9 @@ async fn test_engine_builder_local_server() {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { return };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
             let html = html;
             tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
@@ -151,11 +154,13 @@ async fn test_engine_builder_local_server() {
 
 #[test]
 fn test_find_by_text_exact() {
-    let doc = Node::from_html(r#"<html><body>
+    let doc = Node::from_html(
+        r#"<html><body>
         <div class="item">Apple</div>
         <div class="item">Banana</div>
         <div class="item">Apple Pie</div>
-    </body></html>"#);
+    </body></html>"#,
+    );
 
     let exact = doc.find_by_text("Apple", Some("div"), true);
     assert_eq!(exact.len(), 1);
@@ -166,13 +171,15 @@ fn test_find_by_text_exact() {
 
 #[test]
 fn test_find_similar_basic() {
-    let doc = Node::from_html(r#"<html><body>
+    let doc = Node::from_html(
+        r#"<html><body>
         <ul>
             <li class="item">First</li>
             <li class="item">Second</li>
             <li class="item">Third</li>
         </ul>
-    </body></html>"#);
+    </body></html>"#,
+    );
 
     let first_item = doc.select_one("li.item").unwrap();
     let similar = first_item.find_similar();
@@ -191,7 +198,9 @@ async fn test_stream_with_builder() {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { return };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
             let html = html;
             tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
@@ -228,7 +237,10 @@ async fn test_stream_with_builder() {
     while let Some(event) = stream.next().await {
         match event {
             CrawlEvent::Item(_) => items += 1,
-            CrawlEvent::Done(_) => { done = true; break; }
+            CrawlEvent::Done(_) => {
+                done = true;
+                break;
+            }
             _ => {}
         }
     }

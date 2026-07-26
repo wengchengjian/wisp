@@ -1,184 +1,122 @@
-### Task 3: P1-1b proxy_clients 改用 DashMap
+# Task 3: follow_rx Mutex 移除（H5）
 
 **Files:**
-- Modify: `src/crawl/engine.rs:66,638,668,695-705,800`
-- Modify: `src/crawl/runner.rs:225`
-- Test: `tests/p1_proxy_clients_test.rs`（新建）
+- Modify: `src/crawl/engine.rs`（删除 EngineShared.follow_rx 字段 + 4 处测试构造）
+- Modify: `src/crawl/runner.rs`（unfold 状态持有 Receiver + 主构造）
+- Modify: `src/crawl/builder.rs`（若 EngineShared 构造涉及 follow_rx）
+- Test: `src/crawl/engine.rs`、`src/crawl/runner.rs`
 
 **Interfaces:**
-- Produces: `EngineShared.proxy_clients: Arc<DashMap<String, Arc<Client>>>`（原 `Arc<Mutex<HashMap<...>>>`）。
-- Produces: `fetch_page` / `fetch_page_inner` 参数 `proxy_clients: &DashMap<String, Arc<Client>>`。
+- Consumes: `tokio::sync::mpsc::UnboundedReceiver`
+- Produces: `EngineShared` 不再有 `follow_rx` 字段；`run_inner` 内部 unfold 状态持有 `UnboundedReceiver<Request>`
 
-- [ ] **Step 1: 写失败测试 — 相同 proxy 只构建一次 Client**
+## Steps
 
-新建 `tests/p1_proxy_clients_test.rs`：
+### Step 1: 写失败测试 — follow_rx drain 无 Mutex
+
+在 `src/crawl/runner.rs` 的 `#[cfg(test)]` 模块追加：
 
 ```rust
-//! P1-1b: proxy_clients 用 DashMap，相同 proxy 复用 Client。
-
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use wisp::crawl::engine::fetch_page_inner;
-use wisp::crawl::{SpiderRequest, Method};
-use wisp::fetcher::FetchMode;
-use wisp::http::{Client, Config};
-
 #[tokio::test]
-async fn proxy_clients_caches_client_per_proxy_url() {
-    // proxy_clients 暴露为 DashMap，验证相同 proxy 两次 fetch 只产生一个缓存条目
-    let client = Arc::new(Client::builder().build().unwrap());
-    let config = Config::default();
-    let proxy_clients = Arc::new(dashmap::DashMap::new());
-    let req = SpiderRequest::get("http://127.0.0.1:1/unreachable");
+async fn test_follow_rx_drained_without_mutex() {
+    // 验证 UnboundedReceiver 可直接 try_recv drain，无需 Mutex 包装
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<i32>();
 
-    // 两次 fetch 同一 proxy（连接会失败，但 Client 应被缓存）
-    for _ in 0..2 {
-        let _ = fetch_page_inner(
-            &client,
-            &req,
-            Some("http://127.0.0.1:1"),
-            FetchMode::Http,
-            &config,
-            &proxy_clients,
-        ).await;
+    tx.send(1).unwrap();
+    tx.send(2).unwrap();
+    tx.send(3).unwrap();
+
+    let mut drained = Vec::new();
+    while let Ok(v) = rx.try_recv() {
+        drained.push(v);
     }
 
-    assert_eq!(proxy_clients.len(), 1, "相同 proxy 应只缓存 1 个 Client");
-    assert!(proxy_clients.contains_key("http://127.0.0.1:1"));
+    assert_eq!(drained, vec![1, 2, 3]);
 }
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+### Step 2: 验证测试通过
 
-Run: `cargo test --test p1_proxy_clients_test`
-Expected: 编译失败 — `fetch_page_inner` 不可见（`pub(crate)`），`proxy_clients` 类型不匹配（当前是 `Mutex`）。
+Run: `cargo test --lib crawl::runner::tests::test_follow_rx_drained_without_mutex --all-features`
+Expected: PASS
 
-- [ ] **Step 3: 修改 engine.rs — proxy_clients 字段类型**
+### Step 3: 删除 EngineShared.follow_rx 字段
 
-`src/crawl/engine.rs:66` 当前：
-
-```rust
-    pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
-```
-
-替换为：
+**3a. 删除 EngineShared 结构体的 `follow_rx` 字段**：
 
 ```rust
-    pub proxy_clients: Arc<dashmap::DashMap<String, Arc<Client>>>,
+// 新：
+pub struct EngineShared {
+    pub sched: Arc<Scheduler>,
+    pub follow_tx: UnboundedSender<Request>,
+    // OPTIMIZE: follow_rx 移出 EngineShared，由 runner.rs unfold 状态持有。
+    // 旧实现 Arc<Mutex<UnboundedReceiver>> 串行化所有 follow drain，但 Receiver 是单消费者无需 Mutex。
+    pub proxy_clients: Arc<moka::Cache<...>>,
+    // ... 其余字段不变
+}
 ```
 
-- [ ] **Step 4: 修改 fetch_page 与 fetch_page_inner 签名**
+**3b. 删除所有测试构造中的 follow_rx 初始化**：
 
-`src/crawl/engine.rs:631-638` `fetch_page` 签名末参：
+每处都删除 `follow_rx: Arc::new(Mutex::new(follow_rx)),` 行。同时可删除 `let (follow_tx, follow_rx) = mpsc::unbounded_channel::<Request>();` 中的 `follow_rx` 绑定（若测试不需要单独持有 receiver），改为 `let (follow_tx, _) = mpsc::unbounded_channel::<Request>();`。
+
+### Step 4: 修改 runner.rs — unfold 状态持有 Receiver
+
+**4a. 修改 unfold 状态类型**（包含 `UnboundedReceiver<Request>`）：
 
 ```rust
-    proxy_clients: &Mutex<HashMap<String, Arc<Client>>>,
+let (follow_tx, follow_rx) = mpsc::unbounded_channel::<Request>();
+let shared = EngineShared {
+    follow_tx,
+    // follow_rx 不再放入 EngineShared
+    ...
+};
+
+// OPTIMIZE: follow_rx move 进 unfold 状态，单消费者无需 Mutex。
+let stream = stream::unfold((ctx, follow_rx), move |(mut ctx, mut rx)| async move {
+    // OPTIMIZE: 直接 try_recv drain，无锁争用
+    while let Ok(req) = rx.try_recv() {
+        // 处理 follow 请求（push 到 scheduler）
+        ctx.shared.sched.push(req).await;
+    }
+    // ... 原有 unfold 逻辑
+    Some(((), (ctx, rx)))
+});
 ```
 
-替换为：
+**注意**：需保留原有 follow 请求的处理逻辑（如 scheduler.push、stats 更新等），仅替换 drain 方式。
 
-```rust
-    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
-```
+**4b. 删除 `let mut rx_guard = ctx.shared.follow_rx.lock().await;` 及 `drop(rx_guard);`**
 
-`src/crawl/engine.rs:668` `fetch_page_inner` 签名同参同样替换。
+### Step 5: 检查 builder.rs
 
-并将两个函数从 `pub(crate) async fn` 改为 `pub async fn`（供集成测试访问）。即 `src/crawl/engine.rs:631` 的 `pub(crate) async fn fetch_page(` → `pub async fn fetch_page(`，`src/crawl/engine.rs:661` 的 `pub(crate) async fn fetch_page_inner(` → `pub async fn fetch_page_inner(`。
+Run: `grep -n "follow_rx" /home/weng/wisp/src/crawl/builder.rs`
+若有匹配，按相同模式删除 follow_rx 构造。
 
-- [ ] **Step 5: 修改 fetch_page_inner 内部锁逻辑**
+### Step 6: 验证编译
 
-`src/crawl/engine.rs:693-705` 当前：
+Run: `cargo build --all-features`
+Expected: 编译通过
 
-```rust
-    // Http 模式
-    // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手
-    let proxy_client: Option<Arc<Client>> = if let Some(proxy) = proxy_url {
-        let mut cache = proxy_clients.lock().await;
-        if !cache.contains_key(proxy) {
-            let new_client = Client::builder()
-                .timeout(client.config_ref().timeout)
-                .proxy(proxy)
-                .build()?;
-            cache.insert(proxy.to_string(), Arc::new(new_client));
-        }
-        Some(cache.get(proxy).unwrap().clone())
-    } else {
-        None
-    };
-```
+### Step 7: 验证测试通过
 
-替换为（DashMap：快路径 get，慢路径 build 后 entry::or_insert，错误向上传播）：
+Run: `cargo test --lib crawl::runner::tests::test_follow_rx_drained_without_mutex --all-features`
+Expected: PASS
 
-```rust
-    // Http 模式
-    // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手
-    let proxy_client: Option<Arc<Client>> = if let Some(proxy) = proxy_url {
-        if let Some(c) = proxy_clients.get(proxy) {
-            Some(c.clone())
-        } else {
-            // 慢路径：构建新 client（可能失败，错误向上传播）
-            let new_client = Client::builder()
-                .timeout(client.config_ref().timeout)
-                .proxy(proxy)
-                .build()?;
-            let arc = Arc::new(new_client);
-            // 并发安全：若另一 task 已插入，用已存在的；否则用新建的
-            Some(proxy_clients.entry(proxy.to_string()).or_insert(arc).clone())
-        }
-    } else {
-        None
-    };
-```
+### Step 8: 全量回归
 
-- [ ] **Step 6: 修改 runner.rs 构造**
+Run: `cargo test --all-features`
+Expected: PASS（pre-existing 失败除外）
 
-`src/crawl/runner.rs:225` 当前：
+### Step 9: Clippy 检查
 
-```rust
-                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
-```
+Run: `cargo clippy --all-targets --all-features -- -D warnings`
+Expected: 修改文件无新 warning
 
-替换为：
-
-```rust
-                proxy_clients: Arc::new(dashmap::DashMap::new()),
-```
-
-- [ ] **Step 7: 修改 engine.rs make_ctx 测试辅助**
-
-`src/crawl/engine.rs:800` 当前：
-
-```rust
-                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
-```
-
-替换为：
-
-```rust
-                proxy_clients: Arc::new(dashmap::DashMap::new()),
-```
-
-- [ ] **Step 8: 暴露 fetch_page_inner 供集成测试**
-
-`src/crawl/mod.rs` re-export 区追加（紧接 Task 2 的 `pub use engine::record_status;`）：
-
-```rust
-pub use engine::{record_status, fetch_page, fetch_page_inner};
-```
-
-（若 Task 2 已加 `pub use engine::record_status;`，此处合并为 `pub use engine::{record_status, fetch_page, fetch_page_inner};`。）
-
-- [ ] **Step 9: 运行测试验证通过**
-
-Run: `cargo test --test p1_proxy_clients_test && cargo test --lib && cargo build`
-Expected: 新测试 PASS；lib 206 测试全绿；编译无错。
-
-- [ ] **Step 10: 提交**
+### Step 10: 提交
 
 ```bash
-git add src/crawl/engine.rs src/crawl/runner.rs src/crawl/mod.rs tests/p1_proxy_clients_test.rs
-git commit -m "perf: proxy_clients 改用 DashMap 消除全局锁 (P1-1b)"
+cd /home/weng/wisp
+git add src/crawl/engine.rs src/crawl/runner.rs src/crawl/builder.rs
+git commit -m "perf(runner): follow_rx 移入 unfold 状态移除 Mutex"
 ```
-
----
-

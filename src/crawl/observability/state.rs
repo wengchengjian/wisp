@@ -4,9 +4,9 @@
 //! `CrawlStats.duration: Duration` 不实现 serde，所以 CrawlState 拆开
 //! stats 为标量字段 + duration_ms，避免修改 CrawlStats 的 derive。
 
+use crate::crawl::{CrawlStats, Request};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use serde::{Serialize, Deserialize};
-use crate::crawl::{Request, CrawlStats};
 
 /// Serializable crawl state for checkpoint persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +32,7 @@ pub struct CrawlState {
 
 impl CrawlState {
     /// 创建新的爬取状态。
+    #[must_use]
     pub fn new(spider_name: String) -> Self {
         Self {
             spider_name,
@@ -46,6 +47,7 @@ impl CrawlState {
     }
 
     /// 从 CrawlStats 构造（snapshot 用）。
+    #[must_use]
     pub fn from_stats(spider_name: String, stats: &CrawlStats, pending: Vec<Request>) -> Self {
         Self {
             spider_name,
@@ -60,6 +62,7 @@ impl CrawlState {
     }
 
     /// 还原为 CrawlStats。
+    #[must_use]
     pub fn to_stats(&self) -> CrawlStats {
         CrawlStats {
             items_scraped: self.items_scraped,

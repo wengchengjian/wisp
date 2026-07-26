@@ -1,181 +1,35 @@
-﻿## Commits
-371ee65 feat: SpiderBuilder/ClosureSpider 支持 patterns 与 until
+# Task 6 Review
 
-## Diff
+## Spec compliance
 
-diff --git a/src/crawl/builder.rs b/src/crawl/builder.rs
-index 9118ac8..221be7c 100644
---- a/src/crawl/builder.rs
-+++ b/src/crawl/builder.rs
-@@ -15,20 +15,21 @@
- //!         let doc = resp.parse().unwrap();
- //!         let items = doc.select(".quote").iter().map(|q| {
- //!             serde_json::json!({ "text": q.select_one(".text").map(|n| n.text()) })
- //!         }).collect();
- //!         (items, vec![])
- //!     })
- //!     .build();
- //! ```
- 
- use std::collections::HashSet;
-+use std::sync::Arc;
- use std::time::Duration;
- use async_trait::async_trait;
- use serde_json::Value;
- 
- use super::{Spider, SpiderRequest, SpiderResponse};
- use crate::http;
- 
- /// 瑙ｆ瀽闂寘绫诲瀷锛氭帴鏀?SpiderResponse锛岃繑鍥?(items, follow_requests)銆?
- pub type ParseFn = Box<dyn Fn(SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) + Send + Sync + 'static>;
- 
-@@ -46,40 +47,44 @@ pub struct SpiderBuilder {
-     delay: Duration,
-     obey_robots: bool,
-     max_retries: u32,
-     fetcher_config: http::Config,
-     fetch_mode: crate::fetcher::FetchMode,
-     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
-     auto_exclude: HashSet<String>,
-     parse_fn: Option<ParseFn>,
-     async_parse_fn: Option<AsyncParseFn>,
-     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
-+    patterns: Vec<String>,
-+    until_cond: Arc<dyn super::stop::StopCondition>,
- }
- 
- impl SpiderBuilder {
-     /// 鍒涘缓鏂?SpiderBuilder锛坣ame 涓哄繀濉級銆?
-     pub fn new(name: &str) -> Self {
-         Self {
-             name: name.to_string(),
-             start_urls: Vec::new(),
-             allowed_domains: HashSet::new(),
-             concurrent: 8,
-             delay: Duration::ZERO,
-             obey_robots: true,
-             max_retries: 3,
-             fetcher_config: http::Config::default(),
-             fetch_mode: crate::fetcher::FetchMode::Http,
-             auto_rules: Vec::new(),
-             auto_exclude: HashSet::new(),
-             parse_fn: None,
-             async_parse_fn: None,
-             is_blocked_fn: None,
-+            patterns: Vec::new(),
-+            until_cond: Arc::new(super::NeverStop),
-         }
-     }
- 
-     /// 璁剧疆璧峰 URL 鍒楄〃銆?
-     pub fn start_urls(mut self, urls: Vec<impl Into<String>>) -> Self {
-         self.start_urls = urls.into_iter().map(|u| u.into()).collect();
-         self
-     }
- 
-     /// 璁剧疆鍏佽鐨勫煙鍚嶉泦鍚堛€?
-@@ -167,20 +172,32 @@ impl SpiderBuilder {
- 
-     /// 鑷畾涔夐樆濉炴娴嬮€昏緫銆?
-     pub fn is_blocked<F>(mut self, f: F) -> Self
-     where
-         F: Fn(&SpiderResponse) -> bool + Send + Sync + 'static,
-     {
-         self.is_blocked_fn = Some(Box::new(f));
-         self
-     }
- 
-+    /// 设置 URL 匹配模式（正则字符串数组）。任一匹配即处理该 URL。
-+    pub fn patterns(mut self, patterns: Vec<String>) -> Self {
-+        self.patterns = patterns;
-+        self
-+    }
-+
-+    /// 设置终止条件策略。
-+    pub fn until<C: super::stop::StopCondition + 'static>(mut self, cond: C) -> Self {
-+        self.until_cond = Arc::new(cond);
-+        self
-+    }
-+
-     /// 鏋勫缓 ClosureSpider 瀹炰緥銆?
-     ///
-     /// # Panics
-     /// 鑻ユ湭璁剧疆 parse 鎴?parse_async 闂寘鍒?panic銆?
-     pub fn build(self) -> ClosureSpider {
-         assert!(
-             self.parse_fn.is_some() || self.async_parse_fn.is_some(),
-             "SpiderBuilder: 蹇呴』璁剧疆 parse() 鎴?parse_async() 闂寘"
-         );
-         ClosureSpider {
-@@ -191,40 +208,44 @@ impl SpiderBuilder {
-             delay: self.delay,
-             obey_robots: self.obey_robots,
-             max_retries: self.max_retries,
-             fetcher_config: self.fetcher_config,
-             fetch_mode: self.fetch_mode,
-             auto_rules: self.auto_rules,
-             auto_exclude: self.auto_exclude,
-             parse_fn: self.parse_fn,
-             async_parse_fn: self.async_parse_fn,
-             is_blocked_fn: self.is_blocked_fn,
-+            patterns: self.patterns,
-+            until_cond: self.until_cond,
-         }
-     }
- }
- 
- /// 鐢?SpiderBuilder 鏋勫缓鐨勯棴鍖呭紡 Spider銆?
- pub struct ClosureSpider {
-     name: String,
-     start_urls: Vec<String>,
-     allowed_domains: HashSet<String>,
-     concurrent: u32,
-     delay: Duration,
-     obey_robots: bool,
-     max_retries: u32,
-     fetcher_config: http::Config,
-     fetch_mode: crate::fetcher::FetchMode,
-     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
-     auto_exclude: HashSet<String>,
-     parse_fn: Option<ParseFn>,
-     async_parse_fn: Option<AsyncParseFn>,
-     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
-+    patterns: Vec<String>,
-+    until_cond: Arc<dyn super::stop::StopCondition>,
- }
- 
- #[async_trait]
- impl Spider for ClosureSpider {
-     fn name(&self) -> &str { &self.name }
-     fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
-     fn allowed_domains(&self) -> HashSet<String> { self.allowed_domains.clone() }
-     fn concurrent_requests(&self) -> u32 { self.concurrent }
-     fn download_delay(&self) -> Duration { self.delay }
-     fn obey_robots(&self) -> bool { self.obey_robots }
-@@ -244,20 +265,26 @@ impl Spider for ClosureSpider {
-         }
-     }
- 
-     fn is_blocked(&self, resp: &SpiderResponse) -> bool {
-         if let Some(ref f) = self.is_blocked_fn {
-             f(resp)
-         } else {
-             super::BLOCKED_STATUS_CODES.contains(&resp.status)
-         }
-     }
-+
-+    fn patterns(&self) -> Vec<String> { self.patterns.clone() }
-+
-+    fn until(&self) -> Arc<dyn super::stop::StopCondition> {
-+        Arc::clone(&self.until_cond)
-+    }
- }
- 
- #[cfg(test)]
- mod tests {
-     use super::*;
-     use serde_json::json;
- 
-     #[test]
-     fn test_spider_builder_basic() {
-         let spider = SpiderBuilder::new("test")
+1. ✅ `EventListener` 类型已改为 `Arc<dyn Fn(Arc<EngineEvent>) -> BoxFuture<'static, ()> + Send + Sync>`（events.rs:102）。
+2. ✅ `EventBus::emit` 在 line 131 `let event = Arc::new(event);`，line 135 `listener(Arc::clone(&event))`，无 `event.clone()`，符合「1 次 Arc 分配 + N-1 次 Arc::clone」要求。
+3. ✅ `logging_listener` 闭包签名改为 `|event: Arc<EngineEvent>|`（line 159），`match &*event`（line 161）。原 `match &event`（`&EngineEvent`）与新 `match &*event`（同样 `&EngineEvent`）匹配语义等价。
+4. ✅ `metrics_listener` 闭包签名改为 `|event: Arc<EngineEvent>|`（line 189），`match &*event`（line 192），字段 `*from_cache`（line 201，`&bool` → `bool`）、`*elapsed_ms`（line 208，`&u64` → `u64`）均正确解引用。
+5. ✅ 测试闭包签名更新：line 282（`test_event_bus_with_listener`）、line 350（`test_event_bus_concurrent_listeners`）均改为 `|_event: Arc<EngineEvent>|`。
+6. ✅ 仅 `src/crawl/observability/events.rs` 被修改（diff 统计 `1 file changed, 14 insertions(+), 13 deletions(-)`）。全局 Grep 确认 `EventListener`/`logging_listener`/`metrics_listener` 在源码中仅本文件引用，无外部 caller 受影响。
+
+## Code quality
+
+7. ✅ 无向后兼容 shim，无多余抽象。直接修改类型签名，符合「从不向后兼容」。
+8. ✅ 无 `unwrap()` 引入，本任务也不需要 `expect`。
+9. ✅ 中文注释保持，OPTIMIZE 标记已更新（line 124-126），合并说明 Arc 共享 + FuturesUnordered 并发 await，准确反映当前实现。Task 5 的并发说明保留（避免丢失历史上下文）。
+10. ✅ `Arc` 已在原文件 line 19 导入（`use std::sync::Arc;`），diff 未添加重复 import。
+
+## Test quality
+
+11. ✅ 测试逻辑保持：`test_event_bus_with_listener` 仍验证计数器递增到 2；`test_event_bus_concurrent_listeners` 仍验证计数器=3 + 并发延迟 < 80ms；`test_metrics_listener` 仍验证 responses/items/avg_response_ms。断言未被弱化。
+12. ✅ 无测试被删除或弱化，仅闭包签名跟随类型变更更新。
+13. ⚠️ 报告声称 435 passed / 0 failed / 64 ignored，符合 brief 预期「约 439 个」范围（435 与 439 差 4，brief 用「约」表述，无 failed）。无法从 diff 直接验证，但报告数据自洽。
+
+## Verdict
+APPROVED
+
+## Findings (if any)
+无。
+
+## 备注
+- 实现完全符合 brief 步骤 1-5，无遗漏、无多余改动。
+- `match &*event` 选择优于 `event.as_ref()`，与 brief 示例一致，风格统一。
+- OPTIMIZE 注释更新合理：既保留 Task 5 的并发说明（仍准确），又补充 Task 6 的 Arc 共享说明，无信息丢失。
+- 提交信息 `perf(events): EventListener 改 Arc<EngineEvent> 共享事件无 clone` 符合项目规范（中文、perf 类型）。

@@ -6,8 +6,8 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use wisp::crawl::{Engine, Spider, Request, Response};
-use wisp::storage::{MemoryStore, Store};
+use wisp::crawl::{Engine, Request, Response, Spider};
+use wisp::storage::MemoryStore;
 
 struct CacheSpider;
 #[async_trait]

@@ -82,6 +82,7 @@ pub type Handler =
 ///
 /// ND-031-ARCH 修复：引擎配置（fetch_mode/obey_robots/max_retries/download_delay/auto_rules）
 /// 已从 SpiderBuilder 移除，改用 `EngineBuilder` 配置。SpiderBuilder 只保留业务逻辑配置。
+#[allow(clippy::type_complexity)]
 pub struct SpiderBuilder {
     name: String,
     start_urls: Vec<String>,
@@ -95,6 +96,7 @@ pub struct SpiderBuilder {
 
 impl SpiderBuilder {
     /// 创建新 SpiderBuilder（name 为必填）。
+    #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -109,14 +111,16 @@ impl SpiderBuilder {
     }
 
     /// 设置起始 URL 列表。
+    #[must_use]
     pub fn start_urls(mut self, urls: Vec<impl Into<String>>) -> Self {
-        self.start_urls = urls.into_iter().map(|u| u.into()).collect();
+        self.start_urls = urls.into_iter().map(std::convert::Into::into).collect();
         self
     }
 
     /// 设置允许的域名集合。
+    #[must_use]
     pub fn allowed_domains(mut self, domains: Vec<impl Into<String>>) -> Self {
-        self.allowed_domains = domains.into_iter().map(|d| d.into()).collect();
+        self.allowed_domains = domains.into_iter().map(std::convert::Into::into).collect();
         self
     }
 
@@ -158,6 +162,7 @@ impl SpiderBuilder {
     ///     })
     ///     .build();
     /// ```
+    #[must_use]
     pub fn sitemap(name: &str, sitemap_urls: Vec<String>, content_label: &str) -> Self {
         let label = content_label.to_string();
         SpiderBuilder::new(name)
@@ -199,6 +204,7 @@ impl SpiderBuilder {
     ///
     /// # Panics
     /// 若未注册任何 handler（`on()` 未调用）则 panic。
+    #[must_use]
     pub fn build(self) -> ClosureSpider {
         assert!(
             !self.handlers.is_empty(),
@@ -223,6 +229,7 @@ impl SpiderBuilder {
 /// 由 SpiderBuilder 构建的闭包式 Spider。
 ///
 /// ND-031-ARCH：引擎配置字段已移除，ClosureSpider 只持有业务逻辑字段。
+#[allow(clippy::type_complexity)]
 pub struct ClosureSpider {
     name: String,
     start_urls: Vec<String>,

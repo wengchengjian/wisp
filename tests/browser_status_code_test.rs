@@ -12,8 +12,8 @@
 
 use std::path::PathBuf;
 use std::time::Duration;
-use wisp::{FetchClient, FetchClientConfig};
 use wisp::fetcher::{Method, Request};
+use wisp::{FetchClient, FetchClientConfig};
 
 async fn spawn_status_server(status: u16, body: &'static str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,7 +22,9 @@ async fn spawn_status_server(status: u16, body: &'static str) -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { return };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
             tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
                 let _ = socket.read(&mut buf).await;
@@ -110,7 +112,10 @@ async fn browser_fetch_captures_404_status_not_fallback_to_200() {
     }
     // 修复前：fallback 会返回 200（因为 title 不含 "404 not found"）
     // 修复后：应返回真实 404
-    assert_eq!(status, 404, "404 page should be captured as 404, not fallback to 200");
+    assert_eq!(
+        status, 404,
+        "404 page should be captured as 404, not fallback to 200"
+    );
 }
 
 #[tokio::test]
@@ -131,5 +136,8 @@ async fn browser_fetch_captures_500_status_not_fallback_to_200() {
     }
     // 修复前：500 会被 fallback 到 200（title 不含关键字）
     // 修复后：应返回真实 500
-    assert_eq!(status, 500, "500 page should be captured as 500, not fallback to 200");
+    assert_eq!(
+        status, 500,
+        "500 page should be captured as 500, not fallback to 200"
+    );
 }

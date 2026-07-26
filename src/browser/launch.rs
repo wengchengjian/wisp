@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::config::LaunchOptions;
-use crate::error::{WispError, Result, BrowserError};
+use crate::error::{BrowserError, Result, WispError};
 
 /// Resolve the browser executable path from options.
 ///
@@ -25,7 +25,13 @@ pub async fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
         Some("chrome") => vec!["chrome", "google-chrome", "google-chrome-stable"],
         Some("msedge") => vec!["msedge", "microsoft-edge"],
         Some("chromium") => vec!["chromium", "chromium-browser"],
-        None => vec!["chrome", "google-chrome", "chromium", "chromium-browser", "msedge"],
+        None => vec![
+            "chrome",
+            "google-chrome",
+            "chromium",
+            "chromium-browser",
+            "msedge",
+        ],
         Some(other) => vec![other],
     };
 
@@ -58,6 +64,7 @@ pub async fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
 
 /// Build default Chrome launch arguments from options, with patches applied.
 /// These args include the "--" prefix (for testing/verification).
+#[must_use]
 pub fn build_default_args(options: &LaunchOptions) -> Vec<String> {
     build_stealth_args(options)
         .iter()
@@ -180,8 +187,11 @@ mod tests {
         };
         let args = build_stealth_args(&opts);
         // proxy-server 仍设置
-        assert!(args.iter().any(|a| a == "proxy-server=http://127.0.0.1:8080"),
-            "proxy-server 应设置");
+        assert!(
+            args.iter()
+                .any(|a| a == "proxy-server=http://127.0.0.1:8080"),
+            "proxy-server 应设置"
+        );
     }
 
     #[test]

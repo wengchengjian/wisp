@@ -45,10 +45,8 @@ impl CfSessionCache {
     /// 创建缓存：从文件加载未过期条目到 moka。
     pub fn new(data_dir: &Path, ttl: Duration) -> Self {
         let file_path = data_dir.join("cf_sessions.json");
-        let mem: Cache<String, CfSession> = Cache::builder()
-            .time_to_live(ttl)
-            .max_capacity(64)
-            .build();
+        let mem: Cache<String, CfSession> =
+            Cache::builder().time_to_live(ttl).max_capacity(64).build();
 
         let cache = Self { mem, file_path };
         cache.load_from_file(ttl);
@@ -101,7 +99,7 @@ impl CfSessionCache {
         }
         let mut map = HashMap::new();
         // moka iter 返回当前未过期的条目
-        for (domain, session) in self.mem.iter() {
+        for (domain, session) in &self.mem {
             map.insert(domain.to_string(), session.clone());
         }
         match serde_json::to_string_pretty(&map) {
@@ -183,7 +181,7 @@ impl Default for FetchClientConfig {
             max_response_size: 64 * 1024 * 1024, // 64MB
             danger_accept_invalid_certs: false,
             turnstile: crate::stealth::TurnstileConfig::default(),
-            cf_cookie_ttl: Duration::from_secs(1800),
+            cf_cookie_ttl: Duration::from_mins(30),
             cf_data_dir: PathBuf::from("wisp-data"),
         }
     }
@@ -207,7 +205,10 @@ impl FetchClient {
     pub fn new(config: FetchClientConfig) -> Result<Self> {
         let http = Arc::new(Self::build_http_client(&config)?);
         let browser_pool = Self::build_browser_pool(&config);
-        let cf_cache = Arc::new(CfSessionCache::new(&config.cf_data_dir, config.cf_cookie_ttl));
+        let cf_cache = Arc::new(CfSessionCache::new(
+            &config.cf_data_dir,
+            config.cf_cookie_ttl,
+        ));
         Ok(Self {
             http,
             browser_pool,
@@ -217,21 +218,25 @@ impl FetchClient {
     }
 
     /// 获取 HTTP 客户端引用。
+    #[must_use]
     pub fn http(&self) -> &Client {
         &self.http
     }
 
     /// 获取 HTTP 客户端的 Arc 克隆（用于需要独立持有 Client 的中间件，如 RobotsMiddleware）。
+    #[must_use]
     pub fn http_arc(&self) -> Arc<Client> {
         Arc::clone(&self.http)
     }
 
     /// 获取浏览器池引用（若有）。
+    #[must_use]
     pub fn browser_pool(&self) -> Option<&Arc<BrowserPool>> {
         self.browser_pool.as_ref()
     }
 
     /// 获取配置引用。
+    #[must_use]
     pub fn config(&self) -> &FetchClientConfig {
         &self.config
     }
@@ -240,9 +245,11 @@ impl FetchClient {
     pub async fn has_cf_cookies(&self, url: &str) -> bool {
         let domain = url::Url::parse(url)
             .ok()
-            .and_then(|u| u.host_str().map(|s| s.to_string()));
+            .and_then(|u| u.host_str().map(std::string::ToString::to_string));
         if let Some(domain) = domain {
-            self.cf_cache.get(&domain).map(|s| !s.cookies.is_empty()).unwrap_or(false)
+            self.cf_cache
+                .get(&domain)
+                .is_some_and(|s| !s.cookies.is_empty())
         } else {
             false
         }
@@ -252,24 +259,32 @@ impl FetchClient {
     pub async fn get_cf_cookie_header(&self, url: &str) -> Option<String> {
         let domain = url::Url::parse(url)
             .ok()
-            .and_then(|u| u.host_str().map(|s| s.to_string()))?;
+            .and_then(|u| u.host_str().map(std::string::ToString::to_string))?;
         let session = self.cf_cache.get(&domain)?;
         if session.cookies.is_empty() {
             return None;
         }
-        let pairs: Vec<String> = session.cookies.iter().filter_map(|c| {
-            let name = c.get("name")?.as_str()?;
-            let value = c.get("value")?.as_str()?;
-            Some(format!("{}={}", name, value))
-        }).collect();
-        if pairs.is_empty() { None } else { Some(pairs.join("; ")) }
+        let pairs: Vec<String> = session
+            .cookies
+            .iter()
+            .filter_map(|c| {
+                let name = c.get("name")?.as_str()?;
+                let value = c.get("value")?.as_str()?;
+                Some(format!("{name}={value}"))
+            })
+            .collect();
+        if pairs.is_empty() {
+            None
+        } else {
+            Some(pairs.join("; "))
+        }
     }
 
     /// 获取指定 URL 域名的浏览器实际 UA（CF 挑战解决时捕获）。
     pub async fn get_cf_ua(&self, url: &str) -> Option<String> {
         let domain = url::Url::parse(url)
             .ok()
-            .and_then(|u| u.host_str().map(|s| s.to_string()))?;
+            .and_then(|u| u.host_str().map(std::string::ToString::to_string))?;
         self.cf_cache.get(&domain).map(|s| s.ua.clone())
     }
 
@@ -292,7 +307,7 @@ impl FetchClient {
         // 总超时：防止 CF 挑战页面卡住整个流程（导航+挑战+提取各阶段都有单独超时，
         // 但极端情况下可能累加超过预期，这里加一个 120s 硬上限）
         let work = self.do_browser_work_inner(handle.page_mut(), req, solve_cf);
-        let result = tokio::time::timeout(Duration::from_secs(120), work)
+        let result = tokio::time::timeout(Duration::from_mins(2), work)
             .await
             .map_err(|_| {
                 WispError::Timeout(format!(
@@ -335,7 +350,7 @@ impl FetchClient {
         // 注入之前保存的 CF cookie（复用 CF 挑战结果，避免每次请求都重新挑战）
         let domain = url::Url::parse(&req.url)
             .ok()
-            .and_then(|u| u.host_str().map(|s| s.to_string()));
+            .and_then(|u| u.host_str().map(std::string::ToString::to_string));
         if let Some(ref domain) = domain {
             if let Some(session) = self.cf_cache.get(domain) {
                 for cookie in &session.cookies {
@@ -348,11 +363,11 @@ impl FetchClient {
                     let path = cookie.get("path").and_then(|p| p.as_str()).unwrap_or("/");
                     let secure = cookie
                         .get("secure")
-                        .and_then(|s| s.as_bool())
+                        .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
                     let http_only = cookie
                         .get("httpOnly")
-                        .and_then(|h| h.as_bool())
+                        .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
                     let same_site = cookie
                         .get("sameSite")
@@ -405,7 +420,9 @@ impl FetchClient {
             let t_cf = std::time::Instant::now();
             // 检测并解决 Cloudflare 挑战
             let solver = ChallengeSolver::new(page);
-            solver.solve_with_config(self.config.challenge_timeout, &self.config.turnstile).await?;
+            solver
+                .solve_with_config(self.config.challenge_timeout, &self.config.turnstile)
+                .await?;
             tracing::trace!(elapsed_ms = t_cf.elapsed().as_millis(), url = %url, "solve_cf timing");
             // CF 挑战解决后，浏览器显示的是真实页面内容。
             // nav_status 捕获的是首次 goto 时的状态码（通常是 403/503 挑战页），
@@ -449,11 +466,14 @@ impl FetchClient {
                             .cloned()
                             .collect();
                         if !cookies_to_save.is_empty() {
-                            self.cf_cache.insert(domain.clone(), CfSession {
-                                cookies: cookies_to_save.clone(),
-                                ua: ua_str,
-                                saved_at: chrono::Utc::now().timestamp(),
-                            });
+                            self.cf_cache.insert(
+                                domain.clone(),
+                                CfSession {
+                                    cookies: cookies_to_save.clone(),
+                                    ua: ua_str,
+                                    saved_at: chrono::Utc::now().timestamp(),
+                                },
+                            );
                             tracing::info!(
                                 "BrowserWork[{solve_label}]: {url} 保存 {} 个 CF cookie",
                                 cookies_to_save.len()
@@ -539,7 +559,7 @@ impl FetchClient {
                         .params
                         .get("response")
                         .and_then(|r| r.get("status"))
-                        .and_then(|s| s.as_u64())
+                        .and_then(serde_json::Value::as_u64)
                         .map(|s| s as u16)
                         .ok_or_else(|| {
                             WispError::Browser(BrowserError::CdpConnection(
@@ -549,7 +569,6 @@ impl FetchClient {
                 }
                 Ok(Err(RecvError::Lagged(n))) => {
                     tracing::warn!("event subscriber lagged by {n} events, continuing recv");
-                    continue;
                 }
                 Ok(Err(RecvError::Closed)) => {
                     return Err(WispError::Browser(BrowserError::CdpConnection(
@@ -669,7 +688,7 @@ mod tests {
         };
         let client = FetchClient::new(config).expect("build client");
         assert!(client.browser_pool().is_none());
-        assert!(client.http().config_ref().timeout == Duration::from_secs(30));
+        assert_eq!(client.http().config_ref().timeout, Duration::from_secs(30));
     }
 
     #[test]

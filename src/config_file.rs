@@ -131,19 +131,19 @@ impl Default for StealthConfig {
 
 impl WispConfig {
     /// 从指定路径加载配置文件。文件不存在则返回全默认值。
+    #[must_use]
     pub fn load(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(content) => {
-                toml::from_str(&content).unwrap_or_else(|e| {
-                    tracing::warn!("wisp.toml 解析失败，使用默认配置: {}", e);
-                    Self::default()
-                })
-            }
+            Ok(content) => toml::from_str(&content).unwrap_or_else(|e| {
+                tracing::warn!("wisp.toml 解析失败，使用默认配置: {}", e);
+                Self::default()
+            }),
             Err(_) => Self::default(),
         }
     }
 
     /// 尝试从当前目录加载 `wisp.toml`。
+    #[must_use]
     pub fn load_default() -> Self {
         Self::load(Path::new("wisp.toml"))
     }
@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(config.engine.max_refetch_rounds, 5);
         assert_eq!(config.engine.timeout_secs, 30);
         assert!(config.proxy.pool.is_empty());
-        assert_eq!(config.stealth.headless, true);
+        assert!(config.stealth.headless);
     }
 
     #[test]
@@ -184,8 +184,8 @@ headless = false
         assert_eq!(config.engine.max_refetch_rounds, 5); // 默认值
         assert_eq!(config.proxy.pool, vec!["http://127.0.0.1:7897"]);
         assert_eq!(config.proxy.strategy, RotationStrategy::Random);
-        assert_eq!(config.stealth.headless, false);
-        assert_eq!(config.stealth.human_mode, true); // 默认值
+        assert!(!config.stealth.headless);
+        assert!(config.stealth.human_mode); // 默认值
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! 且统一的解析 API（css/find_by_text/follow）正常工作。
 
 use std::time::Duration;
-use wisp::{Fetcher, FetchMode, Response, Request};
+use wisp::{FetchMode, Fetcher, Request, Response};
 
 // === 单元测试：Response 统一 API ===
 
@@ -21,10 +21,12 @@ fn html_response(html: &str) -> Response {
 
 #[test]
 fn test_unified_response_css() {
-    let resp = html_response(r#"
+    let resp = html_response(
+        r#"
         <div class="quote"><span class="text">"Life is what happens..."</span><small class="author">John Lennon</small></div>
         <div class="quote"><span class="text">"The world as we have created it..."</span><small class="author">Albert Einstein</small></div>
-    "#);
+    "#,
+    );
 
     // Response::parse() 只允许调用一次，在一次 parse() 返回的 Node 上执行多次查询
     let node = resp.parse();
@@ -38,11 +40,13 @@ fn test_unified_response_css() {
 
 #[test]
 fn test_unified_response_find_by_text() {
-    let resp = html_response(r#"
+    let resp = html_response(
+        r#"
         <small class="author">Albert Einstein</small>
         <small class="author">John Lennon</small>
         <small class="author">Einstein Smith</small>
-    "#);
+    "#,
+    );
 
     let node = resp.parse();
     // 精确匹配
@@ -95,12 +99,14 @@ fn test_unified_response_json() {
 
 #[test]
 fn test_unified_response_parse_and_navigate() {
-    let resp = html_response(r#"
+    let resp = html_response(
+        r#"
         <div class="quote">
             <span class="text">"Quote 1"</span>
             <small class="author">Author 1</small>
         </div>
-    "#);
+    "#,
+    );
 
     // parse() 返回 Node，也可以继续导航
     let doc = resp.parse();
@@ -152,7 +158,10 @@ fn test_fetcher_builder_full_config() {
     assert_eq!(config.wait_for.as_deref(), Some(".content"));
     assert_eq!(config.extra_wait_ms, 1000);
     assert!(config.domain_blocker.is_some());
-    assert_eq!(config.dns_over_https.as_deref(), Some("https://1.1.1.1/dns-query"));
+    assert_eq!(
+        config.dns_over_https.as_deref(),
+        Some("https://1.1.1.1/dns-query")
+    );
 }
 
 // === 真实网络测试（需要网络）===

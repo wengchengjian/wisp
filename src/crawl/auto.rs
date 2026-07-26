@@ -20,10 +20,9 @@ use std::collections::HashMap;
 /// - `/page/2` → `/page/\d+`
 /// - `/about` → `/about`（不变）
 /// - `/shuku/0-lastupdate-0-1.html` → `/shuku/\d+-lastupdate-\d+-\d+\.html`
+#[must_use]
 pub fn generalize_url(url: &str) -> String {
-    let path = url::Url::parse(url)
-        .map(|u| u.path().to_string())
-        .unwrap_or_else(|_| url.to_string());
+    let path = url::Url::parse(url).map_or_else(|_| url.to_string(), |u| u.path().to_string());
 
     let segments: Vec<String> = path
         .split('/')
@@ -66,7 +65,7 @@ fn generalize_mixed_segment(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c.is_ascii_digit() {
             // 跳过后续连续数字
-            while chars.peek().map_or(false, |c| c.is_ascii_digit()) {
+            while chars.peek().is_some_and(char::is_ascii_digit) {
                 chars.next();
             }
             result.push_str(r"\d+");
@@ -86,7 +85,7 @@ fn is_short_version_segment(s: &str) -> bool {
     let bytes = s.as_bytes();
     matches!(bytes.len(), 2 | 3)
         && bytes[0].is_ascii_alphabetic()
-        && bytes[1..].iter().all(|b| b.is_ascii_digit())
+        && bytes[1..].iter().all(u8::is_ascii_digit)
 }
 
 /// 判断字符串是否像 UUID 或哈希值。
@@ -110,6 +109,7 @@ pub struct ModeRuleEngine {
 
 impl ModeRuleEngine {
     /// 创建空的规则引擎。
+    #[must_use]
     pub fn new() -> Self {
         Self {
             user_rules: Vec::new(),
@@ -121,8 +121,7 @@ impl ModeRuleEngine {
     pub fn add_user_rule(&mut self, pattern: &str, mode: FetchMode) -> Result<()> {
         let re = Regex::new(pattern).map_err(|e| {
             WispError::Parse(crate::error::ParseError::Html(format!(
-                "invalid auto_rule regex '{}': {}",
-                pattern, e
+                "invalid auto_rule regex '{pattern}': {e}"
             )))
         })?;
         self.user_rules.push((re, mode));
@@ -151,11 +150,10 @@ impl ModeRuleEngine {
     /// 查询 URL 应使用的模式。
     ///
     /// 优先级：用户规则 > 自动规则 > None
+    #[must_use]
     pub fn resolve(&self, url: &str) -> Option<FetchMode> {
         // 提取路径用于匹配
-        let path = url::Url::parse(url)
-            .map(|u| u.path().to_string())
-            .unwrap_or_else(|_| url.to_string());
+        let path = url::Url::parse(url).map_or_else(|_| url.to_string(), |u| u.path().to_string());
 
         // 用户规则优先
         for (re, mode) in &self.user_rules {
@@ -173,11 +171,13 @@ impl ModeRuleEngine {
     }
 
     /// 用户规则数量。
+    #[must_use]
     pub fn user_rule_count(&self) -> usize {
         self.user_rules.len()
     }
 
     /// 自动规则数量。
+    #[must_use]
     pub fn auto_rule_count(&self) -> usize {
         self.auto_rules.len()
     }
@@ -197,12 +197,18 @@ impl Default for ModeRuleEngine {
 /// - 状态码 403/429/503
 /// - 响应体含 Cloudflare 挑战特征
 /// - 响应头含 cf-chl-* 标记
+#[must_use]
 pub fn is_blocked_response(status: u16, body: &[u8], headers: &HashMap<String, String>) -> bool {
     blocked_reason(status, body, headers).is_some()
 }
 
 /// 返回拦截原因（用于诊断日志），未拦截则返回 None。
-pub fn blocked_reason(status: u16, body: &[u8], headers: &HashMap<String, String>) -> Option<&'static str> {
+#[must_use]
+pub fn blocked_reason(
+    status: u16,
+    body: &[u8],
+    headers: &HashMap<String, String>,
+) -> Option<&'static str> {
     // 状态码
     if matches!(status, 403 | 429 | 503) {
         return Some("status_code");

@@ -16,11 +16,9 @@ use futures::StreamExt;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
-use wisp::crawl::{
-    CrawlEvent, CrawlStats, Engine, JsonlWriter, Spider, Request, Response,
-};
+use wisp::crawl::{CrawlEvent, CrawlStats, Engine, JsonlWriter, Request, Response, Spider};
 use wisp::http::Client;
-use wisp::storage::{Store, MemoryStore};
+use wisp::storage::MemoryStore;
 
 /// 探测 httpbin.org 是否可达且未被 Cloudflare 拦截。
 ///
@@ -96,7 +94,7 @@ async fn test_e2e_fetch_single_page_httpbin() {
         stats.items_scraped
     );
     assert!(
-        stats.status_code_counts.get(&200).is_some(),
+        stats.status_code_counts.contains_key(&200),
         "应有 200 状态码统计: {:?}",
         stats.status_code_counts
     );
@@ -390,16 +388,11 @@ async fn test_e2e_jsonl_export() {
     // 验证文件存在且行数 >= 5
     let content = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = content.trim_end().lines().collect();
-    assert!(
-        lines.len() >= 5,
-        "文件应有 >= 5 行, 实际: {}",
-        lines.len()
-    );
+    assert!(lines.len() >= 5, "文件应有 >= 5 行, 实际: {}", lines.len());
     // 每行应是合法 JSON
     for (i, line) in lines.iter().enumerate() {
-        let _: Value = serde_json::from_str(line).unwrap_or_else(|e| {
-            panic!("第 {} 行不是合法 JSON: {} - {}", i + 1, e, line)
-        });
+        let _: Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("第 {} 行不是合法 JSON: {} - {}", i + 1, e, line));
     }
 
     let _ = std::fs::remove_file(&path);
@@ -454,5 +447,9 @@ async fn test_e2e_development_mode_cache_replay() {
     // 第二次运行：命中缓存
     let (stats2, _) = engine.run(CacheSpider).await.unwrap();
     assert_eq!(stats2.pages_crawled, 1, "第二次应抓取 1 页");
-    assert_eq!(stats2.cache_hits, 1, "第二次应命中缓存, 实际: {}", stats2.cache_hits);
+    assert_eq!(
+        stats2.cache_hits, 1,
+        "第二次应命中缓存, 实际: {}",
+        stats2.cache_hits
+    );
 }

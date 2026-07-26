@@ -4,4 +4,6 @@ pub mod scheduler;
 pub mod stop;
 
 pub use scheduler::Scheduler;
-pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
+pub use stop::{
+    FnStopCondition, MaxErrors, MaxItems, MaxPages, NeverStop, StopCondition, StopContext, Timeout,
+};

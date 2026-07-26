@@ -22,10 +22,14 @@ async fn proxy_clients_caches_client_per_proxy_url() {
             Some("http://127.0.0.1:1"),
             FetchMode::Http,
             &proxy_clients,
-        ).await;
+        )
+        .await;
     }
 
     // moka::Cache 的 entry_count() 在异步清理后不实时准确（moka 已知行为），
     // 用 contains_key 作为缓存验证断言更可靠
-    assert!(proxy_clients.contains_key("http://127.0.0.1:1"), "相同 proxy 应被缓存");
+    assert!(
+        proxy_clients.contains_key("http://127.0.0.1:1"),
+        "相同 proxy 应被缓存"
+    );
 }

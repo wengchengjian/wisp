@@ -41,9 +41,18 @@ fn main() {
     println!("Found {} products", products.len());
 
     for product in products.iter() {
-        let name = product.select_one(".name").map(|n| n.text()).unwrap_or_default();
-        let price = product.select_one(".price").map(|n| n.text()).unwrap_or_default();
-        let link = product.select_one("a").and_then(|a| a.attr("href")).unwrap_or_default();
+        let name = product
+            .select_one(".name")
+            .map(|n| n.text())
+            .unwrap_or_default();
+        let price = product
+            .select_one(".price")
+            .map(|n| n.text())
+            .unwrap_or_default();
+        let link = product
+            .select_one("a")
+            .and_then(|a| a.attr("href"))
+            .unwrap_or_default();
         println!("  {} - {} ({})", name, price, link);
     }
 
@@ -58,7 +67,10 @@ fn main() {
 
     // === 2. Text processing ===
     println!("\n=== Text Demo ===");
-    let footer_text = doc.select_one("footer p").map(|n| n.text()).unwrap_or_default();
+    let footer_text = doc
+        .select_one("footer p")
+        .map(|n| n.text())
+        .unwrap_or_default();
     let text = Text(&footer_text);
     println!("Emails: {:?}", text.extract_emails());
     println!("URLs: {:?}", text.extract_urls());

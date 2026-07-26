@@ -1,11 +1,10 @@
 //! Page operations with anti-detection (isolated worlds, no Runtime.enable).
 
-
-use std::sync::Arc;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 use crate::browser::cdp::CdpSession;
-use crate::error::{WispError, Result, BrowserError};
+use crate::error::{BrowserError, Result, WispError};
 use base64::Engine;
 
 /// 浏览器页面（tab）：封装导航、JS 执行、截图等操作。
@@ -24,20 +23,26 @@ pub struct Page {
 impl Page {
     /// Execute a raw CDP command on this page's target session.
     pub async fn cmd(&self, method: &str, params: Value) -> Result<Value> {
-        self.session.execute_with_session(method, params, Some(&self.session_id)).await
+        self.session
+            .execute_with_session(method, params, Some(&self.session_id))
+            .await
     }
 
     /// 此 page 的 CDP session ID（每个 tab 独立）。
+    #[must_use]
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
     /// 导航后刷新 frame_id（解决跨域导航后 isolated world context 失效问题）。
     async fn refresh_frame_id(&mut self) {
-        if let Ok(frame_tree) = self.session.execute_with_session(
-            "Page.getFrameTree", json!({}), Some(&self.session_id)
-        ).await {
-            if let Some(id) = frame_tree.get("frameTree")
+        if let Ok(frame_tree) = self
+            .session
+            .execute_with_session("Page.getFrameTree", json!({}), Some(&self.session_id))
+            .await
+        {
+            if let Some(id) = frame_tree
+                .get("frameTree")
                 .and_then(|ft| ft.get("frame"))
                 .and_then(|f| f.get("id"))
                 .and_then(|id| id.as_str())
@@ -50,26 +55,61 @@ impl Page {
     /// Create a new page via CDP Target domain.
     pub(crate) async fn create(session: Arc<CdpSession>, headless: bool) -> Result<Self> {
         // Create target
-        let result = session.execute("Target.createTarget", json!({"url": "about:blank"})).await?;
-        let target_id = result.get("targetId").and_then(|t| t.as_str())
-            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no targetId".into())))?.to_string();
+        let result = session
+            .execute("Target.createTarget", json!({"url": "about:blank"}))
+            .await?;
+        let target_id = result
+            .get("targetId")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no targetId".into())))?
+            .to_string();
 
         // Attach to target
-        let result = session.execute("Target.attachToTarget", json!({"targetId": target_id, "flatten": true})).await?;
-        let session_id = result.get("sessionId").and_then(|s| s.as_str())
-            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no sessionId".into())))?.to_string();
+        let result = session
+            .execute(
+                "Target.attachToTarget",
+                json!({"targetId": target_id, "flatten": true}),
+            )
+            .await?;
+        let session_id = result
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no sessionId".into())))?
+            .to_string();
 
         // Page init sequence (matches patchright):
         // Page.enable -> Page.getFrameTree -> Log.enable -> Page.setLifecycleEventsEnabled
         // NEVER send Runtime.enable or Console.enable!
-        session.execute_with_session("Page.enable", json!({}), Some(&session_id)).await?;
-        let frame_tree = session.execute_with_session("Page.getFrameTree", json!({}), Some(&session_id)).await?;
-        let frame_id = frame_tree.get("frameTree").and_then(|ft| ft.get("frame")).and_then(|f| f.get("id")).and_then(|id| id.as_str())
-            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no frame id".into())))?.to_string();
-        let _ = session.execute_with_session("Log.enable", json!({}), Some(&session_id)).await;
-        session.execute_with_session("Page.setLifecycleEventsEnabled", json!({"enabled": true}), Some(&session_id)).await?;
+        session
+            .execute_with_session("Page.enable", json!({}), Some(&session_id))
+            .await?;
+        let frame_tree = session
+            .execute_with_session("Page.getFrameTree", json!({}), Some(&session_id))
+            .await?;
+        let frame_id = frame_tree
+            .get("frameTree")
+            .and_then(|ft| ft.get("frame"))
+            .and_then(|f| f.get("id"))
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no frame id".into())))?
+            .to_string();
+        let _ = session
+            .execute_with_session("Log.enable", json!({}), Some(&session_id))
+            .await;
+        session
+            .execute_with_session(
+                "Page.setLifecycleEventsEnabled",
+                json!({"enabled": true}),
+                Some(&session_id),
+            )
+            .await?;
 
-        let page = Self { session, session_id, frame_id, target_id: Some(target_id) };
+        let page = Self {
+            session,
+            session_id,
+            frame_id,
+            target_id: Some(target_id),
+        };
 
         // Inject stealth scripts (conditional on headless/headed)
         let stealth_script = if headless {
@@ -77,17 +117,27 @@ impl Page {
         } else {
             crate::browser::patches::HEADED_STEALTH_SCRIPT
         };
-        page.cmd("Page.addScriptToEvaluateOnNewDocument", json!({"source": stealth_script})).await?;
+        page.cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({"source": stealth_script}),
+        )
+        .await?;
         // NOTE: shadow_dom patch removed - it overrides Element.prototype.attachShadow
         // which Turnstile detects. We use CDP DOM.getDocument(pierce=true) instead.
 
         // Override User-Agent ONLY in headless mode (headed UA is already clean)
         if headless {
-            let version_info = page.session.execute("Browser.getVersion", json!({})).await?;
-            let product = version_info.get("product").and_then(|p| p.as_str()).unwrap_or("Chrome/130.0.0.0");
+            let version_info = page
+                .session
+                .execute("Browser.getVersion", json!({}))
+                .await?;
+            let product = version_info
+                .get("product")
+                .and_then(|p| p.as_str())
+                .unwrap_or("Chrome/130.0.0.0");
             let version = product.strip_prefix("Chrome/").unwrap_or("130.0.0.0");
             let major = version.split('.').next().unwrap_or("130");
-            let ua = format!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{} Safari/537.36", version);
+            let ua = format!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36");
             page.cmd("Emulation.setUserAgentOverride", json!({
                 "userAgent": ua,
                 "platform": "Win32",
@@ -106,18 +156,27 @@ impl Page {
     // --- Public API: Navigation ---
 
     /// 导航到指定 URL。
-    pub async fn goto(&mut self, url: &str) -> Result<()> { do_goto(self, url).await }
+    pub async fn goto(&mut self, url: &str) -> Result<()> {
+        do_goto(self, url).await
+    }
     /// 重新加载当前页面。
-    pub async fn reload(&self) -> Result<()> { do_reload(self).await }
+    pub async fn reload(&self) -> Result<()> {
+        do_reload(self).await
+    }
     /// 后退（历史记录）。
     pub async fn go_back(&self) -> Result<()> {
-        self.cmd("Page.navigate", json!({"url": "javascript:history.back()"})).await?;
+        self.cmd("Page.navigate", json!({"url": "javascript:history.back()"}))
+            .await?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         Ok(())
     }
     /// 前进（历史记录）。
     pub async fn go_forward(&self) -> Result<()> {
-        self.cmd("Page.navigate", json!({"url": "javascript:history.forward()"})).await?;
+        self.cmd(
+            "Page.navigate",
+            json!({"url": "javascript:history.forward()"}),
+        )
+        .await?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         Ok(())
     }
@@ -136,24 +195,32 @@ impl Page {
 
     /// Get the full page HTML.
     pub async fn content(&self) -> Result<String> {
-        self.evaluate_as_string("document.documentElement.outerHTML").await
+        self.evaluate_as_string("document.documentElement.outerHTML")
+            .await
     }
 
     /// Set the page HTML content.
     pub async fn set_content(&self, html: &str) -> Result<()> {
         let escaped = serde_json::to_string(html).expect("serialize &str cannot fail");
-        self.evaluate(&format!("document.documentElement.innerHTML = {}", escaped)).await?;
+        self.evaluate(&format!("document.documentElement.innerHTML = {escaped}"))
+            .await?;
         Ok(())
     }
 
     // --- Public API: JavaScript ---
 
     /// 执行 JavaScript 表达式，返回 JSON 值。
-    pub async fn evaluate(&self, expression: &str) -> Result<Value> { do_evaluate(self, expression).await }
+    pub async fn evaluate(&self, expression: &str) -> Result<Value> {
+        do_evaluate(self, expression).await
+    }
     /// 执行 JavaScript 表达式，返回字符串结果。
     pub async fn evaluate_as_string(&self, expression: &str) -> Result<String> {
         let value = self.evaluate(expression).await?;
-        Ok(match value { Value::String(s) => s, Value::Null => "null".to_string(), other => other.to_string() })
+        Ok(match value {
+            Value::String(s) => s,
+            Value::Null => "null".to_string(),
+            other => other.to_string(),
+        })
     }
 
     // --- Public API: Cookies ---
@@ -161,16 +228,21 @@ impl Page {
     /// Get all cookies (including httpOnly) via CDP.
     pub async fn cookies(&self) -> Result<Vec<Value>> {
         let resp = self.cmd("Network.getCookies", json!({})).await?;
-        Ok(resp.get("cookies").and_then(|c| c.as_array()).cloned().unwrap_or_default())
+        Ok(resp
+            .get("cookies")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default())
     }
 
     /// Get a specific cookie value by name (including httpOnly).
     pub async fn get_cookie(&self, name: &str) -> Result<Option<String>> {
         let cookies = self.cookies().await?;
-        Ok(cookies.iter()
+        Ok(cookies
+            .iter()
             .find(|c| c.get("name").and_then(|n| n.as_str()) == Some(name))
             .and_then(|c| c.get("value").and_then(|v| v.as_str()))
-            .map(|v| v.to_string()))
+            .map(std::string::ToString::to_string))
     }
 
     /// Add/set cookies.
@@ -190,23 +262,37 @@ impl Page {
     // --- Public API: Elements ---
 
     /// 点击匹配选择器的元素。
-    pub async fn click(&self, selector: &str) -> Result<()> { crate::browser::element::click(self, selector).await }
+    pub async fn click(&self, selector: &str) -> Result<()> {
+        crate::browser::element::click(self, selector).await
+    }
     /// 向匹配选择器的输入框填充文本。
-    pub async fn fill(&self, selector: &str, value: &str) -> Result<()> { crate::browser::element::fill(self, selector, value).await }
+    pub async fn fill(&self, selector: &str, value: &str) -> Result<()> {
+        crate::browser::element::fill(self, selector, value).await
+    }
     /// 等待匹配选择器的元素出现。
-    pub async fn wait_for_selector(&self, selector: &str, timeout_ms: u64) -> Result<()> { crate::browser::element::wait_for_selector(self, selector, timeout_ms).await }
+    pub async fn wait_for_selector(&self, selector: &str, timeout_ms: u64) -> Result<()> {
+        crate::browser::element::wait_for_selector(self, selector, timeout_ms).await
+    }
     /// 获取匹配选择器元素的文本内容。
-    pub async fn text_content(&self, selector: &str) -> Result<String> { crate::browser::element::text_content(self, selector).await }
+    pub async fn text_content(&self, selector: &str) -> Result<String> {
+        crate::browser::element::text_content(self, selector).await
+    }
 
     /// Get inner text of an element.
     pub async fn inner_text(&self, selector: &str) -> Result<String> {
-        let js = format!("document.querySelector({})?.innerText || ''", serde_json::to_string(selector).expect("serialize &str cannot fail"));
+        let js = format!(
+            "document.querySelector({})?.innerText || ''",
+            serde_json::to_string(selector).expect("serialize &str cannot fail")
+        );
         self.evaluate_as_string(&js).await
     }
 
     /// Get inner HTML of an element.
     pub async fn inner_html(&self, selector: &str) -> Result<String> {
-        let js = format!("document.querySelector({})?.innerHTML || ''", serde_json::to_string(selector).expect("serialize &str cannot fail"));
+        let js = format!(
+            "document.querySelector({})?.innerHTML || ''",
+            serde_json::to_string(selector).expect("serialize &str cannot fail")
+        );
         self.evaluate_as_string(&js).await
     }
 
@@ -218,51 +304,74 @@ impl Page {
             serde_json::to_string(attr).expect("serialize &str cannot fail")
         );
         let val = self.evaluate(&js).await?;
-        Ok(val.as_str().map(|s| s.to_string()))
+        Ok(val.as_str().map(std::string::ToString::to_string))
     }
 
     /// Check if an element exists on the page.
     pub async fn query_selector(&self, selector: &str) -> Result<bool> {
-        let js = format!("!!document.querySelector({})", serde_json::to_string(selector).expect("serialize &str cannot fail"));
+        let js = format!(
+            "!!document.querySelector({})",
+            serde_json::to_string(selector).expect("serialize &str cannot fail")
+        );
         let val = self.evaluate(&js).await?;
         Ok(val.as_bool().unwrap_or(false))
     }
 
     /// Check if an element is visible.
     pub async fn is_visible(&self, selector: &str) -> Result<bool> {
-        let js = format!(r#"(() => {{
+        let js = format!(
+            r"(() => {{
             const el = document.querySelector({});
             if (!el) return false;
             const style = window.getComputedStyle(el);
             return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetHeight > 0;
-        }})()"#, serde_json::to_string(selector).expect("serialize &str cannot fail"));
+        }})()",
+            serde_json::to_string(selector).expect("serialize &str cannot fail")
+        );
         let val = self.evaluate(&js).await?;
         Ok(val.as_bool().unwrap_or(false))
     }
 
     /// Hover over an element.
     pub async fn hover(&self, selector: &str) -> Result<()> {
-        let js = format!(r#"(() => {{
+        let js = format!(
+            r"(() => {{
             const el = document.querySelector({});
             if (!el) throw new Error('Element not found');
             const r = el.getBoundingClientRect();
             return {{x: r.x + r.width/2, y: r.y + r.height/2}};
-        }})()"#, serde_json::to_string(selector).expect("serialize &str cannot fail"));
+        }})()",
+            serde_json::to_string(selector).expect("serialize &str cannot fail")
+        );
         let pos = self.evaluate(&js).await?;
-        let x = pos.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let y = pos.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        self.cmd("Input.dispatchMouseEvent", json!({"type": "mouseMoved", "x": x, "y": y})).await?;
+        let x = pos
+            .get("x")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let y = pos
+            .get("y")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        self.cmd(
+            "Input.dispatchMouseEvent",
+            json!({"type": "mouseMoved", "x": x, "y": y}),
+        )
+        .await?;
         Ok(())
     }
 
     /// Select an option in a <select> element.
     pub async fn select_option(&self, selector: &str, value: &str) -> Result<()> {
-        let js = format!(r#"(() => {{
+        let js = format!(
+            r"(() => {{
             const el = document.querySelector({});
             if (!el) throw new Error('Element not found');
             el.value = {};
             el.dispatchEvent(new Event('change', {{bubbles: true}}));
-        }})()"#, serde_json::to_string(selector).expect("serialize &str cannot fail"), serde_json::to_string(value).expect("serialize &str cannot fail"));
+        }})()",
+            serde_json::to_string(selector).expect("serialize &str cannot fail"),
+            serde_json::to_string(value).expect("serialize &str cannot fail")
+        );
         self.evaluate(&js).await?;
         Ok(())
     }
@@ -271,16 +380,32 @@ impl Page {
 
     /// Press a keyboard key (e.g., "Enter", "Tab", "Escape").
     pub async fn press_key(&self, key: &str) -> Result<()> {
-        self.cmd("Input.dispatchKeyEvent", json!({"type": "keyDown", "key": key})).await?;
-        self.cmd("Input.dispatchKeyEvent", json!({"type": "keyUp", "key": key})).await?;
+        self.cmd(
+            "Input.dispatchKeyEvent",
+            json!({"type": "keyDown", "key": key}),
+        )
+        .await?;
+        self.cmd(
+            "Input.dispatchKeyEvent",
+            json!({"type": "keyUp", "key": key}),
+        )
+        .await?;
         Ok(())
     }
 
     /// Type text character by character (fast, no human simulation).
     pub async fn type_text(&self, text: &str) -> Result<()> {
         for ch in text.chars() {
-            self.cmd("Input.dispatchKeyEvent", json!({"type": "keyDown", "text": ch.to_string()})).await?;
-            self.cmd("Input.dispatchKeyEvent", json!({"type": "keyUp", "text": ch.to_string()})).await?;
+            self.cmd(
+                "Input.dispatchKeyEvent",
+                json!({"type": "keyDown", "text": ch.to_string()}),
+            )
+            .await?;
+            self.cmd(
+                "Input.dispatchKeyEvent",
+                json!({"type": "keyUp", "text": ch.to_string()}),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -289,34 +414,52 @@ impl Page {
 
     /// Set the viewport size.
     pub async fn set_viewport(&self, width: u32, height: u32) -> Result<()> {
-        self.cmd("Emulation.setDeviceMetricsOverride", json!({
-            "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false
-        })).await?;
+        self.cmd(
+            "Emulation.setDeviceMetricsOverride",
+            json!({
+                "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false
+            }),
+        )
+        .await?;
         Ok(())
     }
 
     /// Set extra HTTP headers for all requests.
-    pub async fn set_extra_http_headers(&self, headers: std::collections::HashMap<String, String>) -> Result<()> {
-        self.cmd("Network.setExtraHTTPHeaders", json!({"headers": headers})).await?;
+    pub async fn set_extra_http_headers(
+        &self,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        self.cmd("Network.setExtraHTTPHeaders", json!({"headers": headers}))
+            .await?;
         Ok(())
     }
 
     // --- Public API: Output ---
 
     /// 截图并保存到文件。
-    pub async fn screenshot(&self, path: &str) -> Result<()> { do_screenshot(self, path).await }
+    pub async fn screenshot(&self, path: &str) -> Result<()> {
+        do_screenshot(self, path).await
+    }
     /// 截图并返回 PNG 字节数据。
-    pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> { do_screenshot_bytes(self).await }
+    pub async fn screenshot_bytes(&self) -> Result<Vec<u8>> {
+        do_screenshot_bytes(self).await
+    }
 
     /// Generate a PDF (headless only).
     pub async fn pdf(&self, path: &str) -> Result<()> {
-        let result = self.cmd("Page.printToPDF", json!({"printBackground": true})).await?;
-        let data = result.get("data").and_then(|d| d.as_str())
+        let result = self
+            .cmd("Page.printToPDF", json!({"printBackground": true}))
+            .await?;
+        let data = result
+            .get("data")
+            .and_then(|d| d.as_str())
             .ok_or_else(|| WispError::Browser(BrowserError::Other("no PDF data".into())))?;
         use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(data)
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
             .map_err(|e| WispError::Browser(BrowserError::Other(format!("decode PDF: {e}"))))?;
-        tokio::fs::write(path, &bytes).await
+        tokio::fs::write(path, &bytes)
+            .await
             .map_err(|e| WispError::Browser(BrowserError::Other(format!("write PDF: {e}"))))?;
         Ok(())
     }
@@ -328,7 +471,9 @@ impl Page {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
             let current = self.url().await?;
-            if current.contains(url_pattern) { return Ok(()); }
+            if current.contains(url_pattern) {
+                return Ok(());
+            }
             if tokio::time::Instant::now() > deadline {
                 return Err(WispError::Timeout(format!("wait_for_url: {url_pattern}")));
             }
@@ -341,7 +486,9 @@ impl Page {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
             let state = self.evaluate_as_string("document.readyState").await?;
-            if state == "complete" { return Ok(()); }
+            if state == "complete" {
+                return Ok(());
+            }
             if tokio::time::Instant::now() > deadline {
                 return Err(WispError::Timeout("wait_for_load_state".into()));
             }
@@ -386,37 +533,57 @@ impl Drop for Page {
 // === evaluate (inlined) ===
 // JS evaluation via isolated worlds (no Runtime.enable needed).
 
-
-
 /// 在隔离世界中执行 JS（无需 Runtime.enable，避免被检测）。
 pub async fn do_evaluate(page: &Page, expression: &str) -> Result<Value> {
     // Create isolated world (avoids Runtime.enable detection)
-    let world = page.cmd("Page.createIsolatedWorld", json!({
-        "frameId": page.frame_id,
-        "grantUniveralAccess": true,
-        "worldName": "patchright"
-    })).await?;
+    let world = page
+        .cmd(
+            "Page.createIsolatedWorld",
+            json!({
+                "frameId": page.frame_id,
+                "grantUniveralAccess": true,
+                "worldName": "patchright"
+            }),
+        )
+        .await?;
 
-    let context_id = world.get("executionContextId").and_then(|id| id.as_u64())
-        .ok_or_else(|| WispError::Browser(BrowserError::CdpConnection("no executionContextId".into())))?;
+    let context_id = world
+        .get("executionContextId")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            WispError::Browser(BrowserError::CdpConnection("no executionContextId".into()))
+        })?;
 
-    let result = page.cmd("Runtime.evaluate", json!({
-        "expression": expression,
-        "contextId": context_id,
-        "returnByValue": true,
-        "awaitPromise": true
-    })).await?;
+    let result = page
+        .cmd(
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "contextId": context_id,
+                "returnByValue": true,
+                "awaitPromise": true
+            }),
+        )
+        .await?;
 
     if let Some(exception) = result.get("exceptionDetails") {
-        let text = exception.get("text").and_then(|t| t.as_str()).unwrap_or("JS error");
-        return Err(WispError::Browser(BrowserError::EvalError(text.to_string())));
+        let text = exception
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("JS error");
+        return Err(WispError::Browser(BrowserError::EvalError(
+            text.to_string(),
+        )));
     }
 
-    Ok(result.get("result").and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null))
+    Ok(result
+        .get("result")
+        .and_then(|r| r.get("value"))
+        .cloned()
+        .unwrap_or(Value::Null))
 }
 
 // === navigate (inlined) ===
-
 
 /// 导航到 URL 并等待页面加载完成。
 pub async fn do_goto(page: &mut Page, url: &str) -> Result<()> {
@@ -439,15 +606,15 @@ async fn wait_for_load(page: &Page) -> Result<()> {
     // about:blank 的历史 load 事件（会导致 0ms 立即返回，goto 过早完成）。
     let sid = page.session_id.clone();
     let mut rx = page.session.subscribe_events();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(15000);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
     let start = std::time::Instant::now();
     let mut found = false;
 
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
             Ok(Ok(event)) => {
-                let match_session = event.session_id.as_deref() == Some(sid.as_str())
-                    || event.session_id.is_none();
+                let match_session =
+                    event.session_id.as_deref() == Some(sid.as_str()) || event.session_id.is_none();
                 if !match_session {
                     continue;
                 }
@@ -462,7 +629,7 @@ async fn wait_for_load(page: &Page) -> Result<()> {
                     break;
                 }
             }
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
             Ok(Err(_)) => break,
             Err(_) => break, // 超时
         }
@@ -471,31 +638,40 @@ async fn wait_for_load(page: &Page) -> Result<()> {
     tracing::debug!(
         "wait_for_load: 耗时 {}ms, 结果={}",
         start.elapsed().as_millis(),
-        if found { "Ok(找到新事件)" } else { "超时(15s)" }
+        if found {
+            "Ok(找到新事件)"
+        } else {
+            "超时(15s)"
+        }
     );
 
     if !found {
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     Ok(())
 }
 
 // === screenshot (inlined) ===
 
-
 /// 截图并保存到指定路径。
 pub async fn do_screenshot(page: &Page, path: &str) -> Result<()> {
     let bytes = do_screenshot_bytes(page).await?;
-    tokio::fs::write(path, &bytes).await
+    tokio::fs::write(path, &bytes)
+        .await
         .map_err(|e| WispError::Browser(BrowserError::Other(format!("write: {e}"))))?;
     Ok(())
 }
 
 /// 截图并返回 PNG 格式的字节数据。
 pub async fn do_screenshot_bytes(page: &Page) -> Result<Vec<u8>> {
-    let result = page.cmd("Page.captureScreenshot", json!({"format": "png"})).await?;
-    let data = result.get("data").and_then(|d| d.as_str())
+    let result = page
+        .cmd("Page.captureScreenshot", json!({"format": "png"}))
+        .await?;
+    let data = result
+        .get("data")
+        .and_then(|d| d.as_str())
         .ok_or_else(|| WispError::Browser(BrowserError::Other("no screenshot data".into())))?;
-    base64::engine::general_purpose::STANDARD.decode(data)
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
         .map_err(|e| WispError::Browser(BrowserError::Other(format!("decode: {e}"))))
 }

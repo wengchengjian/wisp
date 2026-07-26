@@ -65,21 +65,25 @@ pub struct Fetcher {
 
 impl Fetcher {
     /// 快速 HTTP 模式（TLS 指纹，毫秒级）。
+    #[must_use]
     pub fn http() -> FetcherBuilder {
         FetcherBuilder::new(FetchMode::Http)
     }
 
     /// 浏览器渲染模式（JS 执行，秒级）。
+    #[must_use]
     pub fn dynamic() -> FetcherBuilder {
         FetcherBuilder::new(FetchMode::Dynamic)
     }
 
     /// 隐身模式（CF bypass，秒级）。
+    #[must_use]
     pub fn stealth() -> FetcherBuilder {
         FetcherBuilder::new(FetchMode::Stealth)
     }
 
     /// 从已有 FetchClient 创建 Fetcher。
+    #[must_use]
     pub fn from_client(client: Arc<FetchClient>, mode: FetchMode) -> Self {
         Self { client, mode }
     }
@@ -93,16 +97,19 @@ impl Fetcher {
     }
 
     /// 获取当前模式。
+    #[must_use]
     pub fn mode(&self) -> FetchMode {
         self.mode
     }
 
     /// 获取底层 FetchClient 引用。
+    #[must_use]
     pub fn client(&self) -> &FetchClient {
         &self.client
     }
 
     /// 获取配置引用。
+    #[must_use]
     pub fn config(&self) -> &FetchClientConfig {
         self.client.config()
     }
@@ -118,7 +125,7 @@ impl Fetcher {
 
     /// POST 请求。
     pub async fn post(&self, url: &str, body: Option<&str>) -> Result<Response> {
-        let mut req = Request::post(url, body.map(|b| b.to_string()));
+        let mut req = Request::post(url, body.map(std::string::ToString::to_string));
         req.headers = self.config().headers.clone();
         self.fetch(req).await
     }
@@ -148,78 +155,93 @@ impl FetcherBuilder {
     }
 
     /// 设置代理。
+    #[must_use]
     pub fn proxy(mut self, url: &str) -> Self {
         self.config.proxy = Some(url.to_string());
         self
     }
 
     /// 设置超时。
+    #[must_use]
     pub fn timeout(mut self, d: Duration) -> Self {
         self.config.timeout = d;
         self
     }
 
     /// 设置 headless 模式（浏览器模式）。
+    #[must_use]
     pub fn headless(mut self, v: bool) -> Self {
         self.config.headless = v;
         self
     }
 
     /// 设置 TLS 指纹模拟（Http 模式）。
+    #[must_use]
     pub fn emulation(mut self, p: Profile) -> Self {
         self.config.emulation = Some(p);
         self
     }
 
     /// 关闭 TLS 指纹模拟。
+    #[must_use]
     pub fn no_emulation(mut self) -> Self {
         self.config.emulation = None;
         self
     }
 
     /// 设置 User-Agent。
+    #[must_use]
     pub fn user_agent(mut self, ua: &str) -> Self {
         self.config.user_agent = Some(ua.to_string());
         self
     }
 
     /// 添加自定义 header。
+    #[must_use]
     pub fn header(mut self, key: &str, value: &str) -> Self {
-        self.config.headers.insert(key.to_string(), value.to_string());
+        self.config
+            .headers
+            .insert(key.to_string(), value.to_string());
         self
     }
 
     /// 启用/禁用人类行为模拟（Stealth 模式）。
+    #[must_use]
     pub fn human_mode(mut self, v: bool) -> Self {
         self.config.human_mode = v;
         self
     }
 
     /// 设置 CF 挑战超时（Stealth 模式）。
+    #[must_use]
     pub fn challenge_timeout(mut self, d: Duration) -> Self {
         self.config.challenge_timeout = d;
         self
     }
 
     /// 设置 Turnstile 解决器参数。
+    #[must_use]
     pub fn turnstile_config(mut self, cfg: crate::stealth::TurnstileConfig) -> Self {
         self.config.turnstile = cfg;
         self
     }
 
     /// 等待特定 CSS 选择器出现（浏览器模式）。
+    #[must_use]
     pub fn wait_for(mut self, selector: &str) -> Self {
         self.config.wait_for = Some(selector.to_string());
         self
     }
 
     /// 页面加载后额外等待（毫秒）。
+    #[must_use]
     pub fn extra_wait_ms(mut self, ms: u64) -> Self {
         self.config.extra_wait_ms = ms;
         self
     }
 
     /// 启用内置广告拦截。
+    #[must_use]
     pub fn block_ads(mut self) -> Self {
         let mut blocker = self.config.domain_blocker.take().unwrap_or_default();
         blocker.enable_ad_blocking();
@@ -228,6 +250,7 @@ impl FetcherBuilder {
     }
 
     /// 拦截指定域名。
+    #[must_use]
     pub fn block_domains(mut self, domains: &[&str]) -> Self {
         let mut blocker = self.config.domain_blocker.take().unwrap_or_default();
         blocker.block_domains(domains);
@@ -236,18 +259,21 @@ impl FetcherBuilder {
     }
 
     /// 设置 BrowserPool 最大并发 page 数（0 = 禁用浏览器模式）。
+    #[must_use]
     pub fn max_concurrent_pages(mut self, size: usize) -> Self {
         self.config.max_concurrent_pages = size;
         self
     }
 
     /// 设置 DNS-over-HTTPS。
+    #[must_use]
     pub fn dns_over_https(mut self, url: &str) -> Self {
         self.config.dns_over_https = Some(url.to_string());
         self
     }
 
     /// 设置最大重定向次数。
+    #[must_use]
     pub fn max_redirects(mut self, n: usize) -> Self {
         self.config.max_redirects = n;
         self
@@ -288,14 +314,17 @@ mod tests {
     fn test_fetcher_builder_http() {
         let fetcher = Fetcher::http()
             .proxy("http://127.0.0.1:7897")
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_mins(1))
             .emulation(Profile::Firefox128)
             .build()
             .expect("build fetcher");
 
         assert_eq!(fetcher.mode(), FetchMode::Http);
-        assert_eq!(fetcher.config().proxy.as_deref(), Some("http://127.0.0.1:7897"));
-        assert_eq!(fetcher.config().timeout, Duration::from_secs(60));
+        assert_eq!(
+            fetcher.config().proxy.as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+        assert_eq!(fetcher.config().timeout, Duration::from_mins(1));
         assert_eq!(fetcher.config().emulation, Some(Profile::Firefox128));
     }
 
@@ -304,7 +333,7 @@ mod tests {
         let fetcher = Fetcher::stealth()
             .headless(true)
             .human_mode(true)
-            .challenge_timeout(Duration::from_secs(60))
+            .challenge_timeout(Duration::from_mins(1))
             .proxy("http://127.0.0.1:7897")
             .build()
             .expect("build fetcher");
@@ -312,7 +341,7 @@ mod tests {
         assert_eq!(fetcher.mode(), FetchMode::Stealth);
         assert!(fetcher.config().headless);
         assert!(fetcher.config().human_mode);
-        assert_eq!(fetcher.config().challenge_timeout, Duration::from_secs(60));
+        assert_eq!(fetcher.config().challenge_timeout, Duration::from_mins(1));
     }
 
     #[test]

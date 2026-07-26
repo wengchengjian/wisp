@@ -8,12 +8,12 @@
 //! 注意：修复1（patterns 正则路由）已在 Task 1-6 重构中废弃删除，
 //! 对应的 matches/patterns 测试不再适用。
 
-use wisp::crawl::*;
-use wisp::fetcher::FetchMode;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use wisp::crawl::*;
+use wisp::fetcher::FetchMode;
 
 /// 修复3 回归：StopContext.queue_size 字段可被 FnStopCondition 读取，
 /// 验证终止策略能基于真实队列长度判定。
@@ -39,10 +39,7 @@ fn test_stop_context_queue_size_is_real() {
         elapsed: Duration::ZERO,
         queue_size: 0,
     };
-    assert!(
-        !cond.should_stop(&ctx_zero),
-        "queue_size 为 0 时不应停止"
-    );
+    assert!(!cond.should_stop(&ctx_zero), "queue_size 为 0 时不应停止");
 }
 
 /// 修复2 回归：当 Spider until() 已停止时，
@@ -52,13 +49,19 @@ async fn test_stopped_spider_url_not_silently_dropped() {
     struct StoppedSpider;
     #[async_trait]
     impl Spider for StoppedSpider {
-        fn name(&self) -> &str { "stopped" }
-        fn start_urls(&self) -> Vec<String> { vec!["http://127.0.0.1:1/never-fetched".into()] }
+        fn name(&self) -> &str {
+            "stopped"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            vec!["http://127.0.0.1:1/never-fetched".into()]
+        }
         async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![], vec![])
         }
         // MaxPages(0)：pages >= 0 恒为真，Spider 立即停止，start_url 不会被派发。
-        fn until(&self) -> Arc<dyn StopCondition> { Arc::new(MaxPages(0)) }
+        fn until(&self) -> Arc<dyn StopCondition> {
+            Arc::new(MaxPages(0))
+        }
     }
 
     let engine = Engine::infra()
@@ -70,7 +73,8 @@ async fn test_stopped_spider_url_not_silently_dropped() {
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         engine.run(StoppedSpider),
-    ).await;
+    )
+    .await;
     assert!(result.is_ok(), "引擎应在 10s 内完成，未因 URL 丢弃而挂起");
     let (stats, _items) = result.unwrap().expect("run 应返回 Ok");
     // Spider 从未派发请求，pages 应为 0。
@@ -86,7 +90,9 @@ async fn test_fetch_retry_count_semantics() {
     }
     #[async_trait]
     impl Spider for RetrySpider {
-        fn name(&self) -> &str { "retry" }
+        fn name(&self) -> &str {
+            "retry"
+        }
         fn start_urls(&self) -> Vec<String> {
             // 端口 1 不可达，连接被拒绝，触发 error 分支重试。
             vec!["http://127.0.0.1:1/unreachable".into()]
@@ -100,7 +106,9 @@ async fn test_fetch_retry_count_semantics() {
     }
 
     let count = Arc::new(AtomicUsize::new(0));
-    let spider = RetrySpider { count: count.clone() };
+    let spider = RetrySpider {
+        count: count.clone(),
+    };
     let engine = Engine::infra()
         .max_pages(1)
         .obey_robots(false)

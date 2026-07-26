@@ -24,7 +24,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::config::LaunchOptions;
-use crate::error::{Result, WispError, BrowserError};
+use crate::error::{BrowserError, Result, WispError};
 
 use super::{Browser, Page};
 
@@ -48,6 +48,7 @@ impl BrowserPool {
     ///
     /// - `max_concurrent_pages`: 最大并发 page 数（推荐 4-8）
     /// - `launch_options`: 浏览器启动配置
+    #[must_use]
     pub fn new(max_concurrent_pages: usize, launch_options: LaunchOptions) -> Arc<Self> {
         Arc::new(Self {
             browser: Mutex::new(None),
@@ -66,7 +67,9 @@ impl BrowserPool {
         let permit = Arc::clone(&self.page_permits)
             .acquire_owned()
             .await
-            .map_err(|_| WispError::Browser(BrowserError::Other("page_permits semaphore closed".into())))?;
+            .map_err(|_| {
+                WispError::Browser(BrowserError::Other("page_permits semaphore closed".into()))
+            })?;
 
         let browser = self.get_or_launch_browser().await?;
         let page = browser.new_page().await?;
@@ -143,6 +146,7 @@ pub struct BrowserHandle {
 
 impl BrowserHandle {
     /// 访问内部 Page。
+    #[must_use]
     pub fn page(&self) -> &Page {
         self.page.as_ref().expect("page must be Some until Drop")
     }
@@ -226,11 +230,7 @@ mod tests {
         // 失败后 browser 仍为 None（未启动）
         assert!(!pool.is_launched().await);
         // 失败不影响 permit 计数（acquire 在 launch 前已获取 permit，但 launch 失败时 BrowserHandle::Drop 释放）
-        assert_eq!(
-            pool.available_permits(),
-            2,
-            "失败后 permit 应全部归还"
-        );
+        assert_eq!(pool.available_permits(), 2, "失败后 permit 应全部归还");
     }
 
     /// launch 失败后下次 acquire 应重试（不永久卡住）。

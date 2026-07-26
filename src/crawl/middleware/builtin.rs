@@ -24,6 +24,7 @@ pub struct UaRotationMiddleware {
 
 impl UaRotationMiddleware {
     /// 使用桌面 UA 列表创建（Chrome/Edge 136，匹配默认 TLS 指纹）。
+    #[must_use]
     pub fn desktop() -> Self {
         Self {
             agents: vec![
@@ -38,6 +39,7 @@ impl UaRotationMiddleware {
     }
 
     /// 使用自定义 UA 列表创建。
+    #[must_use]
     pub fn with_agents(agents: Vec<&'static str>) -> Self {
         Self {
             agents,
@@ -85,6 +87,7 @@ impl RetryMiddleware {
     /// - `max_retries`：网络错误最大重试次数（与 `EngineConfig.max_retries` 一致，
     ///   作为中间件层的双重保险，避免单点逻辑漂移）。
     ///   退避由 engine 统一负责（指数退避 + 抖动），中间件不做 sleep。
+    #[must_use]
     pub fn new(max_retries: u32) -> Self {
         Self { max_retries }
     }
@@ -145,6 +148,7 @@ pub struct HeadersMiddleware {
 
 impl HeadersMiddleware {
     /// 创建请求头注入中间件。
+    #[must_use]
     pub fn new(headers: Vec<(String, String)>) -> Self {
         Self { headers }
     }
@@ -180,6 +184,7 @@ pub struct CookieChallengeMiddleware {
 
 impl CookieChallengeMiddleware {
     /// 创建 Cookie 挑战中间件。
+    #[must_use]
     pub fn new(max_rounds: usize) -> Self {
         Self { max_rounds }
     }
@@ -221,7 +226,7 @@ impl Middleware for CookieChallengeMiddleware {
             if existing.contains(&cookie_pair) {
                 return MwAction::Continue;
             }
-            format!("{}; {}", existing, cookie_pair)
+            format!("{existing}; {cookie_pair}")
         };
         let cookie_count = new_cookie.matches("; ").count() + 1;
         if cookie_count > self.max_rounds {
@@ -246,7 +251,7 @@ impl DomainFilterMiddleware {
     /// 从域名列表创建（如 `["example.com", "api.example.com"]`）。
     pub fn new(allowed: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
-            allowed: allowed.into_iter().map(|s| s.into()).collect(),
+            allowed: allowed.into_iter().map(std::convert::Into::into).collect(),
         }
     }
 }
@@ -279,6 +284,7 @@ pub struct DepthLimitMiddleware {
 
 impl DepthLimitMiddleware {
     /// 创建深度限制中间件。
+    #[must_use]
     pub fn new(max_depth: u32) -> Self {
         Self { max_depth }
     }
@@ -354,7 +360,9 @@ impl Middleware for CacheMiddleware {
                 cached_at: chrono::Utc::now().timestamp(),
                 ttl: self.default_ttl,
             };
-            if let Err(e) = crate::storage::save_response(&*self.store, method_str, &resp.url, &cached).await {
+            if let Err(e) =
+                crate::storage::save_response(&*self.store, method_str, &resp.url, &cached).await
+            {
                 tracing::warn!("响应缓存写入失败: {}", e);
             }
         }
@@ -373,6 +381,7 @@ pub struct RobotsMiddleware {
 
 impl RobotsMiddleware {
     /// 创建 Robots.txt 检查中间件。
+    #[must_use]
     pub fn new(robots_cache: Arc<RobotsCache>, client: Arc<Client>) -> Self {
         Self {
             robots_cache,
@@ -404,11 +413,13 @@ pub struct DelayMiddleware {
 
 impl DelayMiddleware {
     /// 创建下载延迟中间件。
+    #[must_use]
     pub fn new(delay: Duration) -> Self {
         Self { delay }
     }
 
     /// 便捷构造：毫秒数。
+    #[must_use]
     pub fn from_millis(ms: u64) -> Self {
         Self {
             delay: Duration::from_millis(ms),
@@ -525,6 +536,7 @@ impl Default for DynamicUpgradeMiddleware {
 
 impl DynamicUpgradeMiddleware {
     /// 创建 Dynamic 升级中间件。
+    #[must_use]
     pub fn new() -> Self {
         Self {
             spa_matcher: aho_corasick::AhoCorasick::new(SPA_FRAMEWORK_MARKERS)
@@ -549,12 +561,19 @@ impl DynamicUpgradeMiddleware {
             let spa = self.spa_matcher.clone();
             let dom = self.dom_matcher.clone();
             let script = self.script_matcher.clone();
-            tokio::task::spawn_blocking(move || Self::score_body_sync(&body_vec, &spa, &dom, &script))
-                .await
-                .expect("score_body spawn_blocking join failed")
+            tokio::task::spawn_blocking(move || {
+                Self::score_body_sync(&body_vec, &spa, &dom, &script)
+            })
+            .await
+            .expect("score_body spawn_blocking join failed")
         } else {
             // 小 body 直接同步执行
-            Self::score_body_sync(body, &self.spa_matcher, &self.dom_matcher, &self.script_matcher)
+            Self::score_body_sync(
+                body,
+                &self.spa_matcher,
+                &self.dom_matcher,
+                &self.script_matcher,
+            )
         }
     }
 
@@ -574,7 +593,12 @@ impl DynamicUpgradeMiddleware {
             return 7;
         }
         // 弱信号：`<script` 标签密度 >= 6 → 7 分（短路扫描，达到阈值即停）
-        if script_matcher.find_iter(body).take(SCRIPT_DENSITY_THRESHOLD).count() >= SCRIPT_DENSITY_THRESHOLD {
+        if script_matcher
+            .find_iter(body)
+            .take(SCRIPT_DENSITY_THRESHOLD)
+            .count()
+            >= SCRIPT_DENSITY_THRESHOLD
+        {
             return 7;
         }
         0
@@ -628,6 +652,7 @@ pub struct BlockedRetryMiddleware {
 
 impl BlockedRetryMiddleware {
     /// 创建阻塞重试中间件。
+    #[must_use]
     pub fn new(retry_delay: Duration) -> Self {
         Self { retry_delay }
     }
@@ -709,6 +734,7 @@ pub struct DefaultMiddlewareConfig {
 ///
 /// 用户通过 `SpiderBuilder::middleware` 添加的中间件视为额外自定义，
 /// 与默认链合并后统一排序。请勿重复添加同类 builtin 中间件。
+#[must_use]
 pub fn default_middlewares(cfg: DefaultMiddlewareConfig) -> Vec<Arc<dyn Middleware>> {
     let mut mws: Vec<Arc<dyn Middleware>> = Vec::new();
 
@@ -830,7 +856,7 @@ mod tests {
         ] {
             let req = make_req();
             let action = mw.process_error(&req, err, &ctx).await;
-            assert_eq!(action, ErrorAction::Retry, "网络错误 '{}' 应可重试", err);
+            assert_eq!(action, ErrorAction::Retry, "网络错误 '{err}' 应可重试");
         }
     }
 
@@ -878,7 +904,7 @@ mod tests {
     async fn test_cache_middleware() {
         let mw = CacheMiddleware::new(
             Arc::new(crate::storage::MemoryStore::default()),
-            Some(Duration::from_secs(60)),
+            Some(Duration::from_mins(1)),
         );
         let ctx = make_ctx();
         let mut req = make_req();
@@ -900,7 +926,7 @@ mod tests {
                 assert_eq!(cached.status, 200);
                 assert!(cached.from_cache);
             }
-            other => panic!("expected Respond, got {:?}", other),
+            other => panic!("expected Respond, got {other:?}"),
         }
     }
 
@@ -973,7 +999,7 @@ mod tests {
             MwAction::Refetch(req) => {
                 assert_eq!(req.fetch_mode_override, Some(FetchMode::Dynamic));
             }
-            other => panic!("expected Refetch, got {:?}", other),
+            other => panic!("expected Refetch, got {other:?}"),
         }
     }
 
@@ -987,7 +1013,7 @@ mod tests {
             MwAction::Refetch(req) => {
                 assert_eq!(req.fetch_mode_override, Some(FetchMode::Dynamic));
             }
-            other => panic!("expected Refetch, got {:?}", other),
+            other => panic!("expected Refetch, got {other:?}"),
         }
     }
 
@@ -1041,7 +1067,7 @@ mod tests {
             MwAction::Refetch(req) => {
                 assert_eq!(req.fetch_mode_override, Some(FetchMode::Dynamic));
             }
-            other => panic!("expected Refetch, got {:?}", other),
+            other => panic!("expected Refetch, got {other:?}"),
         }
     }
 
@@ -1115,7 +1141,7 @@ mod tests {
         let action = mw.process_response(&mut resp, &ctx).await;
         match action {
             MwAction::Refetch(_) => {}
-            other => panic!("expected Refetch, got {:?}", other),
+            other => panic!("expected Refetch, got {other:?}"),
         }
     }
 
@@ -1223,8 +1249,8 @@ mod tests {
                 rule_engine: rule_engine.clone(),
                 max_retries: 3,
             }));
-            assert!(!p.contains(&40), "{:?} 不应含 DynamicUpgrade", mode);
-            assert!(!p.contains(&45), "{:?} 不应含 StealthUpgrade", mode);
+            assert!(!p.contains(&40), "{mode:?} 不应含 DynamicUpgrade");
+            assert!(!p.contains(&45), "{mode:?} 不应含 StealthUpgrade");
         }
     }
 }

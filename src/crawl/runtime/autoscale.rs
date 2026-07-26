@@ -72,6 +72,7 @@ pub struct AutoscaledPool {
 
 impl AutoscaledPool {
     /// 创建自适应并发池。
+    #[must_use]
     pub fn new(
         min_concurrency: usize,
         max_concurrency: usize,
@@ -90,11 +91,13 @@ impl AutoscaledPool {
     }
 
     /// 获取当前允许的并发数（主循环使用）。
+    #[must_use]
     pub fn current_concurrency(&self) -> usize {
         self.current.load(Ordering::SeqCst)
     }
 
     /// 获取最大并发数上限（主循环用作 buffer_unordered 的 ceiling）。
+    #[must_use]
     pub fn max_concurrency(&self) -> usize {
         self.max_concurrency
     }
@@ -228,6 +231,6 @@ mod tests {
         handle.abort();
         // 并发数应仍在合理范围内
         let current = pool.current_concurrency();
-        assert!(current >= 2 && current <= 8);
+        assert!((2..=8).contains(&current));
     }
 }
