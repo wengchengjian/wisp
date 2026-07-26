@@ -11,8 +11,10 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 pub mod cf;
+pub mod http;
 
 pub use cf::{CfCookieJar, CfSession};
+pub use http::HttpCookieJar;
 
 /// Cookie 表示（统一格式，跨 HTTP/浏览器/CF）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
