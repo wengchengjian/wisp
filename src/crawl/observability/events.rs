@@ -14,8 +14,9 @@
 //! `EngineEvent` 是更细粒度的内部事件总线。
 //! 可通过一个 listener 将 EngineEvent 桥接到 CrawlEvent channel。
 
-use std::sync::Arc;
 use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
+use std::sync::Arc;
 
 use crate::crawl::CrawlStats;
 use crate::fetcher::FetchMode;
@@ -108,7 +109,9 @@ pub struct EventBus {
 impl EventBus {
     /// 创建空事件总线。
     pub fn new() -> Self {
-        Self { listeners: Vec::new() }
+        Self {
+            listeners: Vec::new(),
+        }
     }
 
     /// 注册事件监听器。
@@ -117,13 +120,20 @@ impl EventBus {
     }
 
     /// 发射事件（无 listener 时为 no-op）。
+    ///
+    /// OPTIMIZE: 旧实现 `for listener in &self.listeners { listener(event.clone()).await }`
+    /// 串行 await，N 个 listener 的总延迟 = sum(单 listener)。慢 listener 阻塞后续。
+    /// 改用 FuturesUnordered 并发 await，所有 listener 同时执行，总延迟 = max(单 listener)。
     pub async fn emit(&self, event: EngineEvent) {
         if self.listeners.is_empty() {
             return;
         }
-        for listener in &self.listeners {
-            listener(event.clone()).await;
-        }
+        let mut futures: FuturesUnordered<_> = self
+            .listeners
+            .iter()
+            .map(|listener| listener(event.clone()))
+            .collect();
+        while futures.next().await.is_some() {}
     }
 
     /// 是否有监听器。
@@ -154,7 +164,11 @@ pub fn logging_listener() -> EventListener {
                 EngineEvent::CrawlFinished { stats } => {
                     tracing::info!("Crawl finished: {}", stats.summary());
                 }
-                EngineEvent::ErrorOccurred { url, error, attempt } => {
+                EngineEvent::ErrorOccurred {
+                    url,
+                    error,
+                    attempt,
+                } => {
                     tracing::warn!("Error (attempt {}): {} - {}", attempt, url, error);
                 }
                 EngineEvent::BlockedDetected { url, status } => {
@@ -175,18 +189,32 @@ pub fn metrics_listener(metrics: Arc<Metrics>) -> EventListener {
         let metrics = Arc::clone(&metrics);
         Box::pin(async move {
             match event {
-                EngineEvent::ResponseReceived { elapsed_ms, from_cache, .. } => {
-                    metrics.responses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                EngineEvent::ResponseReceived {
+                    elapsed_ms,
+                    from_cache,
+                    ..
+                } => {
+                    metrics
+                        .responses
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if from_cache {
-                        metrics.cache_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        metrics
+                            .cache_hits
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
-                    metrics.total_elapsed_ms.fetch_add(elapsed_ms, std::sync::atomic::Ordering::Relaxed);
+                    metrics
+                        .total_elapsed_ms
+                        .fetch_add(elapsed_ms, std::sync::atomic::Ordering::Relaxed);
                 }
                 EngineEvent::ItemScraped { .. } => {
-                    metrics.items.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    metrics
+                        .items
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 EngineEvent::ErrorOccurred { .. } => {
-                    metrics.errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    metrics
+                        .errors
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 _ => {}
             }
@@ -218,8 +246,12 @@ impl Metrics {
     /// 平均响应时间（毫秒）。
     pub fn avg_response_ms(&self) -> u64 {
         let responses = self.responses.load(std::sync::atomic::Ordering::Relaxed);
-        if responses == 0 { return 0; }
-        self.total_elapsed_ms.load(std::sync::atomic::Ordering::Relaxed) / responses as u64
+        if responses == 0 {
+            return 0;
+        }
+        self.total_elapsed_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
+            / responses as u64
     }
 }
 
@@ -233,7 +265,11 @@ mod tests {
         let bus = EventBus::new();
         assert!(!bus.has_listeners());
         // emit should be no-op
-        bus.emit(EngineEvent::CrawlStarted { spider: "test".into(), start_urls: 1 }).await;
+        bus.emit(EngineEvent::CrawlStarted {
+            spider: "test".into(),
+            start_urls: 1,
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -252,8 +288,15 @@ mod tests {
         assert!(bus.has_listeners());
         assert_eq!(bus.listener_count(), 1);
 
-        bus.emit(EngineEvent::CrawlStarted { spider: "test".into(), start_urls: 1 }).await;
-        bus.emit(EngineEvent::ItemScraped { url: "http://x.com".into() }).await;
+        bus.emit(EngineEvent::CrawlStarted {
+            spider: "test".into(),
+            start_urls: 1,
+        })
+        .await;
+        bus.emit(EngineEvent::ItemScraped {
+            url: "http://x.com".into(),
+        })
+        .await;
 
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
@@ -269,12 +312,64 @@ mod tests {
             status: 200,
             elapsed_ms: 150,
             from_cache: false,
-        }).await;
+        })
+        .await;
 
-        bus.emit(EngineEvent::ItemScraped { url: "http://x.com".into() }).await;
+        bus.emit(EngineEvent::ItemScraped {
+            url: "http://x.com".into(),
+        })
+        .await;
 
         assert_eq!(metrics.responses.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.items.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.avg_response_ms(), 150);
+    }
+
+    /// Task 5：验证 EventBus::emit 并发执行 listeners，总延迟 ≈ max 而非 sum。
+    ///
+    /// OPTIMIZE: 旧实现 `for listener in &self.listeners { listener(event.clone()).await }`
+    /// 串行 await，3 个 listener（50ms × 3）总耗时 ≈ 150ms。
+    /// 改用 FuturesUnordered 并发 await 后，总耗时 ≈ max(50ms) = 50ms。
+    ///
+    /// 阈值 80ms 严格区分两种实现：串行 150ms > 80ms（FAIL），并发 50ms < 80ms（PASS）。
+    #[tokio::test]
+    async fn test_event_bus_concurrent_listeners() {
+        use std::sync::atomic::AtomicU32;
+        use std::time::{Duration, Instant};
+        use tokio::sync::Mutex;
+
+        let mut bus = EventBus::new();
+        let counter = Arc::new(AtomicU32::new(0));
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        // 3 个均 50ms 的 listener：串行 sum=150ms，并发 max=50ms
+        for label in ["l1", "l2", "l3"] {
+            let c = Arc::clone(&counter);
+            let o = Arc::clone(&order);
+            bus.on(Arc::new(move |_event: EngineEvent| {
+                let c = Arc::clone(&c);
+                let o = Arc::clone(&o);
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    c.fetch_add(1, Ordering::SeqCst);
+                    o.lock().await.push(label);
+                })
+            }));
+        }
+
+        let start = Instant::now();
+        bus.emit(EngineEvent::CrawlStarted {
+            spider: "test".into(),
+            start_urls: 1,
+        })
+        .await;
+        let elapsed = start.elapsed();
+
+        // OPTIMIZE: 并发执行总延迟应 ≈ 50ms（max），而非 150ms（sum）
+        assert_eq!(counter.load(Ordering::SeqCst), 3, "所有 listener 应执行");
+        assert!(
+            elapsed < Duration::from_millis(80),
+            "并发执行应 < 80ms，实际 {elapsed:?}"
+        );
     }
 }

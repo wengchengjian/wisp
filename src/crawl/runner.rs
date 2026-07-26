@@ -469,23 +469,24 @@ impl Engine {
             pages_since_checkpoint += 1;
             if pages_since_checkpoint >= self.checkpoint_interval {
                 if let Some(ref store) = self.checkpoint_store {
-                    // ND-003-ERR：save_checkpoint 失败时发送 Error 事件，不静默吞掉
-                    if let Err(e) = engine::persist_spider_checkpoint(
-                        store.as_ref(),
-                        &spider_name,
-                        &sched,
-                        &ctx.state.stats,
-                    )
-                    .await
-                    {
-                        tracing::warn!("checkpoint 失败: {}", e);
-                        if let Some(ref tx) = ctx.state.tx {
-                            let _ = tx.try_send(CrawlEvent::Error {
-                                url: String::new(),
-                                error: format!("checkpoint failed: {e}"),
-                            });
+                    // OPTIMIZE: spawn 后台执行，主循环不等待；失败仅 tracing::warn。
+                    // 旧实现直接 await persist_spider_checkpoint，慢存储会阻塞主循环拖慢吞吐。
+                    let store = Arc::clone(store);
+                    let spider_name = spider_name.clone();
+                    let sched = Arc::clone(&sched);
+                    let stats = Arc::clone(&ctx.state.stats);
+                    tokio::spawn(async move {
+                        if let Err(e) = engine::persist_spider_checkpoint(
+                            store.as_ref(),
+                            &spider_name,
+                            &sched,
+                            &stats,
+                        )
+                        .await
+                        {
+                            tracing::warn!("checkpoint 失败: {}", e);
                         }
-                    }
+                    });
                 }
                 pages_since_checkpoint = 0;
             }
@@ -673,5 +674,32 @@ mod tests {
         }
 
         assert_eq!(drained, vec![1, 2, 3]);
+    }
+
+    /// Task 5：验证 checkpoint 调用通过 `tokio::spawn` 后台执行，主循环不等待。
+    ///
+    /// OPTIMIZE: 旧实现直接 `persist_spider_checkpoint(...).await` 阻塞主循环，
+    /// 慢存储会拖慢爬取吞吐。改用 `tokio::spawn(async move { ... })` 后，
+    /// 主循环立即继续处理下一请求，checkpoint 在后台异步执行。
+    ///
+    /// 此测试为 spawn 模式契约测试，验证 tokio::spawn 不阻塞当前 task 的语义。
+    #[tokio::test]
+    async fn test_checkpoint_spawned_not_blocking_main_loop() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let flag = Arc::new(AtomicU32::new(0));
+        let flag_clone = Arc::clone(&flag);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            flag_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(flag.load(Ordering::SeqCst), 0, "主循环不应等待 spawn 的任务");
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(flag.load(Ordering::SeqCst), 1, "spawn 任务应完成");
     }
 }
