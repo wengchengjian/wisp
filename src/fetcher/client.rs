@@ -586,19 +586,10 @@ mod tests {
             expires: None,
         };
         jar.set(cookie).await;
-        let url = Url::parse("https://example.com/").unwrap();
+        let url = Url::parse("https://example.com/").expect("合法 URL");
         let cookies = jar.get(&url).await;
         assert_eq!(cookies.len(), 1);
         assert_eq!(cookies[0].name, "test");
-    }
-
-    #[test]
-    fn fetch_client_no_longer_has_cf_cache_field() {
-        // 编译期验证：FetchClient 不再有 cf_cache 字段
-        // 如果 cf_cache 字段仍存在，下面的 type alias 会失败
-        fn _assert_no_cf_cache_field(_client: &FetchClient) {}
-        // 通过反射式检查：如果 has_cf_cookies 方法仍存在，编译会失败
-        // （下面的代码尝试调用不应存在的方法，编译失败说明未完成迁移）
     }
 
     #[test]
