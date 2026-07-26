@@ -1,5 +1,6 @@
 //! Spider-based crawling engine.
 
+pub mod adaptive;
 pub mod auto;
 pub mod builder;
 pub mod engine;
@@ -21,6 +22,7 @@ pub use runtime::robots;
 pub use scheduling::scheduler;
 pub use scheduling::stop;
 
+pub use adaptive::AdaptiveTracker;
 pub use auto::ModeRuleEngine;
 pub use builder::{ClosureSpider, SpiderBuilder};
 pub use engine::{fetch_page, fetch_page_inner, record_status};
