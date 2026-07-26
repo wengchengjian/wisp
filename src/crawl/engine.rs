@@ -859,6 +859,7 @@ mod tests {
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
             },
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
@@ -977,6 +978,7 @@ mod tests {
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: Arc::new(chain),
                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
             },
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
@@ -1092,6 +1094,7 @@ mod tests {
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: Arc::new(chain),
                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
             },
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
@@ -1282,6 +1285,7 @@ mod tests {
                     chain
                 }),
                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
             },
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
