@@ -33,6 +33,8 @@ pub mod response;
 pub mod strategy;
 pub mod strategies;
 
+pub use strategies::{DynamicStrategy, StealthStrategy};
+
 pub use client::{FetchClient, FetchClientConfig};
 pub use response::{Method, Request, Response};
 
