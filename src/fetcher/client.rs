@@ -386,7 +386,7 @@ impl FetchClient {
             tracing::warn!("BrowserWork[{solve_label}]: {url} goto 失败: {e}");
             return Err(e);
         }
-        println!("[timing] goto: {:.0}ms", t_nav.elapsed().as_millis());
+        tracing::trace!(elapsed_ms = t_nav.elapsed().as_millis(), url = %url, "goto timing");
 
         // 从事件流中捕获导航请求的真实 HTTP 状态码。
         let t_status = std::time::Instant::now();
@@ -399,14 +399,14 @@ impl FetchClient {
                 return Err(e);
             }
         };
-        println!("[timing] recv_status: {:.0}ms, code={}", t_status.elapsed().as_millis(), nav_status);
+        tracing::trace!(elapsed_ms = t_status.elapsed().as_millis(), code = nav_status, url = %url, "recv_status timing");
 
         if solve_cf {
             let t_cf = std::time::Instant::now();
             // 检测并解决 Cloudflare 挑战
             let solver = ChallengeSolver::new(page);
             solver.solve_with_config(self.config.challenge_timeout, &self.config.turnstile).await?;
-            println!("[timing] solve_cf: {:.0}ms", t_cf.elapsed().as_millis());
+            tracing::trace!(elapsed_ms = t_cf.elapsed().as_millis(), url = %url, "solve_cf timing");
             // CF 挑战解决后，浏览器显示的是真实页面内容。
             // nav_status 捕获的是首次 goto 时的状态码（通常是 403/503 挑战页），
             // 不能反映挑战解决后的最终页面状态。修正为 200 以反映真实结果。
