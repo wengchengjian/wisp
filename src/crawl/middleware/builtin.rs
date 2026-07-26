@@ -73,17 +73,20 @@ impl Middleware for UaRotationMiddleware {
 /// - **不维护**：重试计数和上限由 engine 在 `fetch_dispatch` 内统一管理
 ///
 /// engine 读取 `EngineConfig.max_retries` 作为上限，维护 `req.retry_count` 计数。
-/// 中间件只返回 `ErrorAction::Retry` 或 `Propagate`，不再读取/写入 `meta["_retry"]`。
+/// 中间件返回 `ErrorAction::Retry` 或 `Propagate`，退避策略（指数退避 + 抖动）
+/// 由 engine 统一负责（避免与中间件 sleep 重复退避）。
 pub struct RetryMiddleware {
-    retry_delay: Duration,
+    max_retries: u32,
 }
 
 impl RetryMiddleware {
     /// 创建重试中间件。
     ///
-    /// - `retry_delay`：重试前的固定退避延迟（在中间件内 sleep）
-    pub fn new(retry_delay: Duration) -> Self {
-        Self { retry_delay }
+    /// - `max_retries`：网络错误最大重试次数（与 `EngineConfig.max_retries` 一致，
+    ///   作为中间件层的双重保险，避免单点逻辑漂移）。
+    ///   退避由 engine 统一负责（指数退避 + 抖动），中间件不做 sleep。
+    pub fn new(max_retries: u32) -> Self {
+        Self { max_retries }
     }
 }
 
@@ -93,14 +96,15 @@ impl Middleware for RetryMiddleware {
         90
     }
 
-    async fn process_error(&self, _req: &Request, _err: &str, _ctx: &CrawlContext) -> ErrorAction {
+    async fn process_error(&self, req: &Request, _err: &str, _ctx: &CrawlContext) -> ErrorAction {
         // fetch_page 返回 Err 都是网络层错误（DNS/连接/TLS/超时等），
         // HTTP 业务错误（4xx/5xx）会返回 Ok(resp)，由 BlockedRetryMiddleware 通过 Refetch 处理。
-        // 因此这里默认重试所有 fetch 错误，计数和上限由 engine 在 fetch_dispatch 内统一管理。
-        if !self.retry_delay.is_zero() {
-            tokio::time::sleep(self.retry_delay).await;
+        // OPTIMIZE: 退避由 engine 统一负责（指数退避 + 抖动），中间件仅决定是否重试。
+        if req.retry_count < self.max_retries {
+            ErrorAction::Retry
+        } else {
+            ErrorAction::Propagate
         }
-        ErrorAction::Retry
     }
 }
 
@@ -661,6 +665,8 @@ pub struct DefaultMiddlewareConfig {
     pub robots_cache: Arc<RobotsCache>,
     /// Auto 模式规则引擎（StealthUpgradeMiddleware 学习模式用）
     pub rule_engine: Arc<Mutex<ModeRuleEngine>>,
+    /// 网络错误最大重试次数（注入 RetryMiddleware；与 EngineConfig.max_retries 一致）
+    pub max_retries: u32,
 }
 
 /// 按 FetchMode 和 Spider 配置注入默认行为中间件链。
@@ -709,7 +715,7 @@ pub fn default_middlewares(cfg: DefaultMiddlewareConfig) -> Vec<Arc<dyn Middlewa
     // 4. 重试/挑战类
     mws.push(Arc::new(CookieChallengeMiddleware::default()));
     mws.push(Arc::new(BlockedRetryMiddleware::default()));
-    mws.push(Arc::new(RetryMiddleware::new(Duration::from_millis(500))));
+    mws.push(Arc::new(RetryMiddleware::new(cfg.max_retries)));
 
     mws
 }
@@ -780,9 +786,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_middleware_always_retries_fetch_errors() {
-        // RetryMiddleware 只决定"是否值得重试"，不维护计数
-        // fetch_page 返回 Err 都是网络层错误，默认全部可重试
-        let mw = RetryMiddleware::new(Duration::ZERO);
+        // RetryMiddleware 在 retry_count < max_retries 时返回 Retry
+        // fetch_page 返回 Err 都是网络层错误，均可重试（直到耗尽 max_retries）
+        let mw = RetryMiddleware::new(3);
         let ctx = make_ctx();
 
         // 各种网络错误都应可重试
@@ -799,6 +805,21 @@ mod tests {
             let action = mw.process_error(&req, err, &ctx).await;
             assert_eq!(action, ErrorAction::Retry, "网络错误 '{}' 应可重试", err);
         }
+    }
+
+    /// retry_count 已达 max_retries 时应返回 Propagate（不再重试）。
+    #[tokio::test]
+    async fn test_retry_middleware_propagates_when_retries_exhausted() {
+        let mw = RetryMiddleware::new(2);
+        let ctx = make_ctx();
+        let mut req = make_req();
+        req.retry_count = 2;
+        let action = mw.process_error(&req, "connection refused", &ctx).await;
+        assert_eq!(
+            action,
+            ErrorAction::Propagate,
+            "retry_count == max_retries 应返回 Propagate"
+        );
     }
 
     #[tokio::test]
@@ -1079,6 +1100,7 @@ mod tests {
             http_client: http_client.clone(),
             robots_cache: robots_cache.clone(),
             rule_engine: rule_engine.clone(),
+            max_retries: 3,
         }));
         assert!(auto_p.contains(&0), "allowed 非空应含 DomainFilter");
         assert!(auto_p.contains(&5), "应含 DepthLimit");
@@ -1102,6 +1124,7 @@ mod tests {
             http_client: http_client.clone(),
             robots_cache: robots_cache.clone(),
             rule_engine: rule_engine.clone(),
+            max_retries: 3,
         }));
         assert!(!http_p.contains(&0), "allowed 空不应含 DomainFilter");
         assert!(!http_p.contains(&8), "obey_robots=false 不应含 Robots");
@@ -1127,6 +1150,7 @@ mod tests {
                 http_client: http_client.clone(),
                 robots_cache: robots_cache.clone(),
                 rule_engine: rule_engine.clone(),
+                max_retries: 3,
             }));
             assert!(!p.contains(&40), "{:?} 不应含 DynamicUpgrade", mode);
             assert!(!p.contains(&45), "{:?} 不应含 StealthUpgrade", mode);

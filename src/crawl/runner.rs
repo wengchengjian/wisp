@@ -296,6 +296,7 @@ impl Engine {
                             http_client: mw_http_client,
                             robots_cache: mw_robots_cache,
                             rule_engine: rule_engine.clone(),
+                            max_retries: self.max_retries,
                         },
                     );
                     let mut chain = middleware::MiddlewareChain::new();

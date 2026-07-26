@@ -15,7 +15,7 @@
 //! let spider = SpiderBuilder::new("example")
 //!     .start_urls(vec!["https://example.com/"])
 //!     .middleware(UaRotationMiddleware::desktop())
-//!     .middleware(RetryMiddleware::new(3, std::time::Duration::from_secs(1)))
+//!     .middleware(RetryMiddleware::new(3))
 //!     .on("default", |resp| async move { (vec![], vec![]) })
 //!     .build();
 //! ```
