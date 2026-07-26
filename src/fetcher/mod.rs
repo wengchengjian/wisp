@@ -31,6 +31,7 @@
 pub mod client;
 pub mod response;
 pub mod strategy;
+pub mod strategies;
 
 pub use client::{FetchClient, FetchClientConfig};
 pub use response::{Method, Request, Response};
