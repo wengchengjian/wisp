@@ -432,6 +432,7 @@ mod tests {
         assert_eq!(fetcher.config().emulation, Some(Profile::Firefox128));
     }
 
+    #[cfg(feature = "stealth")]
     #[test]
     fn test_fetcher_builder_stealth() {
         let fetcher = Fetcher::stealth()
@@ -448,6 +449,7 @@ mod tests {
         assert_eq!(fetcher.config().challenge_timeout, Duration::from_mins(1));
     }
 
+    #[cfg(feature = "browser")]
     #[test]
     fn test_fetcher_builder_dynamic() {
         let fetcher = Fetcher::dynamic()
@@ -463,6 +465,7 @@ mod tests {
         assert_eq!(fetcher.config().extra_wait_ms, 2000);
     }
 
+    #[cfg(feature = "browser")]
     #[test]
     fn test_fetcher_builder_block_ads() {
         let fetcher = Fetcher::dynamic()
