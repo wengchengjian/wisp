@@ -83,6 +83,23 @@ impl CookieJar for HttpCookieJar {
     }
 
     async fn set(&self, cookie: Cookie) {
+        // expires 是 Unix 时间戳（秒）。wreq::cookie::Jar 的 Cookie::expires() 仅读
+        // cookie::Cookie 的 expires 字段（Expiration 类型），不读 max_age 字段，
+        // 因此用 `Expires=<HTTP-date>` 而非 `Max-Age=<secs>`，否则 expires 信息丢失。
+        // 过期 cookie（expires <= now）直接跳过。
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
+        let expires_str = match cookie.expires {
+            Some(expires) if expires > now => {
+                // RFC 7231 IMF-fixdate: "Wed, 21 Oct 2015 07:28:00 GMT"
+                chrono::DateTime::<chrono::Utc>::from_timestamp(expires as i64, 0)
+                    .map(|dt| dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
+            }
+            Some(_) => return, // 已过期
+            None => None,      // session cookie
+        };
+
         // 构造 Set-Cookie 字符串注入到 wreq::cookie::Jar
         let mut cookie_str = format!("{}={}", cookie.name, cookie.value);
         cookie_str.push_str(&format!("; Domain={}", cookie.domain));
@@ -95,6 +112,9 @@ impl CookieJar for HttpCookieJar {
         }
         if let Some(ref ss) = cookie.same_site {
             cookie_str.push_str(&format!("; SameSite={ss}"));
+        }
+        if let Some(ref exp) = expires_str {
+            cookie_str.push_str(&format!("; Expires={exp}"));
         }
         // 使用 domain 构造关联 uri（Jar 会从中提取 host 并校验 domain-match）
         let uri = format!("https://{}/", cookie.domain);
@@ -248,5 +268,72 @@ mod tests {
         let cookies = jar.get(&url).await;
         assert_eq!(cookies.len(), 1);
         assert_eq!(cookies[0].name, "a");
+    }
+
+    #[tokio::test]
+    async fn http_set_with_expires() {
+        // 验证带 expires 的 cookie 能被正确存储并读回 expires 字段
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间在 1970 之后")
+            .as_secs_f64();
+        let jar = HttpCookieJar::new();
+        // expires 设为 now + 3600s（1 小时后）
+        jar.set(Cookie {
+            name: "token".into(),
+            value: "xyz".into(),
+            domain: "example.com".into(),
+            path: "/".into(),
+            secure: false,
+            http_only: true,
+            same_site: Some("Lax".into()),
+            expires: Some(now + 3600.0),
+        })
+        .await;
+
+        let url = make_url("https://example.com/");
+        let cookies = jar.get(&url).await;
+        assert_eq!(cookies.len(), 1, "应读回 1 个 cookie");
+        assert_eq!(cookies[0].name, "token");
+        assert_eq!(cookies[0].value, "xyz");
+        // 读回的 expires 应为 Some 且接近入参（差异在 5 秒内视为精度可接受）
+        let read_expires = cookies[0]
+            .expires
+            .expect("expires 应为 Some，非 session cookie");
+        let delta = (read_expires - (now + 3600.0)).abs();
+        assert!(
+            delta < 5.0,
+            "expires 偏差过大: {delta}s（读回 {read_expires}, 期望 {}）",
+            now + 3600.0
+        );
+    }
+
+    #[tokio::test]
+    async fn http_set_with_expired_expires_skipped() {
+        // 过期 cookie（expires <= now）应被跳过：jar 不存储，读回为空
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间在 1970 之后")
+            .as_secs_f64();
+        let jar = HttpCookieJar::new();
+        jar.set(Cookie {
+            name: "dead".into(),
+            value: "v".into(),
+            domain: "example.com".into(),
+            path: "/".into(),
+            secure: false,
+            http_only: false,
+            same_site: None,
+            expires: Some(now - 10.0), // 已过期 10 秒
+        })
+        .await;
+
+        let url = make_url("https://example.com/");
+        let cookies = jar.get(&url).await;
+        assert!(
+            cookies.is_empty(),
+            "过期 cookie 不应被存储，但读回 {len} 条",
+            len = cookies.len()
+        );
     }
 }
