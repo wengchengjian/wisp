@@ -64,6 +64,8 @@ pub async fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
 
 /// Build default Chrome launch arguments from options, with patches applied.
 /// These args include the "--" prefix (for testing/verification).
+///
+/// ARCH: = build_common_args + build_stealth_extra_args，加 "--" 前缀。
 #[must_use]
 pub fn build_default_args(options: &LaunchOptions) -> Vec<String> {
     build_stealth_args(options)
@@ -72,9 +74,20 @@ pub fn build_default_args(options: &LaunchOptions) -> Vec<String> {
         .collect()
 }
 
-/// Build stealth launch args WITHOUT "--" prefix.
-/// Aligned with patchright's chromiumSwitches.ts for maximum stealth.
+/// 构建完整启动参数（common + stealth_extra），无 "--" 前缀。
+///
+/// ARCH: 保留原 `build_stealth_args` 名字以兼容 `Browser::launch` 调用。
 pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
+    let mut args = build_common_args(options);
+    args.extend(build_stealth_extra_args(options));
+    args
+}
+
+/// 构建通用 Chrome 启动参数（不含 stealth 专用参数）。
+///
+/// ARCH: 通用参数对所有浏览器模式（Dynamic/Stealth）都需要。
+/// 不包含 `disable-blink-features=AutomationControlled` 等 stealth 专用参数。
+pub fn build_common_args(options: &LaunchOptions) -> Vec<String> {
     let mut args: Vec<String> = vec![
         // patchright chromiumSwitches (verified from source)
         "disable-field-trial-config".into(),
@@ -96,8 +109,6 @@ pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
         "disable-search-engine-choice-screen".into(),
         "disable-infobars".into(),
         "disable-sync".into(),
-        // Core anti-detection flag
-        "disable-blink-features=AutomationControlled".into(),
         // Disabled features (from patchright)
         "disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding".into(),
     ];
@@ -127,6 +138,18 @@ pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
     }
 
     args
+}
+
+/// 构建 stealth 专用额外参数。
+///
+/// ARCH: PR2 阶段无 cfg gate（stealth 模块仍总是编译）。
+/// PR3 启用 feature gate 后，此函数加 `#[cfg(feature = "stealth")]`，
+/// `build_default_args` 中的调用也加对应 cfg。
+pub fn build_stealth_extra_args(_options: &LaunchOptions) -> Vec<String> {
+    vec![
+        // Core anti-detection flag
+        "disable-blink-features=AutomationControlled".into(),
+    ]
 }
 
 #[cfg(test)]
@@ -203,5 +226,50 @@ mod tests {
         let args = build_stealth_args(&opts);
         assert!(args.contains(&"custom-flag".to_string()));
         assert!(args.contains(&"another-flag".to_string()));
+    }
+
+    #[test]
+    fn test_build_common_args_excludes_stealth_specific() {
+        let opts = LaunchOptions::default();
+        let args = build_common_args(&opts);
+        // 通用参数应包含 no-first-run、disable-background-networking
+        assert!(args.contains(&"no-first-run".to_string()));
+        assert!(args.contains(&"disable-background-networking".to_string()));
+        // 通用参数不应包含 stealth 专用参数
+        assert!(!args.contains(&"disable-blink-features=AutomationControlled".to_string()));
+    }
+
+    #[test]
+    fn test_build_stealth_extra_args_contains_stealth_specific() {
+        let opts = LaunchOptions::default();
+        let args = build_stealth_extra_args(&opts);
+        assert!(args.contains(&"disable-blink-features=AutomationControlled".to_string()));
+        // stealth_extra 不应包含通用参数
+        assert!(!args.contains(&"no-first-run".to_string()));
+    }
+
+    #[test]
+    fn test_build_default_args_combines_common_and_stealth() {
+        let opts = LaunchOptions::default();
+        let args = build_default_args(&opts);
+        // 应同时包含通用参数和 stealth 专用参数
+        assert!(args.iter().all(|a| a.starts_with("--")));
+        assert!(args.iter().any(|a| a == "--no-first-run"));
+        assert!(args.iter().any(|a| a == "--disable-blink-features=AutomationControlled"));
+    }
+
+    #[test]
+    fn test_build_stealth_args_equals_common_plus_stealth_extra() {
+        let opts = LaunchOptions::default();
+        let common = build_common_args(&opts);
+        let extra = build_stealth_extra_args(&opts);
+        let combined = build_stealth_args(&opts);
+        // combined 应等于 common + extra（顺序可能不同，但内容相同）
+        let mut expected = common.clone();
+        expected.extend(extra.clone());
+        expected.sort();
+        let mut actual = combined.clone();
+        actual.sort();
+        assert_eq!(expected, actual);
     }
 }
