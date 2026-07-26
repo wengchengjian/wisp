@@ -1,4 +1,4 @@
-//! Browser process management. Launches Chrome directly with stealth args.
+//! Browser process management. Launches Chrome directly with launch args.
 
 /// CDP WebSocket 会话管理。
 pub mod cdp;
@@ -44,7 +44,10 @@ pub struct Browser {
 }
 
 impl Browser {
-    /// Launch browser with anti-detection patches.
+    /// Launch browser with given options.
+    ///
+    /// ARCH: Browser 是通用 CDP 层，不包含反检测逻辑。
+    /// 反检测 JS 补丁由 `stealth::patches` 提供（PR2 已迁移）。
     ///
     /// # Errors
     ///
