@@ -300,40 +300,38 @@ impl Engine {
         let ctx = Arc::new(engine::EngineContext {
             config: Arc::clone(self.config()),
             client: fetch_client,
-            shared: engine::EngineShared {
-                sched: sched.clone(),
-                follow_tx,
-                // ND-009-SEC：moka::Cache 限制 proxy client 缓存最大 1024 条
-                proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-                control: self.control.clone(),
-                work_notify: Arc::new(tokio::sync::Notify::new()),
-                middleware_chain: {
-                    // 默认中间件链：按 fetch_mode + spider 配置注入（详见 builtin::default_middlewares）
-                    let defaults = middleware::builtin::default_middlewares(
-                        middleware::builtin::DefaultMiddlewareConfig {
-                            fetch_mode,
-                            delay: self.config().download_delay,
-                            obey_robots,
-                            allowed_domains: spider.allowed_domains(),
-                            max_depth,
-                            cache_store: self.cache_store.clone(),
-                            http_client: mw_http_client,
-                            robots_cache: mw_robots_cache,
-                            rule_engine: rule_engine.clone(),
-                            max_retries: self.config().max_retries,
-                        },
-                    );
-                    let mut chain = middleware::MiddlewareChain::new();
-                    // 用户中间件 + 默认中间件合并，sort 按 priority 统一排序
-                    chain.middlewares = spider.middlewares();
-                    chain.middlewares.extend(defaults);
-                    chain.pipelines = spider.pipelines();
-                    chain.sort();
-                    Arc::new(chain)
-                },
-                rule_engine,
-                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+            sched: sched.clone(),
+            follow_tx,
+            // ND-009-SEC：moka::Cache 限制 proxy client 缓存最大 1024 条
+            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+            control: self.control.clone(),
+            work_notify: Arc::new(tokio::sync::Notify::new()),
+            middleware_chain: {
+                // 默认中间件链：按 fetch_mode + spider 配置注入（详见 builtin::default_middlewares）
+                let defaults = middleware::builtin::default_middlewares(
+                    middleware::builtin::DefaultMiddlewareConfig {
+                        fetch_mode,
+                        delay: self.config().download_delay,
+                        obey_robots,
+                        allowed_domains: spider.allowed_domains(),
+                        max_depth,
+                        cache_store: self.cache_store.clone(),
+                        http_client: mw_http_client,
+                        robots_cache: mw_robots_cache,
+                        rule_engine: rule_engine.clone(),
+                        max_retries: self.config().max_retries,
+                    },
+                );
+                let mut chain = middleware::MiddlewareChain::new();
+                // 用户中间件 + 默认中间件合并，sort 按 priority 统一排序
+                chain.middlewares = spider.middlewares();
+                chain.middlewares.extend(defaults);
+                chain.pipelines = spider.pipelines();
+                chain.sort();
+                Arc::new(chain)
             },
+            rule_engine,
+            cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             state: engine::EngineState {
                 spider: spider.clone(),
                 stats: stats.clone(),
@@ -346,11 +344,10 @@ impl Engine {
         });
 
         // 中间件初始化：在爬取开始前调用所有中间件的 init + pipeline 的 open
-        if !ctx.shared.middleware_chain.is_empty() {
+        if !ctx.middleware_chain.is_empty() {
             let crawl_ctx = engine::build_crawl_context(&ctx);
-            ctx.shared.middleware_chain.run_init(&crawl_ctx).await;
-            ctx.shared
-                .middleware_chain
+            ctx.middleware_chain.run_init(&crawl_ctx).await;
+            ctx.middleware_chain
                 .run_pipelines_open(&crawl_ctx)
                 .await;
         }
@@ -359,7 +356,7 @@ impl Engine {
         let autoscaler_handle = if let Some(ref pool) = self.autoscale {
             // ND-004-CORR：注入 work_notify，autoscale 扩容时唤醒主循环，
             // 避免主循环 10ms timeout 轮询。
-            pool.set_work_notify(Arc::clone(&ctx.shared.work_notify));
+            pool.set_work_notify(Arc::clone(&ctx.work_notify));
             let pool = Arc::clone(pool);
             let stats = Arc::clone(&stats);
             Some(tokio::spawn(async move {
@@ -385,7 +382,7 @@ impl Engine {
                 let autoscale = autoscale.clone();
                 async move {
                     loop {
-                        if ctx.shared.control.is_shutdown()
+                        if ctx.control.is_shutdown()
                             || ctx.state.abort_flag.load(Ordering::SeqCst)
                         {
                             return None;
@@ -394,7 +391,7 @@ impl Engine {
                         // OPTIMIZE: 直接 try_recv drain follow channel，无 Mutex 锁争用。
                         // Receiver 是单消费者类型，串行化访问无意义。
                         while let Ok(req) = rx.try_recv() {
-                            ctx.shared.sched.push(req).await;
+                            ctx.sched.push(req).await;
                         }
 
                         // 引擎级 max_pages 兜底
@@ -410,7 +407,7 @@ impl Engine {
                         }
 
                         // Spider until 终止条件检查
-                        let queue_size = ctx.shared.sched.len().await;
+                        let queue_size = ctx.sched.len().await;
                         let stop_ctx = stop::StopContext {
                             pages: ctx.state.stats.pages.load(Ordering::SeqCst),
                             items: ctx.state.stats.items.load(Ordering::SeqCst),
@@ -444,17 +441,17 @@ impl Engine {
                             // 唤醒来源：process_response 末尾 notify_one（in-flight 下降）、
                             // autoscaler 扩容时 notify_one（limit 上升）。
                             // 不再使用 10ms timeout 轮询，避免 CPU 浪费。
-                            ctx.shared.work_notify.notified().await;
+                            ctx.work_notify.notified().await;
                             continue;
                         }
 
-                        let req = if let Some(req) = ctx.shared.sched.pop().await { req } else {
+                        let req = if let Some(req) = ctx.sched.pop().await { req } else {
                             if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
                                 return None;
                             }
                             // ND-004-CORR/ND-007-PERF：scheduler 空但仍有 in-flight，
                             // 纯 Notify 驱动等待新 work（follow 请求通过 process_response notify）。
-                            ctx.shared.work_notify.notified().await;
+                            ctx.work_notify.notified().await;
                             continue;
                         };
 
@@ -465,11 +462,11 @@ impl Engine {
                         let fut = async move {
                             let _g1 = engine::InFlightGuard {
                                 counter: ctx_c.state.global_in_flight.clone(),
-                                work_notify: ctx_c.shared.work_notify.clone(),
+                                work_notify: ctx_c.work_notify.clone(),
                             };
                             let _g2 = engine::InFlightGuard {
                                 counter: ctx_c.state.stats.in_flight.clone(),
-                                work_notify: ctx_c.shared.work_notify.clone(),
+                                work_notify: ctx_c.work_notify.clone(),
                             };
                             // 请求阶段 → 响应阶段（同级编排，process_request 不再内嵌 process_response）
                             if let Some(resp) = engine::process_request(&ctx_c, req).await {
@@ -532,10 +529,9 @@ impl Engine {
         }
 
         // pipeline 关闭：爬取结束后释放资源
-        if !ctx.shared.middleware_chain.is_empty() {
+        if !ctx.middleware_chain.is_empty() {
             let crawl_ctx = engine::build_crawl_context(&ctx);
-            ctx.shared
-                .middleware_chain
+            ctx.middleware_chain
                 .run_pipelines_close(&crawl_ctx)
                 .await;
         }

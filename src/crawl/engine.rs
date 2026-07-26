@@ -31,26 +31,21 @@ use crate::http::Client;
 
 // === EngineContext: 打包所有共享状态 ===
 
-/// Engine 运行时上下文（单 Spider），由三层组成。
+/// Engine 运行时上下文（单 Spider）。
 ///
-/// - `config`: 只读配置（Arc 共享，构建后不可变）
-/// - `client`: 共享 FetchClient（跨 task 复用）
-/// - `shared`: 跨 task 共享的可变状态
-/// - `state`: per-run 可变状态
+/// PR4 重构：删除 EngineShared 子结构，字段直接展开到 EngineContext 顶层。
+/// 分为三组：
+/// - 只读配置：config (Arc<runner::EngineConfig>) + client (Arc<FetchClient>)
+/// - 跨 task 共享可变状态：sched / follow_tx / proxy_clients / control / work_notify / middleware_chain / rule_engine / cf_domain_locks
+/// - per-run 可变状态：state
 pub(crate) struct EngineContext {
+    // === 只读配置 ===
     pub config: Arc<crate::crawl::runner::EngineConfig>,
     pub client: Arc<crate::fetcher::FetchClient>,
-    pub shared: EngineShared,
-    pub state: EngineState,
-}
 
-/// 跨 task 共享的可变状态。
-pub(crate) struct EngineShared {
+    // === 跨 task 共享可变状态（原 EngineShared） ===
     pub sched: Arc<scheduler::Scheduler>,
     pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
-    // OPTIMIZE: follow_rx 移出 EngineShared，由 runner.rs unfold 状态持有。
-    // 旧实现 `Arc<Mutex<UnboundedReceiver>>` 串行化所有 follow drain，但 Receiver 是
-    // 单消费者类型，无需 Mutex；保留 Mutex 只增加锁争用与无谓 await 开销。
     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）。
     ///
     /// ND-009-SEC：使用 moka::sync::Cache 限制最大条目数，防止攻击者注入大量
@@ -64,6 +59,9 @@ pub(crate) struct EngineShared {
     /// 第一个请求获取锁并解决 CF，其他请求等待后复用 cookie。
     /// 用 moka::Cache（max 1024，LRU 淘汰）避免无界增长。
     pub cf_domain_locks: Arc<moka::sync::Cache<String, Arc<tokio::sync::Mutex<()>>>>,
+
+    // === per-run 可变状态 ===
+    pub state: EngineState,
 }
 
 /// per-run 可变状态。
@@ -82,13 +80,13 @@ pub(crate) struct EngineState {
 /// Stage 1: 控制状态检查 + Spider 钩子（基础设施级，不可中间件化）。
 async fn check_control_and_hook(ctx: &EngineContext, req: &Request) -> bool {
     // per-Engine 控制状态检查
-    if ctx.shared.control.is_cancelled(&req.url).await {
+    if ctx.control.is_cancelled(&req.url).await {
         return false;
     }
-    if !ctx.shared.control.wait_if_paused(&req.url).await {
+    if !ctx.control.wait_if_paused(&req.url).await {
         return false;
     }
-    if ctx.shared.control.is_shutdown() {
+    if ctx.control.is_shutdown() {
         return false;
     }
     // Spider 异步钩子
@@ -125,10 +123,9 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
     // 2. 中间件请求链（所有策略过滤在此发生）
     let mut req = req;
     let stats = &ctx.state.stats;
-    if !ctx.shared.middleware_chain.is_empty() {
+    if !ctx.middleware_chain.is_empty() {
         let crawl_ctx = build_crawl_context(ctx);
         match ctx
-            .shared
             .middleware_chain
             .run_request_middlewares(&mut req, &crawl_ctx)
             .await
@@ -186,11 +183,10 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     // 中间件链：响应后拦截（支持 Refetch 循环，最多 5 轮）
     let mut resp = resp;
     let mut refetch_depth = 0u32;
-    if !ctx.shared.middleware_chain.is_empty() {
+    if !ctx.middleware_chain.is_empty() {
         loop {
             let crawl_ctx = build_crawl_context(ctx);
             match ctx
-                .shared
                 .middleware_chain
                 .run_response_middlewares(&mut resp, &crawl_ctx)
                 .await
@@ -274,7 +270,7 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     // ND-009-PERF：crawl_ctx 在循环外构建一次，避免每 item 重建
     // OPTIMIZE: 本地 Vec 收集所有 processed items，单次 lock 批量 push，
     // 避免 N 次 lock().await.push()。tx 改 try_send 非阻塞，消费者慢时不卡核心路径。
-    let pipeline_crawl_ctx = if ctx.shared.middleware_chain.is_empty() {
+    let pipeline_crawl_ctx = if ctx.middleware_chain.is_empty() {
         None
     } else {
         Some(build_crawl_context(ctx))
@@ -291,8 +287,7 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
         };
         // 再经过中间件 pipeline 链
         let item = if let Some(ref crawl_ctx) = pipeline_crawl_ctx {
-            ctx.shared
-                .middleware_chain
+            ctx.middleware_chain
                 .run_pipelines(item, crawl_ctx)
                 .await
         } else {
@@ -318,12 +313,12 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
         items_lock.extend(processed_items);
     }
     for f in follows {
-        if ctx.shared.follow_tx.send(f).is_err() {
+        if ctx.follow_tx.send(f).is_err() {
             tracing::debug!("follow_tx closed, dropping follow request");
         }
     }
     // 通知主循环有新工作到来
-    ctx.shared.work_notify.notify_one();
+    ctx.work_notify.notify_one();
 
     // PageScraped 事件
     if let Some(ref tx) = ctx.state.tx {
@@ -366,9 +361,9 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
             &current_req,
             proxy.as_deref(),
             ctx.config.fetch_mode,
-            &ctx.shared.rule_engine,
-            &ctx.shared.proxy_clients,
-            &ctx.shared.cf_domain_locks,
+            &ctx.rule_engine,
+            &ctx.proxy_clients,
+            &ctx.cf_domain_locks,
         )
         .await
         {
@@ -393,7 +388,7 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
                 {
                     // OPTIMIZE: 合并 resolve+learn 到单次锁，避免两次锁争用。
                     let should_upgrade = {
-                        let mut engine = ctx.shared.rule_engine.lock().await;
+                        let mut engine = ctx.rule_engine.lock().await;
                         if engine.resolve(&current_req.url) == Some(FetchMode::Stealth) {
                             false
                         } else {
@@ -413,12 +408,11 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> (Option<Response>
                 }
 
                 // 调用错误中间件：只决定"是否重试"，不维护计数
-                let action = if ctx.shared.middleware_chain.is_empty() {
+                let action = if ctx.middleware_chain.is_empty() {
                     middleware::ErrorAction::Propagate
                 } else {
                     let crawl_ctx = build_crawl_context(ctx);
-                    ctx.shared
-                        .middleware_chain
+                    ctx.middleware_chain
                         .run_error_middlewares(&current_req, &e.to_string(), &crawl_ctx)
                         .await
                 };
@@ -956,16 +950,14 @@ mod tests {
                 crate::fetcher::FetchClient::new(crate::fetcher::FetchClientConfig::default())
                     .expect("build fetch client"),
             ),
-            shared: EngineShared {
-                sched: Arc::new(scheduler::Scheduler::new()),
-                follow_tx,
-                proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-                control: Arc::new(control::EngineControl::new()),
-                work_notify: Arc::new(tokio::sync::Notify::new()),
-                middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
-                rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-            },
+            sched: Arc::new(scheduler::Scheduler::new()),
+            follow_tx,
+            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+            control: Arc::new(control::EngineControl::new()),
+            work_notify: Arc::new(tokio::sync::Notify::new()),
+            middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
+            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+            cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
                 stats: stats.clone(),
@@ -1076,16 +1068,14 @@ mod tests {
                 crate::fetcher::FetchClient::new(crate::fetcher::FetchClientConfig::default())
                     .expect("build fetch client"),
             ),
-            shared: EngineShared {
-                sched: Arc::new(scheduler::Scheduler::new()),
-                follow_tx,
-                proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-                control: Arc::new(control::EngineControl::new()),
-                work_notify: Arc::new(tokio::sync::Notify::new()),
-                middleware_chain: Arc::new(chain),
-                rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-            },
+            sched: Arc::new(scheduler::Scheduler::new()),
+            follow_tx,
+            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+            control: Arc::new(control::EngineControl::new()),
+            work_notify: Arc::new(tokio::sync::Notify::new()),
+            middleware_chain: Arc::new(chain),
+            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+            cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
                 stats: stats.clone(),
@@ -1190,16 +1180,14 @@ mod tests {
                 };
                 Arc::new(crate::fetcher::FetchClient::new(fetch_config).expect("build fetch client"))
             },
-            shared: EngineShared {
-                sched: Arc::new(scheduler::Scheduler::new()),
-                follow_tx,
-                proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-                control: Arc::new(control::EngineControl::new()),
-                work_notify: Arc::new(tokio::sync::Notify::new()),
-                middleware_chain: Arc::new(chain),
-                rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-            },
+            sched: Arc::new(scheduler::Scheduler::new()),
+            follow_tx,
+            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+            control: Arc::new(control::EngineControl::new()),
+            work_notify: Arc::new(tokio::sync::Notify::new()),
+            middleware_chain: Arc::new(chain),
+            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+            cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
                 stats: stats.clone(),
@@ -1234,7 +1222,7 @@ mod tests {
         assert!(err.is_some(), "应返回错误信息");
 
         // 关键断言：rule_engine 应学到该 URL 需要 Stealth
-        let resolved = ctx.shared.rule_engine.lock().await.resolve(url);
+        let resolved = ctx.rule_engine.lock().await.resolve(url);
         assert_eq!(
             resolved,
             Some(FetchMode::Stealth),
@@ -1255,7 +1243,7 @@ mod tests {
 
         // 预先学习：模拟之前请求已 learn 过 Stealth
         {
-            let mut rule_engine = ctx.shared.rule_engine.lock().await;
+            let mut rule_engine = ctx.rule_engine.lock().await;
             rule_engine.learn(url, FetchMode::Stealth);
             assert_eq!(rule_engine.auto_rule_count(), 1);
         }
@@ -1268,7 +1256,7 @@ mod tests {
         assert!(err.is_some(), "应返回错误信息");
 
         // 关键断言：不应重复 learn（auto_rule_count 仍为 1）
-        let rule_engine = ctx.shared.rule_engine.lock().await;
+        let rule_engine = ctx.rule_engine.lock().await;
         assert_eq!(
             rule_engine.auto_rule_count(),
             1,
@@ -1348,7 +1336,7 @@ mod tests {
     async fn check_control_cancelled_url_returns_false() {
         let (ctx, _stats) = make_ctx();
         let url = "http://example.com/cancelled";
-        ctx.shared.control.cancel(url).await;
+        ctx.control.cancel(url).await;
         let req = Request::get(url);
         assert!(
             !check_control_and_hook(&ctx, &req).await,
@@ -1360,7 +1348,7 @@ mod tests {
     #[tokio::test]
     async fn check_control_shutdown_returns_false() {
         let (ctx, _stats) = make_ctx();
-        ctx.shared.control.shutdown();
+        ctx.control.shutdown();
         let req = Request::get("http://example.com/any");
         assert!(
             !check_control_and_hook(&ctx, &req).await,
@@ -1374,8 +1362,8 @@ mod tests {
         let (ctx, _stats) = make_ctx();
         let url = "http://example.com/paused";
         // 先 pause，再 shutdown（避免 wait_if_paused 永久阻塞）
-        ctx.shared.control.pause(url).await;
-        ctx.shared.control.shutdown();
+        ctx.control.pause(url).await;
+        ctx.control.shutdown();
         let req = Request::get(url);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -1391,7 +1379,7 @@ mod tests {
     async fn process_request_cancelled_url_returns_none() {
         let (ctx, stats) = make_ctx();
         let url = "http://example.com/cancelled";
-        ctx.shared.control.cancel(url).await;
+        ctx.control.cancel(url).await;
         let req = Request::get(url);
         let result = process_request(&ctx, req).await;
         assert!(result.is_none(), "cancelled URL 应返回 None");
@@ -1403,7 +1391,7 @@ mod tests {
     #[tokio::test]
     async fn process_request_shutdown_returns_none() {
         let (ctx, _stats) = make_ctx();
-        ctx.shared.control.shutdown();
+        ctx.control.shutdown();
         let req = Request::get("http://example.com/any");
         let result = process_request(&ctx, req).await;
         assert!(result.is_none(), "shutdown 时应返回 None");
@@ -1434,24 +1422,22 @@ mod tests {
                 crate::fetcher::FetchClient::new(crate::fetcher::FetchClientConfig::default())
                     .expect("build fetch client"),
             ),
-            shared: EngineShared {
-                sched: Arc::new(scheduler::Scheduler::new()),
-                follow_tx,
-                proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-                control: Arc::new(control::EngineControl::new()),
-                work_notify: Arc::new(tokio::sync::Notify::new()),
-                middleware_chain: Arc::new({
-                    let mut chain = middleware::MiddlewareChain::new();
-                    chain
-                        .middlewares
-                        .push(Arc::new(middleware::builtin::RetryMiddleware::new(
-                            max_retries,
-                        )));
-                    chain
-                }),
-                rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-            },
+            sched: Arc::new(scheduler::Scheduler::new()),
+            follow_tx,
+            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+            control: Arc::new(control::EngineControl::new()),
+            work_notify: Arc::new(tokio::sync::Notify::new()),
+            middleware_chain: Arc::new({
+                let mut chain = middleware::MiddlewareChain::new();
+                chain
+                    .middlewares
+                    .push(Arc::new(middleware::builtin::RetryMiddleware::new(
+                        max_retries,
+                    )));
+                chain
+            }),
+            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+            cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
                 stats: stats.clone(),
@@ -1645,5 +1631,19 @@ mod tests {
         let _client: &Arc<crate::fetcher::FetchClient> = &ctx.client;
         assert_eq!(ctx.config.fetch_mode, crate::fetcher::FetchMode::Http);
         assert_eq!(ctx.config.max_concurrent, 8);
+    }
+
+    /// PR4 Task 5：验证 EngineContext 直接持有 sched/control 等字段（无 shared 子结构）。
+    #[test]
+    fn test_engine_context_no_shared_substruct() {
+        let (ctx, _stats) = make_ctx();
+        // 直接访问 ctx.sched（原 ctx.shared.sched）
+        let _sched: &Arc<scheduler::Scheduler> = &ctx.sched;
+        // 直接访问 ctx.control
+        let _control: &Arc<control::EngineControl> = &ctx.control;
+        // 直接访问 ctx.work_notify
+        let _notify: &Arc<tokio::sync::Notify> = &ctx.work_notify;
+        // 直接访问 ctx.middleware_chain
+        let _chain: &Arc<middleware::MiddlewareChain> = &ctx.middleware_chain;
     }
 }
