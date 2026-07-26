@@ -12,7 +12,7 @@ use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use dashmap::DashSet;
-use tokio::sync::Mutex;
+use parking_lot::Mutex;
 
 /// 去重策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +58,11 @@ struct HeapInner {
 ///
 /// push 时先查/插 seen（DashSet，无锁），命中才锁 heap 入队；
 /// pop 时只锁 heap。两者不再串行于同一锁。
+///
+/// 注意：`heap` 用 `parking_lot::Mutex`（同步锁），临界区内禁止 `.await`。
+/// heap 的 push/pop/len 等操作都是 O(log N) 同步完成，锁持有时间极短，
+/// parking_lot 的 spin 比 tokio Mutex 的 yield+reschedule 快 10-100×。
+/// 如需在持锁期间 await，必须改回 `tokio::sync::Mutex` 或重构。
 ///
 /// ND-008-ARCH：`max_seen` 字段控制 seen 集合容量告警阈值。超过时 log warn，
 /// 提示用户切换 Fingerprint 模式或定期重启。默认 `usize::MAX` 表示无告警。
@@ -125,7 +130,7 @@ impl Scheduler {
                     );
                 }
             }
-            let mut g = self.heap.lock().await;
+            let mut g = self.heap.lock();
             let seq = g.seq;
             g.heap.push(PrioritizedRequest { req, seq });
             g.seq += 1;
@@ -134,13 +139,13 @@ impl Scheduler {
 
     /// Pop the highest-priority request.
     pub async fn pop(&self) -> Option<Request> {
-        let mut g = self.heap.lock().await;
+        let mut g = self.heap.lock();
         g.heap.pop().map(|p| p.req)
     }
 
     /// Snapshot the pending URLs (for checkpoint).
     pub async fn pending_urls(&self) -> Vec<Request> {
-        let g = self.heap.lock().await;
+        let g = self.heap.lock();
         // Note: BinaryHeap is max-heap, iteration order is unspecified.
         // We sort by priority to give a deterministic checkpoint.
         let mut reqs: Vec<PrioritizedRequest> = g.heap.iter().cloned().collect();
@@ -161,12 +166,12 @@ impl Scheduler {
 
     /// Number of pending requests.
     pub async fn len(&self) -> usize {
-        self.heap.lock().await.heap.len()
+        self.heap.lock().heap.len()
     }
 
     /// 队列是否为空。
     pub async fn is_empty(&self) -> bool {
-        self.heap.lock().await.heap.is_empty()
+        self.heap.lock().heap.is_empty()
     }
 
     /// Replace inner state (for checkpoint restore).
@@ -176,7 +181,7 @@ impl Scheduler {
         self.seen_fp.clear();
         // 清 heap + seq（Mutex）
         {
-            let mut g = self.heap.lock().await;
+            let mut g = self.heap.lock();
             g.heap.clear();
             g.seq = 0;
         }
@@ -196,7 +201,7 @@ impl Scheduler {
             }
         }
         // Re-queue pending (force insert even if in seen set)
-        let mut g = self.heap.lock().await;
+        let mut g = self.heap.lock();
         for req in pending {
             match self.strategy {
                 DedupStrategy::Exact => {
