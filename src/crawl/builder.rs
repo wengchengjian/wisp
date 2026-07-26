@@ -6,12 +6,9 @@
 //!
 //! ```rust,no_run
 //! use wisp::crawl::SpiderBuilder;
-//! use std::time::Duration;
 //!
 //! let spider = SpiderBuilder::new("quotes")
 //!     .start_urls(vec!["https://quotes.toscrape.com/"])
-//!     .delay(Duration::from_millis(500))
-//!     .obey_robots(false)
 //!     .on("default", |resp| async move {
 //!         let doc = resp.parse();
 //!         let items = doc.select(".quote").iter().map(|q| {
@@ -20,6 +17,12 @@
 //!         (items, vec![])
 //!     })
 //!     .build();
+//!
+//! // delay / obey_robots / fetch_mode 等抓取行为配置已迁移至 EngineBuilder：
+//! // let engine = wisp::Engine::infra()
+//! //     .download_delay_ms(500)
+//! //     .obey_robots(false)
+//! //     .build()?;
 //! ```
 //!
 //! ## 多 callback 路由（列表 → 详情 → 内容）
@@ -33,14 +36,14 @@
 //!     .on("default", |resp| async move {
 //!         // 列表页：follow 到 "detail"
 //!         let follows: Vec<_> = resp.css(".item a").iter()
-//!             .filter_map(|a| resp.follow_with(a.attr("href").unwrap_or(""), "detail"))
+//!             .filter_map(|a| a.attr("href").and_then(|h| resp.follow_with(&h, "detail")))
 //!             .collect();
 //!         (vec![], follows)
 //!     })
 //!     .on("detail", |resp| async move {
 //!         // 详情页：follow 到 "content"
 //!         let follows: Vec<_> = resp.css("article a").iter()
-//!             .filter_map(|a| resp.follow_with(a.attr("href").unwrap_or(""), "content"))
+//!             .filter_map(|a| a.attr("href").and_then(|h| resp.follow_with(&h, "content")))
 //!             .collect();
 //!         (vec![], follows)
 //!     })

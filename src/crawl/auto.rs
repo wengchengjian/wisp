@@ -1,4 +1,4 @@
-﻿//! Auto 模式核心组件：URL 泛化、规则引擎、拦截检测。
+//! Auto 模式核心组件：URL 泛化、规则引擎、拦截检测。
 //!
 //! Auto 模式流程：
 //! 1. 匹配用户规则 → 直接用指定模式
@@ -39,6 +39,10 @@ pub fn generalize_url(url: &str) -> String {
             if is_uuid_or_hash(seg) {
                 return r"[a-f0-9-]+".to_string();
             }
+            // 短版本号（v1、v2、a3）：单字母+1-2位数字，保留字面量
+            if is_short_version_segment(seg) {
+                return regex::escape(seg);
+            }
             // 混合段（含数字的字母数字段）：把连续数字序列替换为 \d+
             // 例：0-lastupdate-0-1.html → \d+-lastupdate-\d+-\d+\.html
             if seg.chars().any(|c| c.is_ascii_digit()) {
@@ -75,6 +79,14 @@ fn generalize_mixed_segment(s: &str) -> String {
         }
     }
     result
+}
+
+/// 判断 segment 是否是短版本号（如 v1、v2、a3）：单字母+1-2位数字，保留字面量。
+fn is_short_version_segment(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    matches!(bytes.len(), 2 | 3)
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1..].iter().all(|b| b.is_ascii_digit())
 }
 
 /// 判断字符串是否像 UUID 或哈希值。

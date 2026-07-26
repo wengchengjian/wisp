@@ -465,6 +465,8 @@ impl Engine {
         // 驱动流 + 定期 checkpoint
         tokio::pin!(stream);
         let mut pages_since_checkpoint = 0usize;
+        // 跟踪后台 checkpoint task，run 结束时统一 await，避免 delete_checkpoint 后 task 仍写入。
+        let mut checkpoint_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         while stream.next().await.is_some() {
             pages_since_checkpoint += 1;
             if pages_since_checkpoint >= self.checkpoint_interval {
@@ -476,7 +478,7 @@ impl Engine {
                     let sched = Arc::clone(&sched);
                     let stats = Arc::clone(&ctx.state.stats);
                     let tx = ctx.state.tx.clone();
-                    tokio::spawn(async move {
+                    checkpoint_tasks.spawn(async move {
                         if let Err(e) = engine::persist_spider_checkpoint(
                             store.as_ref(),
                             &spider_name,
@@ -499,6 +501,9 @@ impl Engine {
                 pages_since_checkpoint = 0;
             }
         }
+
+        // 等待所有后台 checkpoint task 完成，避免 delete_checkpoint 后 task 又写入。
+        while checkpoint_tasks.join_next().await.is_some() {}
 
         // abort autoscaler 后台 task
         if let Some(handle) = autoscaler_handle {
