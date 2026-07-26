@@ -806,15 +806,21 @@ mod tests {
     }
 
     fn make_ctx() -> CrawlContext {
+        // 从单一 config 源构建，保证 CrawlContext 独立字段与 config Arc 内字段一致。
+        let config = std::sync::Arc::new(crate::crawl::runner::EngineConfig {
+            fetch_mode: FetchMode::Http,
+            obey_robots: false,
+            ..Default::default()
+        });
         CrawlContext {
             spider_name: "test".into(),
-            fetch_mode: FetchMode::Http,
-            max_concurrent: 8,
-            max_pages: 1000,
-            obey_robots: false,
+            fetch_mode: config.fetch_mode,
+            max_concurrent: config.max_concurrent,
+            max_pages: config.max_pages,
+            obey_robots: config.obey_robots,
             pages_crawled: 0,
             errors: 0,
-            config: std::sync::Arc::new(crate::crawl::runner::EngineConfig::default()),
+            config,
         }
     }
 
