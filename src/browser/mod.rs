@@ -10,8 +10,6 @@ pub mod installer;
 pub mod launch;
 /// 页面操作（导航、JS 执行、截图等）。
 pub mod page;
-/// 反检测 JS 补丁注入。
-pub mod patches;
 /// 浏览器实例池（复用 + 并发控制）。
 pub mod pool;
 

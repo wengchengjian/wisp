@@ -113,9 +113,9 @@ impl Page {
 
         // Inject stealth scripts (conditional on headless/headed)
         let stealth_script = if headless {
-            crate::browser::patches::HEADLESS_STEALTH_SCRIPT
+            crate::stealth::patches::HEADLESS_STEALTH_SCRIPT
         } else {
-            crate::browser::patches::HEADED_STEALTH_SCRIPT
+            crate::stealth::patches::HEADED_STEALTH_SCRIPT
         };
         page.cmd(
             "Page.addScriptToEvaluateOnNewDocument",

@@ -4,6 +4,8 @@
 
 pub mod challenge;
 pub mod human;
+/// 反检测 JS 补丁注入。
+pub mod patches;
 pub mod turnstile;
 
 pub use challenge::{is_cloudflare_page, ChallengeSolver, ChallengeType};
