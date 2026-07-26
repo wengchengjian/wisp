@@ -18,7 +18,6 @@ pub use runtime::control;
 pub use runtime::items;
 pub use runtime::output;
 pub use runtime::robots;
-pub use runtime::session_pool;
 pub use scheduling::scheduler;
 pub use scheduling::stop;
 
