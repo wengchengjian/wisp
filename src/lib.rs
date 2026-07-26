@@ -122,6 +122,9 @@ pub use fetcher::{FetchClient, FetchClientConfig, FetchMode, Fetcher, FetcherBui
 pub use fetcher::{Method, Request, Response};
 pub use stealth::TurnstileConfig;
 
+// === Cookie 管理 ===
+pub use cookie::{BrowserCookieJar, CfCookieJar, CfSession, Cookie, CookieJar, HttpCookieJar};
+
 // === 核心类型 ===
 pub use browser::{Browser, Page};
 pub use config::{LaunchOptions, ProxyConfig};
@@ -150,3 +153,36 @@ pub use http::UaRotator;
 
 // === 底层类型（FetchClientConfig 公共字段需要） ===
 pub use http::DomainBlocker;
+
+#[cfg(test)]
+mod cookie_module_tests {
+    use std::sync::Arc;
+
+    /// 验证 cookie 模块的所有公开 API 可访问。
+    #[test]
+    fn cookie_module_public_api_accessible() {
+        use crate::cookie::{
+            BrowserCookieJar, CfCookieJar, CfSession, Cookie, CookieJar, HttpCookieJar,
+            MockCookieJar,
+        };
+
+        // 编译期检查：所有类型可命名
+        fn _check_cookie(c: Cookie) -> Cookie {
+            c
+        }
+        fn _check_session(s: CfSession) -> CfSession {
+            s
+        }
+        // trait object 可构造
+        let _: Arc<dyn CookieJar> = Arc::new(MockCookieJar::new());
+        // 各实现类型可命名（编译期检查）
+        fn _assert_implementations()
+        where
+            MockCookieJar: CookieJar,
+            HttpCookieJar: CookieJar,
+            BrowserCookieJar: CookieJar,
+            CfCookieJar: CookieJar,
+        {
+        }
+    }
+}
