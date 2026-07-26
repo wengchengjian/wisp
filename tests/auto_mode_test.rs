@@ -102,7 +102,8 @@ fn test_blocked_status_codes() {
 fn test_blocked_cf_challenge_in_body() {
     assert!(is_blocked_response(200, b"<title>Just a moment...</title>", &HashMap::new()));
     assert!(is_blocked_response(200, b"<div id='cf-challenge-running'>", &HashMap::new()));
-    assert!(is_blocked_response(200, b"challenge-platform/h/b", &HashMap::new()));
+    // challenge-platform 出现在所有 CF 保护页面的正常 HTML 中，不应触发拦截
+    assert!(!is_blocked_response(200, b"challenge-platform/h/b", &HashMap::new()));
     assert!(is_blocked_response(200, b"Attention Required", &HashMap::new()));
     assert!(is_blocked_response(200, b"Access denied", &HashMap::new()));
 }

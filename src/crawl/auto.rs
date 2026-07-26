@@ -186,22 +186,36 @@ impl Default for ModeRuleEngine {
 /// - 响应体含 Cloudflare 挑战特征
 /// - 响应头含 cf-chl-* 标记
 pub fn is_blocked_response(status: u16, body: &[u8], headers: &HashMap<String, String>) -> bool {
+    blocked_reason(status, body, headers).is_some()
+}
+
+/// 返回拦截原因（用于诊断日志），未拦截则返回 None。
+pub fn blocked_reason(status: u16, body: &[u8], headers: &HashMap<String, String>) -> Option<&'static str> {
     // 状态码
     if matches!(status, 403 | 429 | 503) {
-        return true;
+        return Some("status_code");
     }
     // CF 特征（即使 200 也可能是挑战页）
+    // 注意："challenge-platform" 已移除——它出现在所有 CF 保护页面的正常 HTML 中
+    // （<script src="/cdn-cgi/challenge-platform/...">），不是挑战页的标志。
     let text = String::from_utf8_lossy(body).to_lowercase();
-    if text.contains("just a moment")
-        || text.contains("cf-challenge")
-        || text.contains("challenge-platform")
-        || text.contains("attention required")
-        || text.contains("access denied")
-    {
-        return true;
+    if text.contains("just a moment") {
+        return Some("body:just a moment");
+    }
+    if text.contains("cf-challenge") {
+        return Some("body:cf-challenge");
+    }
+    if text.contains("attention required") {
+        return Some("body:attention required");
+    }
+    if text.contains("access denied") {
+        return Some("body:access denied");
     }
     // CF 响应头
-    headers.keys().any(|k| k.starts_with("cf-chl"))
+    if headers.keys().any(|k| k.starts_with("cf-chl")) {
+        return Some("header:cf-chl");
+    }
+    None
 }
 
 #[cfg(test)]

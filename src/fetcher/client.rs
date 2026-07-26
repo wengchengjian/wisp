@@ -4,9 +4,11 @@
 //! - 浏览器请求：通过 `BrowserPool`（实例复用，RAII 自动归还）
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use moka::sync::Cache;
 use wreq_util::Profile;
 
 use crate::browser::BrowserPool;
@@ -17,6 +19,101 @@ use crate::stealth::challenge::ChallengeSolver;
 use crate::stealth::human::HumanBehavior;
 
 use super::response::{Request, Response};
+
+// === CF 会话缓存（moka 内存 + 本地文件持久化） ===
+
+/// CF 会话条目：cookie + UA 绑定存储。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CfSession {
+    pub cookies: Vec<serde_json::Value>,
+    pub ua: String,
+    /// Unix 时间戳（秒），用于文件加载时判断过期。
+    pub saved_at: i64,
+}
+
+/// CF 会话两级缓存：moka 内存热缓存 + 本地 JSON 文件持久化。
+///
+/// - 读取：moka 优先（TTL 由 moka 管理）
+/// - 写入：moka + 文件双写（write-through）
+/// - 启动：从文件加载未过期条目到 moka
+pub(crate) struct CfSessionCache {
+    mem: Cache<String, CfSession>,
+    file_path: PathBuf,
+}
+
+impl CfSessionCache {
+    /// 创建缓存：从文件加载未过期条目到 moka。
+    pub fn new(data_dir: &Path, ttl: Duration) -> Self {
+        let file_path = data_dir.join("cf_sessions.json");
+        let mem: Cache<String, CfSession> = Cache::builder()
+            .time_to_live(ttl)
+            .max_capacity(64)
+            .build();
+
+        let cache = Self { mem, file_path };
+        cache.load_from_file(ttl);
+        cache
+    }
+
+    /// 读取（moka 优先，启动时已批量加载文件）。
+    pub fn get(&self, domain: &str) -> Option<CfSession> {
+        self.mem.get(domain)
+    }
+
+    /// 写入（moka + 文件双写）。
+    pub fn insert(&self, domain: String, session: CfSession) {
+        self.mem.insert(domain, session);
+        self.save_to_file();
+    }
+
+    /// 文件加载：启动时调用，跳过过期条目。
+    fn load_from_file(&self, ttl: Duration) {
+        let content = match std::fs::read_to_string(&self.file_path) {
+            Ok(c) => c,
+            Err(_) => return, // 文件不存在或不可读，静默跳过
+        };
+        let map: HashMap<String, CfSession> = match serde_json::from_str(&content) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("CF 会话文件解析失败，忽略: {e}");
+                return;
+            }
+        };
+        let now = chrono::Utc::now().timestamp();
+        let ttl_secs = ttl.as_secs() as i64;
+        let mut loaded = 0u32;
+        for (domain, session) in map {
+            if now - session.saved_at < ttl_secs {
+                self.mem.insert(domain, session);
+                loaded += 1;
+            }
+        }
+        if loaded > 0 {
+            tracing::info!("CF 会话缓存: 从文件恢复 {loaded} 个域名的会话");
+        }
+    }
+
+    /// 文件持久化：全量写入当前 moka 中所有条目。
+    fn save_to_file(&self) {
+        // 确保目录存在
+        if let Some(parent) = self.file_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut map = HashMap::new();
+        // moka iter 返回当前未过期的条目
+        for (domain, session) in self.mem.iter() {
+            map.insert(domain.to_string(), session.clone());
+        }
+        match serde_json::to_string_pretty(&map) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&self.file_path, json) {
+                    tracing::warn!("CF 会话文件写入失败: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("CF 会话序列化失败: {e}"),
+        }
+    }
+}
 
 /// 统一请求客户端配置。
 #[derive(Debug, Clone)]
@@ -59,6 +156,10 @@ pub struct FetchClientConfig {
     pub danger_accept_invalid_certs: bool,
     /// Turnstile 解决器参数配置。
     pub turnstile: crate::stealth::TurnstileConfig,
+    /// CF 会话缓存 TTL（默认 30 分钟）。
+    pub cf_cookie_ttl: Duration,
+    /// CF 会话持久化目录（默认 "wisp-data"）。
+    pub cf_data_dir: PathBuf,
 }
 
 impl Default for FetchClientConfig {
@@ -82,6 +183,8 @@ impl Default for FetchClientConfig {
             max_response_size: 64 * 1024 * 1024, // 64MB
             danger_accept_invalid_certs: false,
             turnstile: crate::stealth::TurnstileConfig::default(),
+            cf_cookie_ttl: Duration::from_secs(1800),
+            cf_data_dir: PathBuf::from("wisp-data"),
         }
     }
 }
@@ -95,10 +198,8 @@ pub struct FetchClient {
     http: Arc<Client>,
     browser_pool: Option<Arc<BrowserPool>>,
     config: FetchClientConfig,
-    /// CF cookie jar：按域名保存 cookie，复用 CF 挑战结果。
-    cf_cookie_jar: Arc<tokio::sync::Mutex<HashMap<String, Vec<serde_json::Value>>>>,
-    /// CF UA jar：按域名保存浏览器实际 UA，HTTP 复用时必须匹配。
-    cf_ua_jar: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
+    /// CF 会话缓存（moka 内存 + 文件持久化，按域名存储 cookie+UA）。
+    cf_cache: Arc<CfSessionCache>,
 }
 
 impl FetchClient {
@@ -106,12 +207,12 @@ impl FetchClient {
     pub fn new(config: FetchClientConfig) -> Result<Self> {
         let http = Arc::new(Self::build_http_client(&config)?);
         let browser_pool = Self::build_browser_pool(&config);
+        let cf_cache = Arc::new(CfSessionCache::new(&config.cf_data_dir, config.cf_cookie_ttl));
         Ok(Self {
             http,
             browser_pool,
             config,
-            cf_cookie_jar: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            cf_ua_jar: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            cf_cache,
         })
     }
 
@@ -141,8 +242,7 @@ impl FetchClient {
             .ok()
             .and_then(|u| u.host_str().map(|s| s.to_string()));
         if let Some(domain) = domain {
-            let jar = self.cf_cookie_jar.lock().await;
-            jar.get(&domain).map(|c| !c.is_empty()).unwrap_or(false)
+            self.cf_cache.get(&domain).map(|s| !s.cookies.is_empty()).unwrap_or(false)
         } else {
             false
         }
@@ -153,12 +253,11 @@ impl FetchClient {
         let domain = url::Url::parse(url)
             .ok()
             .and_then(|u| u.host_str().map(|s| s.to_string()))?;
-        let jar = self.cf_cookie_jar.lock().await;
-        let cookies = jar.get(&domain)?;
-        if cookies.is_empty() {
+        let session = self.cf_cache.get(&domain)?;
+        if session.cookies.is_empty() {
             return None;
         }
-        let pairs: Vec<String> = cookies.iter().filter_map(|c| {
+        let pairs: Vec<String> = session.cookies.iter().filter_map(|c| {
             let name = c.get("name")?.as_str()?;
             let value = c.get("value")?.as_str()?;
             Some(format!("{}={}", name, value))
@@ -171,8 +270,7 @@ impl FetchClient {
         let domain = url::Url::parse(url)
             .ok()
             .and_then(|u| u.host_str().map(|s| s.to_string()))?;
-        let jar = self.cf_ua_jar.lock().await;
-        jar.get(&domain).cloned()
+        self.cf_cache.get(&domain).map(|s| s.ua.clone())
     }
 
     /// HTTP 请求（共享 Client，连接复用）。直接返回统一 Response，无中间类型转换。
@@ -239,9 +337,8 @@ impl FetchClient {
             .ok()
             .and_then(|u| u.host_str().map(|s| s.to_string()));
         if let Some(ref domain) = domain {
-            let jar = self.cf_cookie_jar.lock().await;
-            if let Some(cookies) = jar.get(domain) {
-                for cookie in cookies {
+            if let Some(session) = self.cf_cache.get(domain) {
+                for cookie in &session.cookies {
                     let name = cookie.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let value = cookie.get("value").and_then(|v| v.as_str()).unwrap_or("");
                     let cookie_domain = cookie
@@ -278,7 +375,7 @@ impl FetchClient {
                 }
                 tracing::info!(
                     "BrowserWork[{solve_label}]: {url} 注入 {} 个 CF cookie",
-                    cookies.len()
+                    session.cookies.len()
                 );
             }
         }
@@ -332,13 +429,12 @@ impl FetchClient {
                 human.random_delay(300, 800).await?;
             }
 
-            // CF 挑战解决后，保存 cookie + 浏览器实际 UA 到 jar（复用给后续 HTTP 请求）
+            // CF 挑战解决后，保存 cookie + 浏览器实际 UA 到缓存（复用给后续 HTTP 请求）
             if let Some(ref domain) = domain {
-                // 捕获浏览器实际 UA
+                let mut ua_str = String::new();
                 if let Ok(ua_val) = page.evaluate("navigator.userAgent").await {
-                    if let Some(ua_str) = ua_val.as_str() {
-                        let mut ua_jar = self.cf_ua_jar.lock().await;
-                        ua_jar.insert(domain.clone(), ua_str.to_string());
+                    if let Some(s) = ua_val.as_str() {
+                        ua_str = s.to_string();
                     }
                 }
                 if let Ok(resp) = page.cmd("Network.getCookies", serde_json::json!({})).await {
@@ -353,8 +449,11 @@ impl FetchClient {
                             .cloned()
                             .collect();
                         if !cookies_to_save.is_empty() {
-                            let mut jar = self.cf_cookie_jar.lock().await;
-                            jar.insert(domain.clone(), cookies_to_save.clone());
+                            self.cf_cache.insert(domain.clone(), CfSession {
+                                cookies: cookies_to_save.clone(),
+                                ua: ua_str,
+                                saved_at: chrono::Utc::now().timestamp(),
+                            });
                             tracing::info!(
                                 "BrowserWork[{solve_label}]: {url} 保存 {} 个 CF cookie",
                                 cookies_to_save.len()

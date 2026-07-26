@@ -669,8 +669,9 @@ pub async fn fetch_page(
                 http_req.headers.insert("User-Agent".to_string(), ua);
             }
             let resp = fetch_page_inner(fetch_client, &http_req, proxy_url, FetchMode::Http, proxy_clients).await?;
-            // status=200 且非 CF 挑战标题 = 成功（不检查 body，避免误判）
-            if resp.status == 200 && !is_cf_challenge_title(&resp) {
+            // 使用与 StealthUpgradeMiddleware 相同的检测逻辑，避免“先报成功再被中间件拦截”的无效 Refetch
+            let blocked_reason = auto::blocked_reason(resp.status, &resp.body, &resp.headers);
+            if resp.status == 200 && blocked_reason.is_none() {
                 tracing::info!("AutoMode: HTTP+cookie 成功 (status={}), 跳过浏览器", resp.status);
                 // 标记为 HTTP 模式，阻止 DynamicUpgradeMiddleware 误升级
                 let mut final_resp = resp;
@@ -678,7 +679,11 @@ pub async fn fetch_page(
                 return Ok(final_resp);
             }
             // HTTP 被拦截，回退到 Stealth
-            tracing::info!("AutoMode: HTTP+cookie 被拦截 (status={}), 回退 Stealth", resp.status);
+            tracing::info!(
+                "AutoMode: HTTP+cookie 被拦截 (status={}), 原因: {}, 回退 Stealth",
+                resp.status,
+                blocked_reason.unwrap_or("non-200")
+            );
             let mut stealth_req = req.clone();
             stealth_req.fetch_mode_override = Some(FetchMode::Stealth);
             return fetch_page_inner(fetch_client, &stealth_req, proxy_url, FetchMode::Stealth, proxy_clients).await;

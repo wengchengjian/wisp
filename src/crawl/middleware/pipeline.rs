@@ -137,8 +137,12 @@ impl ItemPipeline for BatchItemPipeline {
     async fn close(&self, _ctx: &CrawlContext) {
         let mut buf = self.buffer.lock().await;
         if !buf.is_empty() {
+            let remaining = buf.len();
+            tracing::info!("BatchItemPipeline::close: flushing {} remaining items", remaining);
             let batch = std::mem::take(&mut *buf);
             (self.flush_fn)(batch).await;
+        } else {
+            tracing::debug!("BatchItemPipeline::close: buffer empty, nothing to flush");
         }
     }
 }
