@@ -86,6 +86,8 @@
 // - unused_async：公共 API 保持 async 以兼容调用方（调用方使用 .await）
 #![allow(clippy::unused_async)]
 
+/// Cookie 存储 trait + 三实现（Http/Browser/Cf）。
+pub mod cookie;
 /// 浏览器进程管理：启动 Chrome、CDP 会话、页面操作。
 pub mod browser;
 /// 浏览器启动选项和代理配置。
