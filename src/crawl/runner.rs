@@ -469,12 +469,13 @@ impl Engine {
             pages_since_checkpoint += 1;
             if pages_since_checkpoint >= self.checkpoint_interval {
                 if let Some(ref store) = self.checkpoint_store {
-                    // OPTIMIZE: spawn 后台执行，主循环不等待；失败仅 tracing::warn。
+                    // OPTIMIZE: spawn 后台执行，主循环不等待；失败 tracing::warn + 补发 CrawlEvent::Error。
                     // 旧实现直接 await persist_spider_checkpoint，慢存储会阻塞主循环拖慢吞吐。
                     let store = Arc::clone(store);
                     let spider_name = spider_name.clone();
                     let sched = Arc::clone(&sched);
                     let stats = Arc::clone(&ctx.state.stats);
+                    let tx = ctx.state.tx.clone();
                     tokio::spawn(async move {
                         if let Err(e) = engine::persist_spider_checkpoint(
                             store.as_ref(),
@@ -485,6 +486,13 @@ impl Engine {
                         .await
                         {
                             tracing::warn!("checkpoint 失败: {}", e);
+                            // 保留 ND-003-ERR 修复：通知 stream 消费者 checkpoint 失败
+                            if let Some(tx) = tx {
+                                let _ = tx.try_send(CrawlEvent::Error {
+                                    url: String::new(),
+                                    error: format!("checkpoint failed: {e}"),
+                                });
+                            }
                         }
                     });
                 }
