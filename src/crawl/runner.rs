@@ -308,7 +308,7 @@ impl Engine {
                     Arc::new(chain)
                 },
                 rule_engine,
-                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
+                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             },
             state: engine::EngineState {
                 spider: spider.clone(),

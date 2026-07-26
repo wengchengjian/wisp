@@ -1,6 +1,7 @@
 //! Proxy pool management with rotation strategies.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// How to pick the next proxy from the pool.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
@@ -16,7 +17,7 @@ pub enum RotationStrategy {
 
 /// Manages a pool of proxy URLs and rotates through them.
 pub struct ProxyPool {
-    proxies: Vec<String>,
+    proxies: Vec<Arc<str>>,
     strategy: RotationStrategy,
     index: AtomicUsize,
 }
@@ -27,7 +28,7 @@ impl ProxyPool {
     /// Proxies should be in format: `http://user:pass@host:port` or `http://host:port`
     ///
     /// Sticky 模式初始索引随机化，避免所有实例都固定到第一个代理。
-    pub fn new(proxies: Vec<String>, strategy: RotationStrategy) -> Self {
+    pub fn new(proxies: Vec<Arc<str>>, strategy: RotationStrategy) -> Self {
         use rand::rngs::{SmallRng, SysRng};
         use rand::{RngExt, SeedableRng};
         let initial = if strategy == RotationStrategy::Sticky && !proxies.is_empty() {
@@ -43,7 +44,9 @@ impl ProxyPool {
     }
 
     /// Get the next proxy according to the rotation strategy.
-    pub fn next(&self) -> Option<String> {
+    ///
+    /// 返回 `Arc<str>` 而非 `String`，clone 廉价（原子计数器自增，无堆分配）。
+    pub fn next(&self) -> Option<Arc<str>> {
         if self.proxies.is_empty() {
             return None;
         }
@@ -64,7 +67,7 @@ impl ProxyPool {
             }
         };
 
-        Some(self.proxies[idx].clone())
+        Some(Arc::clone(&self.proxies[idx]))
     }
 
     /// Number of proxies in the pool.
@@ -93,10 +96,10 @@ mod tests {
             vec!["http://p1:8080".into(), "http://p2:8080".into(), "http://p3:8080".into()],
             RotationStrategy::Sequential,
         );
-        assert_eq!(pool.next().unwrap(), "http://p1:8080");
-        assert_eq!(pool.next().unwrap(), "http://p2:8080");
-        assert_eq!(pool.next().unwrap(), "http://p3:8080");
-        assert_eq!(pool.next().unwrap(), "http://p1:8080"); // cycles
+        assert_eq!(&*pool.next().unwrap(), "http://p1:8080");
+        assert_eq!(&*pool.next().unwrap(), "http://p2:8080");
+        assert_eq!(&*pool.next().unwrap(), "http://p3:8080");
+        assert_eq!(&*pool.next().unwrap(), "http://p1:8080"); // cycles
     }
 
     #[test]

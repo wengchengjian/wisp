@@ -18,7 +18,7 @@ use crate::storage::{CachedResponse, Store};
 
 /// UA 轮换中间件：每次请求随机选择一个 User-Agent。
 pub struct UaRotationMiddleware {
-    agents: Vec<String>,
+    agents: Vec<&'static str>,
     index: std::sync::atomic::AtomicUsize,
 }
 
@@ -27,18 +27,18 @@ impl UaRotationMiddleware {
     pub fn desktop() -> Self {
         Self {
             agents: vec![
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".into(),
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0".into(),
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0".into(),
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0",
             ],
             index: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     /// 使用自定义 UA 列表创建。
-    pub fn with_agents(agents: Vec<String>) -> Self {
+    pub fn with_agents(agents: Vec<&'static str>) -> Self {
         Self {
             agents,
             index: std::sync::atomic::AtomicUsize::new(0),
@@ -61,7 +61,7 @@ impl Middleware for UaRotationMiddleware {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % self.agents.len();
         req.headers
-            .insert("User-Agent".to_string(), self.agents[idx].clone());
+            .insert("User-Agent".to_string(), self.agents[idx].to_string());
         MwAction::Modified
     }
 }
@@ -130,7 +130,7 @@ impl Middleware for ProxyInjectionMiddleware {
 
     async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> MwAction {
         if let Some(proxy) = self.pool.next() {
-            req.proxy = Some(proxy);
+            req.proxy = Some(proxy.to_string());
             MwAction::Modified
         } else {
             MwAction::Continue
@@ -573,8 +573,8 @@ impl DynamicUpgradeMiddleware {
         if dom_matcher.find(body).is_some() {
             return 7;
         }
-        // 弱信号：`<script` 标签密度 >= 6 → 7 分
-        if script_matcher.find_iter(body).count() >= SCRIPT_DENSITY_THRESHOLD {
+        // 弱信号：`<script` 标签密度 >= 6 → 7 分（短路扫描，达到阈值即停）
+        if script_matcher.find_iter(body).take(SCRIPT_DENSITY_THRESHOLD).count() >= SCRIPT_DENSITY_THRESHOLD {
             return 7;
         }
         0

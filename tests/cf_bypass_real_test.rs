@@ -192,7 +192,7 @@ async fn test_engine_with_proxy_pool() {
     }
 
     let pool = Arc::new(ProxyPool::new(
-        vec![PROXY.to_string()],
+        vec![PROXY.to_string().into()],
         RotationStrategy::Sequential,
     ));
 

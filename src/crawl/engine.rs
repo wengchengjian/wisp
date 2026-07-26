@@ -76,7 +76,8 @@ pub(crate) struct EngineShared {
     pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
     /// 域名级 CF 挑战锁：防止初始并发请求全部走浏览器。
     /// 第一个请求获取锁并解决 CF，其他请求等待后复用 cookie。
-    pub cf_domain_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// 用 moka::Cache（max 1024，LRU 淘汰）避免无界增长。
+    pub cf_domain_locks: Arc<moka::sync::Cache<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// per-run 可变状态。
@@ -632,7 +633,7 @@ pub async fn fetch_page(
     mode: FetchMode,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
     proxy_clients: &moka::sync::Cache<String, Arc<Client>>,
-    cf_domain_locks: &dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    cf_domain_locks: &moka::sync::Cache<String, Arc<tokio::sync::Mutex<()>>>,
 ) -> Result<Response> {
     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
     if let Some(override_mode) = req.fetch_mode_override {
@@ -663,7 +664,7 @@ pub async fn fetch_page(
             }
 
             // 获取域名锁，等待其他请求解决 CF
-            let lock = cf_domain_locks.entry(domain).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone();
+            let lock = cf_domain_locks.get_with(domain, || Arc::new(tokio::sync::Mutex::new(())));
             let _guard = lock.lock().await;
 
             // 双重检测：等待期间其他请求可能已解决 CF
@@ -896,7 +897,7 @@ mod tests {
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
+                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             },
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
@@ -1015,7 +1016,7 @@ mod tests {
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: Arc::new(chain),
                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
+                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             },
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
@@ -1130,7 +1131,7 @@ mod tests {
                 work_notify: Arc::new(tokio::sync::Notify::new()),
                 middleware_chain: Arc::new(chain),
                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
+                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             },
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
@@ -1388,7 +1389,7 @@ mod tests {
                     chain
                 }),
                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
+                cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             },
             state: EngineState {
                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,

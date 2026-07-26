@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, oneshot, watch, Mutex};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tungstenite::Message;
 
-use crate::error::{Result, WispError, BrowserError};
+use crate::error::{BrowserError, Result, WispError};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -48,9 +48,9 @@ pub struct CdpSession {
 impl CdpSession {
     /// Connect to Chrome's DevTools WebSocket endpoint.
     pub async fn connect(ws_url: &str) -> Result<Arc<Self>> {
-        let (ws, _) = connect_async(ws_url)
-            .await
-            .map_err(|e| WispError::Browser(BrowserError::CdpConnection(format!("ws connect: {e}"))))?;
+        let (ws, _) = connect_async(ws_url).await.map_err(|e| {
+            WispError::Browser(BrowserError::CdpConnection(format!("ws connect: {e}")))
+        })?;
 
         let (writer, mut reader) = ws.split();
         let writer = Arc::new(Mutex::new(writer));
@@ -157,13 +157,14 @@ impl CdpSession {
             msg["sessionId"] = json!(sid);
         }
 
-        let text = serde_json::to_string(&msg).expect("CDP msg always serializable");
+        let mut buf = Vec::with_capacity(256);
+        serde_json::to_writer(&mut buf, &msg).expect("CDP msg always serializable");
+        let text = String::from_utf8(buf).expect("CDP msg always UTF-8");
         {
             let mut writer = self.writer.lock().await;
-            writer
-                .send(Message::Text(text.into()))
-                .await
-                .map_err(|e| WispError::Browser(BrowserError::CdpConnection(format!("ws send: {e}"))))?;
+            writer.send(Message::Text(text.into())).await.map_err(|e| {
+                WispError::Browser(BrowserError::CdpConnection(format!("ws send: {e}")))
+            })?;
         }
 
         // OPTIMIZE: select! 同时等待响应和连接关闭通知，连接断开时立即返回错误。
@@ -198,7 +199,9 @@ impl CdpSession {
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("CDP error");
-            return Err(WispError::Browser(BrowserError::CdpConnection(msg.to_string())));
+            return Err(WispError::Browser(BrowserError::CdpConnection(
+                msg.to_string(),
+            )));
         }
 
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
