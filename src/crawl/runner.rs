@@ -77,24 +77,19 @@ impl Default for EngineConfig {
 
 /// 爬虫引擎基础设施。长期持有，多次 run 不同 Spider。
 ///
-/// Task 3 重构：从"Spider 容器"变为"纯基础设施"。
+/// PR4 重构：Engine 持有 Arc<EngineConfig>，所有只读配置通过 config() 访问。
 /// - 不持有 Spider（删除 `spiders: Vec<Box<dyn Spider>>`）
 /// - 共享：HTTP client / Store（SQLite 缓存 + checkpoint）
 /// - 独立：每次 run 内部 Scheduler/去重/stats（per-Spider 隔离）
 /// - 控制：per-Engine `EngineControl`
-///
-/// ND-031-ARCH 修复：引擎配置（fetch_mode/obey_robots/max_retries/download_delay/auto_rules）
-/// 从 Spider trait 迁移到 Engine，职责分离：Spider 只关心解析逻辑，Engine 管理抓取行为。
 #[derive(Clone)]
 pub struct Engine {
+    /// 只读配置（Arc 共享给 Spider/Middleware）。
+    pub(crate) config: Arc<EngineConfig>,
     /// 共享 FetchClient（HTTP 连接池 + BrowserPool，跨 Spider 复用）
     pub(crate) fetch_client: Arc<FetchClient>,
     pub(crate) cache_store: Option<Arc<dyn crate::storage::Store>>,
-    pub(crate) max_concurrent: usize,
-    pub(crate) max_pages: usize,
-    pub(crate) max_refetch_rounds: usize,
     pub(crate) checkpoint_store: Option<Arc<dyn crate::storage::Store>>,
-    pub(crate) checkpoint_interval: usize,
     /// per-Engine 控制状态。
     pub(crate) control: Arc<control::EngineControl>,
     /// 自适应并发池（可选）。启用后 run_inner 动态调整并发数。
@@ -102,38 +97,26 @@ pub struct Engine {
     /// 运行时并发保护：防止同一 Engine 实例并发调用 run/run_stream。
     /// 未来支持并发爬取时，移除此 guard 并将 EngineControl 改为 per-run 即可。
     pub(crate) running: Arc<AtomicBool>,
-    // === 引擎配置（ND-031-ARCH：从 Spider trait 迁移） ===
-    /// 抓取模式（Http/Dynamic/Stealth/Auto）。
-    pub(crate) fetch_mode: crate::fetcher::FetchMode,
-    /// 是否遵守 robots.txt。
-    pub(crate) obey_robots: bool,
-    /// 网络错误重试上限（fetch 失败后同步重试）。
-    pub(crate) max_retries: u32,
-    /// 下载延迟（每次请求前的等待时间）。
-    pub(crate) download_delay: Duration,
-    /// Auto 模式 URL 正则规则（优先级最高，跳过嗅探）。
-    pub(crate) auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
 }
 
 /// Engine 构造器（Builder 模式）。
+///
+/// PR4 重构：字段简化为 4 个（config + cache_store + checkpoint_store + autoscale）。
+/// 所有配置 setter 操作 self.config.xxx。
 pub struct EngineBuilder {
-    fetch_client_config: FetchClientConfig,
-    max_concurrent: usize,
-    max_pages: usize,
-    max_refetch_rounds: usize,
+    config: EngineConfig,
     cache_store: Option<Arc<dyn crate::storage::Store>>,
     checkpoint_store: Option<Arc<dyn crate::storage::Store>>,
-    checkpoint_interval: usize,
     autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
-    // === 引擎配置（ND-031-ARCH） ===
-    fetch_mode: crate::fetcher::FetchMode,
-    obey_robots: bool,
-    max_retries: u32,
-    download_delay: Duration,
-    auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
 }
 
 impl Engine {
+    /// 获取只读配置引用（Arc 共享给中间件和 Spider）。
+    #[must_use]
+    pub fn config(&self) -> &Arc<EngineConfig> {
+        &self.config
+    }
+
     /// 创建 Engine builder（纯基础设施构造器）。
     ///
     /// 替代原 `Engine::new(spider)` / `Engine::spiders(vec)` / `Engine::builder(spider)`。
@@ -141,20 +124,10 @@ impl Engine {
     #[must_use]
     pub fn infra() -> EngineBuilder {
         EngineBuilder {
-            fetch_client_config: FetchClientConfig::default(),
-            max_concurrent: 8,
-            max_pages: 1000,
-            max_refetch_rounds: 5,
+            config: EngineConfig::default(),
             cache_store: Some(Arc::new(crate::storage::MemoryStore::default())),
             checkpoint_store: Some(Arc::new(crate::storage::FileStore::default())),
-            checkpoint_interval: 100,
             autoscale: None,
-            // 引擎配置默认值（ND-031-ARCH：原 Spider trait 默认值）
-            fetch_mode: crate::fetcher::FetchMode::Auto,
-            obey_robots: true,
-            max_retries: 3,
-            download_delay: Duration::ZERO,
-            auto_rules: Vec::new(),
         }
     }
 
@@ -270,14 +243,14 @@ impl Engine {
         let stats = Arc::new(SpiderStats::new());
         // ND-031-ARCH：引擎配置从 Engine 自身读取（而非 Spider trait 方法）
         let mut rule_engine = auto::ModeRuleEngine::new();
-        for (pattern, mode) in &self.auto_rules {
+        for (pattern, mode) in &self.config().auto_rules {
             rule_engine.add_user_rule(pattern, *mode)?;
         }
         let rule_engine = Arc::new(Mutex::new(rule_engine));
-        let fetch_mode = self.fetch_mode;
-        let max_concurrent = self.max_concurrent;
+        let fetch_mode = self.config().fetch_mode;
+        let max_concurrent = self.config().max_concurrent;
         let max_depth = spider.max_depth();
-        let obey_robots = self.obey_robots;
+        let obey_robots = self.config().obey_robots;
 
         // 复用 Engine 持有的共享 FetchClient（HTTP 连接池 + BrowserPool 跨 Spider 复用）
         let fetch_client = self.fetch_client.clone();
@@ -331,9 +304,9 @@ impl Engine {
                 fetch_mode,
                 max_concurrent,
                 obey_robots,
-                engine_max_pages: self.max_pages,
-                max_refetch_rounds: self.max_refetch_rounds,
-                max_retries: self.max_retries,
+                engine_max_pages: self.config().max_pages,
+                max_refetch_rounds: self.config().max_refetch_rounds,
+                max_retries: self.config().max_retries,
             },
             shared: engine::EngineShared {
                 sched: sched.clone(),
@@ -347,7 +320,7 @@ impl Engine {
                     let defaults = middleware::builtin::default_middlewares(
                         middleware::builtin::DefaultMiddlewareConfig {
                             fetch_mode,
-                            delay: self.download_delay,
+                            delay: self.config().download_delay,
                             obey_robots,
                             allowed_domains: spider.allowed_domains(),
                             max_depth,
@@ -355,7 +328,7 @@ impl Engine {
                             http_client: mw_http_client,
                             robots_cache: mw_robots_cache,
                             rule_engine: rule_engine.clone(),
-                            max_retries: self.max_retries,
+                            max_retries: self.config().max_retries,
                         },
                     );
                     let mut chain = middleware::MiddlewareChain::new();
@@ -525,7 +498,7 @@ impl Engine {
         let mut checkpoint_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         while stream.next().await.is_some() {
             pages_since_checkpoint += 1;
-            if pages_since_checkpoint >= self.checkpoint_interval {
+            if pages_since_checkpoint >= self.config().checkpoint_interval {
                 if let Some(ref store) = self.checkpoint_store {
                     // OPTIMIZE: spawn 后台执行，主循环不等待；失败 tracing::warn + 补发 CrawlEvent::Error。
                     // 旧实现直接 await persist_spider_checkpoint，慢存储会阻塞主循环拖慢吞吐。
@@ -596,31 +569,37 @@ impl EngineBuilder {
     /// 设置最大并发数。
     #[must_use]
     pub fn max_concurrent(mut self, n: usize) -> Self {
-        self.max_concurrent = n;
+        self.config.max_concurrent = n;
         self
     }
     /// 设置最大爬取页数。
     #[must_use]
     pub fn max_pages(mut self, n: usize) -> Self {
-        self.max_pages = n;
+        self.config.max_pages = n;
+        self
+    }
+    /// 设置最大错误数（达到此上限引擎停止）。
+    #[must_use]
+    pub fn max_errors(mut self, n: usize) -> Self {
+        self.config.max_errors = n;
         self
     }
     /// 设置 FetchClient 配置（HTTP 连接池/超时/浏览器等基础设施配置，跨 Spider 共享）。
     #[must_use]
     pub fn fetch_client_config(mut self, config: FetchClientConfig) -> Self {
-        self.fetch_client_config = config;
+        self.config.fetch_client_config = config;
         self
     }
     /// 设置代理（作用于共享 FetchClient 的所有 HTTP 请求）。
     #[must_use]
     pub fn proxy(mut self, proxy: &str) -> Self {
-        self.fetch_client_config.proxy = Some(proxy.to_string());
+        self.config.fetch_client_config.proxy = Some(proxy.to_string());
         self
     }
     /// 设置中间件 Refetch 最大轮数（默认 5）。
     #[must_use]
     pub fn max_refetch_rounds(mut self, n: usize) -> Self {
-        self.max_refetch_rounds = n;
+        self.config.max_refetch_rounds = n;
         self
     }
     /// 设置响应缓存存储（注入 CacheMiddleware，永不过期）。
@@ -632,7 +611,13 @@ impl EngineBuilder {
     /// 设置检查点存储（定期保存爬取进度）。
     pub fn checkpoint(mut self, s: Arc<dyn crate::storage::Store>, interval: usize) -> Self {
         self.checkpoint_store = Some(s);
-        self.checkpoint_interval = interval;
+        self.config.checkpoint_interval = interval;
+        self
+    }
+    /// 设置检查点自定义名称（默认使用 spider name）。
+    #[must_use]
+    pub fn checkpoint_name(mut self, name: impl Into<String>) -> Self {
+        self.config.checkpoint_name = Some(name.into());
         self
     }
 
@@ -662,21 +647,21 @@ impl EngineBuilder {
         self
     }
 
-    // === 引擎配置方法（ND-031-ARCH：从 Spider trait 迁移） ===
+    // === 引擎配置方法 ===
 
     /// 设置抓取模式（Http/Dynamic/Stealth/Auto，默认 Auto）。
     ///
     /// 这是引擎行为配置，决定如何抓取页面，与 Spider 的解析逻辑无关。
     #[must_use]
     pub fn fetch_mode(mut self, mode: crate::fetcher::FetchMode) -> Self {
-        self.fetch_mode = mode;
+        self.config.fetch_mode = mode;
         self
     }
 
     /// 是否遵守 robots.txt（默认 true）。
     #[must_use]
     pub fn obey_robots(mut self, obey: bool) -> Self {
-        self.obey_robots = obey;
+        self.config.obey_robots = obey;
         self
     }
 
@@ -685,21 +670,21 @@ impl EngineBuilder {
     /// fetch_page 失败后，engine 在 fetch_dispatch 内同步重试，计数 `req.retry_count`。
     #[must_use]
     pub fn max_retries(mut self, n: u32) -> Self {
-        self.max_retries = n;
+        self.config.max_retries = n;
         self
     }
 
     /// 设置下载延迟（默认 0，即无延迟）。
     #[must_use]
     pub fn download_delay(mut self, d: Duration) -> Self {
-        self.download_delay = d;
+        self.config.download_delay = d;
         self
     }
 
     /// 设置下载延迟（毫秒）。
     #[must_use]
     pub fn download_delay_ms(mut self, ms: u64) -> Self {
-        self.download_delay = Duration::from_millis(ms);
+        self.config.download_delay = Duration::from_millis(ms);
         self
     }
 
@@ -708,30 +693,21 @@ impl EngineBuilder {
     /// 匹配该规则的 URL 直接使用指定模式，不经过 Auto 嗅探。
     #[must_use]
     pub fn auto_rule(mut self, pattern: &str, mode: crate::fetcher::FetchMode) -> Self {
-        self.auto_rules.push((pattern.to_string(), mode));
+        self.config.auto_rules.push((pattern.to_string(), mode));
         self
     }
 
     /// 构建引擎实例。
     pub fn build(self) -> Result<Engine> {
-        let fetch_client = Arc::new(FetchClient::new(self.fetch_client_config)?);
+        let fetch_client = Arc::new(FetchClient::new(self.config.fetch_client_config.clone())?);
         Ok(Engine {
+            config: Arc::new(self.config),
             fetch_client,
             cache_store: self.cache_store,
-            max_concurrent: self.max_concurrent,
-            max_pages: self.max_pages,
-            max_refetch_rounds: self.max_refetch_rounds,
             checkpoint_store: self.checkpoint_store,
-            checkpoint_interval: self.checkpoint_interval,
             control: Arc::new(control::EngineControl::new()),
             autoscale: self.autoscale,
             running: Arc::new(AtomicBool::new(false)),
-            // 引擎配置（ND-031-ARCH）
-            fetch_mode: self.fetch_mode,
-            obey_robots: self.obey_robots,
-            max_retries: self.max_retries,
-            download_delay: self.download_delay,
-            auto_rules: self.auto_rules,
         })
     }
 }
