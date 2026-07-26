@@ -267,7 +267,7 @@ pub fn relocate_with_snapshot(
 /// - `tolerance`: similarity threshold (0.0..1.0)
 ///
 /// Returns the first match. Use `css_adaptive_all` for all matches.
-pub fn css_adaptive(
+pub async fn css_adaptive(
     doc: &Node,
     selector: &str,
     key: &str,
@@ -282,13 +282,13 @@ pub fn css_adaptive(
         if auto_save {
             let snap = ElementSnapshot::capture(&node);
             let now = chrono::Utc::now().timestamp();
-            let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now));
+            let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now)).await;
         }
         return Some(node);
     }
 
     // 2. CSS failed - try relocate from saved snapshot
-    let saved_row = crate::storage::load_element(&*store, url, key).ok().flatten()?;
+    let saved_row = crate::storage::load_element(&*store, url, key).await.ok().flatten()?;
     let saved = ElementSnapshot::from_row(saved_row);
     let found = relocate_with_snapshot(doc, &saved, tolerance)?;
 
@@ -296,7 +296,7 @@ pub fn css_adaptive(
     if auto_save {
         let snap = ElementSnapshot::capture(&found);
         let now = chrono::Utc::now().timestamp();
-        let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now));
+        let _ = crate::storage::save_element(&*store, url, key, &snap.to_row(now)).await;
     }
 
     Some(found)

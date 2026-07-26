@@ -42,6 +42,7 @@ async fn test_development_mode_caches_response() {
 
     // 验证缓存已保存
     let cached = wisp::storage::load_response(&*store, "GET", "https://httpbin.org/get")
+        .await
         .unwrap();
     assert!(cached.is_some(), "响应应已缓存");
 

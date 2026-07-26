@@ -18,42 +18,45 @@ pub use file::FileStore;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteStore;
 
+use async_trait::async_trait;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use crate::error::{Result, WispError, StorageError};
 
 // ============================================================================
-// Store trait：仅底层 KV 原语
+// Store trait：仅底层 KV 原语（async）
 // ============================================================================
 
-/// 存储后端 trait。仅提供底层 KV 原语。
+/// 存储后端 trait。仅提供底层 KV 原语，全部 `async`。
 ///
-/// 实现者保证线程安全（`Send + Sync`）。所有方法同步——
-/// SQLite/HashMap/文件 IO 操作足够快，无需 async。
+/// 实现者保证线程安全（`Send + Sync`）。SQLite/FileStore 等同步 I/O
+/// 实现内部用 `tokio::task::spawn_blocking` 移出 async worker；
+/// MemoryStore（moka 同步 API）直接 async 包装。
 ///
 /// 业务方法（`save_checkpoint` / `load_response` 等）作为自由函数实现，
 /// 调用 `set`/`get`/`delete` 并处理序列化。
+#[async_trait]
 pub trait Store: Send + Sync {
     /// 写入一个 entry。
-    fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()>;
+    async fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()>;
 
     /// 读取一个 entry。返回 `None` 表示不存在或已过期。
-    fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>>;
+    async fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>>;
 
     /// 删除一个 entry。key 不存在不算错误。
-    fn delete(&self, namespace: &str, key: &str) -> Result<()>;
+    async fn delete(&self, namespace: &str, key: &str) -> Result<()>;
 
     /// 带 TTL 的写入。`ttl = None` 表示永不过期。
     ///
     /// 默认实现忽略 TTL（适用于不支持的存储）。
-    fn set_with_ttl(
+    async fn set_with_ttl(
         &self,
         namespace: &str,
         key: &str,
         value: &[u8],
         _ttl: Option<Duration>,
     ) -> Result<()> {
-        self.set(namespace, key, value)
+        self.set(namespace, key, value).await
     }
 }
 
@@ -128,24 +131,24 @@ const NS_RESPONSE: &str = "response";
 // === Checkpoint ===
 
 /// 保存检查点。
-pub fn save_checkpoint(store: &dyn Store, name: &str, state: &[u8]) -> Result<()> {
-    store.set(NS_CHECKPOINT, name, state)
+pub async fn save_checkpoint(store: &dyn Store, name: &str, state: &[u8]) -> Result<()> {
+    store.set(NS_CHECKPOINT, name, state).await
 }
 
 /// 加载检查点。
-pub fn load_checkpoint(store: &dyn Store, name: &str) -> Result<Option<Vec<u8>>> {
-    store.get(NS_CHECKPOINT, name)
+pub async fn load_checkpoint(store: &dyn Store, name: &str) -> Result<Option<Vec<u8>>> {
+    store.get(NS_CHECKPOINT, name).await
 }
 
 /// 删除检查点。
-pub fn delete_checkpoint(store: &dyn Store, name: &str) -> Result<()> {
-    store.delete(NS_CHECKPOINT, name)
+pub async fn delete_checkpoint(store: &dyn Store, name: &str) -> Result<()> {
+    store.delete(NS_CHECKPOINT, name).await
 }
 
 // === Element Snapshot ===
 
 /// 保存元素快照。
-pub fn save_element(
+pub async fn save_element(
     store: &dyn Store,
     url: &str,
     key: &str,
@@ -154,18 +157,18 @@ pub fn save_element(
     let composite = format!("{url}|{key}");
     let bytes = serde_json::to_vec(row)
         .map_err(|e| WispError::Storage(StorageError::General(format!("serialize element: {e}"))))?;
-    store.set(NS_ELEMENT, &composite, &bytes)
+    store.set(NS_ELEMENT, &composite, &bytes).await
 }
 
 /// 加载元素快照。
-pub fn load_element(
+pub async fn load_element(
     store: &dyn Store,
     url: &str,
     key: &str,
 ) -> Result<Option<ElementSnapshotRow>> {
     let composite = format!("{url}|{key}");
     store
-        .get(NS_ELEMENT, &composite)?
+        .get(NS_ELEMENT, &composite).await?
         .map(|v| serde_json::from_slice(&v))
         .transpose()
         .map_err(|e| WispError::Storage(StorageError::General(format!("parse element: {e}"))))
@@ -174,7 +177,7 @@ pub fn load_element(
 // === Response Cache ===
 
 /// 保存响应缓存。
-pub fn save_response(
+pub async fn save_response(
     store: &dyn Store,
     method: &str,
     url: &str,
@@ -183,27 +186,27 @@ pub fn save_response(
     let composite = format!("{method}|{url}");
     let bytes = serde_json::to_vec(resp)
         .map_err(|e| WispError::Storage(StorageError::General(format!("serialize response: {e}"))))?;
-    store.set_with_ttl(NS_RESPONSE, &composite, &bytes, resp.ttl)
+    store.set_with_ttl(NS_RESPONSE, &composite, &bytes, resp.ttl).await
 }
 
 /// 加载响应缓存。
-pub fn load_response(
+pub async fn load_response(
     store: &dyn Store,
     method: &str,
     url: &str,
 ) -> Result<Option<CachedResponse>> {
     let composite = format!("{method}|{url}");
     store
-        .get(NS_RESPONSE, &composite)?
+        .get(NS_RESPONSE, &composite).await?
         .map(|v| serde_json::from_slice(&v))
         .transpose()
         .map_err(|e| WispError::Storage(StorageError::General(format!("parse response: {e}"))))
 }
 
 /// 删除响应缓存。
-pub fn delete_response(store: &dyn Store, method: &str, url: &str) -> Result<()> {
+pub async fn delete_response(store: &dyn Store, method: &str, url: &str) -> Result<()> {
     let composite = format!("{method}|{url}");
-    store.delete(NS_RESPONSE, &composite)
+    store.delete(NS_RESPONSE, &composite).await
 }
 
 // ============================================================================
@@ -229,12 +232,13 @@ mod tests {
 
     use std::time::Instant;
 
+    #[async_trait]
     impl Store for MockStore {
-        fn set(&self, ns: &str, key: &str, value: &[u8]) -> Result<()> {
+        async fn set(&self, ns: &str, key: &str, value: &[u8]) -> Result<()> {
             self.data.lock().insert((ns.into(), key.into()), (value.to_vec(), None));
             Ok(())
         }
-        fn get(&self, ns: &str, key: &str) -> Result<Option<Vec<u8>>> {
+        async fn get(&self, ns: &str, key: &str) -> Result<Option<Vec<u8>>> {
             let now = Instant::now();
             let g = self.data.lock();
             if let Some((v, exp)) = g.get(&(ns.into(), key.into())) {
@@ -244,11 +248,11 @@ mod tests {
                 Ok(Some(v.clone()))
             } else { Ok(None) }
         }
-        fn delete(&self, ns: &str, key: &str) -> Result<()> {
+        async fn delete(&self, ns: &str, key: &str) -> Result<()> {
             self.data.lock().remove(&(ns.into(), key.into()));
             Ok(())
         }
-        fn set_with_ttl(&self, ns: &str, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<()> {
+        async fn set_with_ttl(&self, ns: &str, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<()> {
             let exp = ttl.map(|d| Instant::now() + d);
             self.data.lock().insert((ns.into(), key.into()), (value.to_vec(), exp));
             Ok(())
@@ -266,59 +270,59 @@ mod tests {
         }
     }
 
-    #[test]
-    fn checkpoint_roundtrip_via_free_fn() {
+    #[tokio::test]
+    async fn checkpoint_roundtrip_via_free_fn() {
         let store = MockStore::new();
-        save_checkpoint(&store, "spider1", b"state-bytes").unwrap();
-        let loaded = load_checkpoint(&store, "spider1").unwrap().unwrap();
+        save_checkpoint(&store, "spider1", b"state-bytes").await.unwrap();
+        let loaded = load_checkpoint(&store, "spider1").await.unwrap().unwrap();
         assert_eq!(loaded, b"state-bytes");
-        delete_checkpoint(&store, "spider1").unwrap();
-        assert!(load_checkpoint(&store, "spider1").unwrap().is_none());
+        delete_checkpoint(&store, "spider1").await.unwrap();
+        assert!(load_checkpoint(&store, "spider1").await.unwrap().is_none());
     }
 
-    #[test]
-    fn response_roundtrip_via_free_fn() {
+    #[tokio::test]
+    async fn response_roundtrip_via_free_fn() {
         let store = MockStore::new();
         let resp = make_cached(200, b"<html>hi</html>", Some(Duration::from_secs(3600)));
-        save_response(&store, "GET", "https://example.com", &resp).unwrap();
-        let loaded = load_response(&store, "GET", "https://example.com").unwrap().unwrap();
+        save_response(&store, "GET", "https://example.com", &resp).await.unwrap();
+        let loaded = load_response(&store, "GET", "https://example.com").await.unwrap().unwrap();
         assert_eq!(loaded.status, 200);
         assert_eq!(loaded.body, b"<html>hi</html>");
         assert_eq!(loaded.content_type, "text/html");
     }
 
-    #[test]
-    fn response_ttl_expiry() {
+    #[tokio::test]
+    async fn response_ttl_expiry() {
         let store = MockStore::new();
         let resp = make_cached(200, b"x", Some(Duration::from_millis(1)));
-        save_response(&store, "GET", "https://expired.com", &resp).unwrap();
-        std::thread::sleep(Duration::from_millis(10));
-        assert!(load_response(&store, "GET", "https://expired.com").unwrap().is_none());
+        save_response(&store, "GET", "https://expired.com", &resp).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(load_response(&store, "GET", "https://expired.com").await.unwrap().is_none());
     }
 
-    #[test]
-    fn response_no_ttl_never_expires() {
+    #[tokio::test]
+    async fn response_no_ttl_never_expires() {
         let store = MockStore::new();
         let resp = make_cached(200, b"forever", None);
-        save_response(&store, "GET", "https://forever.com", &resp).unwrap();
-        let loaded = load_response(&store, "GET", "https://forever.com").unwrap().unwrap();
+        save_response(&store, "GET", "https://forever.com", &resp).await.unwrap();
+        let loaded = load_response(&store, "GET", "https://forever.com").await.unwrap().unwrap();
         assert_eq!(loaded.body, b"forever");
     }
 
-    #[test]
-    fn method_isolation() {
+    #[tokio::test]
+    async fn method_isolation() {
         let store = MockStore::new();
-        save_response(&store, "GET", "https://example.com", &make_cached(200, b"get", None)).unwrap();
-        save_response(&store, "POST", "https://example.com", &make_cached(201, b"post", None)).unwrap();
-        assert_eq!(load_response(&store, "GET", "https://example.com").unwrap().unwrap().body, b"get");
-        assert_eq!(load_response(&store, "POST", "https://example.com").unwrap().unwrap().body, b"post");
+        save_response(&store, "GET", "https://example.com", &make_cached(200, b"get", None)).await.unwrap();
+        save_response(&store, "POST", "https://example.com", &make_cached(201, b"post", None)).await.unwrap();
+        assert_eq!(load_response(&store, "GET", "https://example.com").await.unwrap().unwrap().body, b"get");
+        assert_eq!(load_response(&store, "POST", "https://example.com").await.unwrap().unwrap().body, b"post");
     }
 
-    #[test]
-    fn namespace_isolation() {
+    #[tokio::test]
+    async fn namespace_isolation() {
         let store = MockStore::new();
         // checkpoint 和 element 同名 key 不冲突
-        save_checkpoint(&store, "mykey", b"cp").unwrap();
+        save_checkpoint(&store, "mykey", b"cp").await.unwrap();
         let elem = ElementSnapshotRow {
             tag: "div".into(), attrs: serde_json::Value::Null,
             text_preview: "hi".into(), ancestor_path: serde_json::Value::Null,
@@ -326,8 +330,8 @@ mod tests {
             parent_tag: "body".into(), parent_attrs: serde_json::Value::Null,
             captured_at: 0,
         };
-        save_element(&store, "http://x", "mykey", &elem).unwrap();
-        assert_eq!(load_checkpoint(&store, "mykey").unwrap().unwrap(), b"cp");
-        assert!(load_element(&store, "http://x", "mykey").unwrap().is_some());
+        save_element(&store, "http://x", "mykey", &elem).await.unwrap();
+        assert_eq!(load_checkpoint(&store, "mykey").await.unwrap().unwrap(), b"cp");
+        assert!(load_element(&store, "http://x", "mykey").await.unwrap().is_some());
     }
 }

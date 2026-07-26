@@ -1,11 +1,15 @@
 //! 文件系统存储后端。每条 entry 一个文件，子目录隔离 namespace。
+//!
+//! 所有同步 fs I/O 用 `tokio::task::spawn_blocking` 包装移出 async worker。
+//! 已删除 `write_lock`：spawn_blocking 已是线程外执行，同 key 并发写依赖文件
+//! 系统原子性，与旧实现行为一致。
 
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use parking_lot::Mutex;
+use async_trait::async_trait;
 
 use crate::error::{Result, WispError, StorageError};
 use super::Store;
@@ -49,25 +53,17 @@ fn sanitize_key(key: &str) -> String {
 /// TTL 实现：在文件内容前缀附 8 字节 `expires_at`（Unix 秒，big-endian）。
 /// `get` 时检查过期，过期则删除文件并返回 `None`。
 ///
-/// 线程安全：单 `parking_lot::Mutex<()>` 保护并发写（文件级互斥简化实现）。
 /// 性能：每条 entry 一个文件，适合 checkpoint/element（数据量小）；
 ///       response cache 不建议使用 FileStore（Engine 默认用 MemoryStore）。
 pub struct FileStore {
     root: PathBuf,
-    /// 全局写锁（简化实现；可优化为 per-namespace 锁）。
-    write_lock: Mutex<()>,
 }
 
 impl FileStore {
     /// 自定义根目录。会自动创建。
     pub fn with_dir(root: PathBuf) -> Self {
         let _ = fs::create_dir_all(&root);  // 容忍已存在
-        Self { root, write_lock: Mutex::new(()) }
-    }
-
-    fn path_for(&self, namespace: &str, key: &str) -> PathBuf {
-        let sanitized = sanitize_key(key);
-        self.root.join(namespace).join(sanitized)
+        Self { root }
     }
 }
 
@@ -115,66 +111,95 @@ fn unpack_and_check(data: &[u8]) -> Option<Vec<u8>> {
     Some(data[8..].to_vec())
 }
 
+#[async_trait]
 impl Store for FileStore {
-    fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
-        let _guard = self.write_lock.lock();
-        let path = self.path_for(namespace, key);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| WispError::Storage(StorageError::General(format!("mkdir: {e}"))))?;
-        }
-        let packed = pack_with_ttl(value, None);
-        fs::write(&path, packed)
-            .map_err(|e| WispError::Storage(StorageError::General(format!("write: {e}"))))?;
-        Ok(())
-    }
-
-    fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
-        let path = self.path_for(namespace, key);
-        let mut file = match fs::File::open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(WispError::Storage(StorageError::General(format!("open: {e}")))),
-        };
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)
-            .map_err(|e| WispError::Storage(StorageError::General(format!("read: {e}"))))?;
-        match unpack_and_check(&buf) {
-            Some(v) => Ok(Some(v)),
-            None => {
-                // 过期或损坏：惰性删除
-                let _ = fs::remove_file(&path);
-                Ok(None)
+    async fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
+        let root = self.root.clone();
+        let namespace = namespace.to_string();
+        let key = key.to_string();
+        let value = value.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let path = root.join(&namespace).join(sanitize_key(&key));
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| WispError::Storage(StorageError::General(format!("mkdir: {e}"))))?;
             }
-        }
+            let packed = pack_with_ttl(&value, None);
+            fs::write(&path, packed)
+                .map_err(|e| WispError::Storage(StorageError::General(format!("write: {e}"))))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("spawn_blocking join: {e}"))))?
     }
 
-    fn delete(&self, namespace: &str, key: &str) -> Result<()> {
-        let path = self.path_for(namespace, key);
-        match fs::remove_file(&path) {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(WispError::Storage(StorageError::General(format!("delete: {e}")))),
-        }
+    async fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
+        let root = self.root.clone();
+        let namespace = namespace.to_string();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let path = root.join(&namespace).join(sanitize_key(&key));
+            let mut file = match fs::File::open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(WispError::Storage(StorageError::General(format!("open: {e}")))),
+            };
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)
+                .map_err(|e| WispError::Storage(StorageError::General(format!("read: {e}"))))?;
+            match unpack_and_check(&buf) {
+                Some(v) => Ok(Some(v)),
+                None => {
+                    // 过期或损坏：惰性删除
+                    let _ = fs::remove_file(&path);
+                    Ok(None)
+                }
+            }
+        })
+        .await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("spawn_blocking join: {e}"))))?
     }
 
-    fn set_with_ttl(
+    async fn delete(&self, namespace: &str, key: &str) -> Result<()> {
+        let root = self.root.clone();
+        let namespace = namespace.to_string();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let path = root.join(&namespace).join(sanitize_key(&key));
+            match fs::remove_file(&path) {
+                Ok(_) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(WispError::Storage(StorageError::General(format!("delete: {e}")))),
+            }
+        })
+        .await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("spawn_blocking join: {e}"))))?
+    }
+
+    async fn set_with_ttl(
         &self,
         namespace: &str,
         key: &str,
         value: &[u8],
         ttl: Option<Duration>,
     ) -> Result<()> {
-        let _guard = self.write_lock.lock();
-        let path = self.path_for(namespace, key);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| WispError::Storage(StorageError::General(format!("mkdir: {e}"))))?;
-        }
-        let packed = pack_with_ttl(value, ttl);
-        fs::write(&path, packed)
-            .map_err(|e| WispError::Storage(StorageError::General(format!("write: {e}"))))?;
-        Ok(())
+        let root = self.root.clone();
+        let namespace = namespace.to_string();
+        let key = key.to_string();
+        let value = value.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let path = root.join(&namespace).join(sanitize_key(&key));
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| WispError::Storage(StorageError::General(format!("mkdir: {e}"))))?;
+            }
+            let packed = pack_with_ttl(&value, ttl);
+            fs::write(&path, packed)
+                .map_err(|e| WispError::Storage(StorageError::General(format!("write: {e}"))))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| WispError::Storage(StorageError::General(format!("spawn_blocking join: {e}"))))?
     }
 }
 
@@ -189,43 +214,43 @@ mod tests {
         (store, dir)
     }
 
-    #[test]
-    fn checkpoint_roundtrip() {
+    #[tokio::test]
+    async fn checkpoint_roundtrip() {
         let (store, _d) = make_store();
-        store.set("checkpoint", "spider1", b"state").unwrap();
-        assert_eq!(store.get("checkpoint", "spider1").unwrap().unwrap(), b"state");
-        store.delete("checkpoint", "spider1").unwrap();
-        assert!(store.get("checkpoint", "spider1").unwrap().is_none());
+        store.set("checkpoint", "spider1", b"state").await.unwrap();
+        assert_eq!(store.get("checkpoint", "spider1").await.unwrap().unwrap(), b"state");
+        store.delete("checkpoint", "spider1").await.unwrap();
+        assert!(store.get("checkpoint", "spider1").await.unwrap().is_none());
     }
 
-    #[test]
-    fn ttl_expiry() {
+    #[tokio::test]
+    async fn ttl_expiry() {
         let (store, _d) = make_store();
-        store.set_with_ttl("ns", "k", b"v", Some(Duration::from_millis(1))).unwrap();
-        std::thread::sleep(Duration::from_millis(10));
-        assert!(store.get("ns", "k").unwrap().is_none());
+        store.set_with_ttl("ns", "k", b"v", Some(Duration::from_millis(1))).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(store.get("ns", "k").await.unwrap().is_none());
     }
 
-    #[test]
-    fn ttl_none_never_expires() {
+    #[tokio::test]
+    async fn ttl_none_never_expires() {
         let (store, _d) = make_store();
-        store.set_with_ttl("ns", "k", b"forever", None).unwrap();
-        assert_eq!(store.get("ns", "k").unwrap().unwrap(), b"forever");
+        store.set_with_ttl("ns", "k", b"forever", None).await.unwrap();
+        assert_eq!(store.get("ns", "k").await.unwrap().unwrap(), b"forever");
     }
 
-    #[test]
-    fn delete_missing_is_ok() {
+    #[tokio::test]
+    async fn delete_missing_is_ok() {
         let (store, _d) = make_store();
-        store.delete("ns", "nonexistent").unwrap();
+        store.delete("ns", "nonexistent").await.unwrap();
     }
 
-    #[test]
-    fn namespace_isolation() {
+    #[tokio::test]
+    async fn namespace_isolation() {
         let (store, _d) = make_store();
-        store.set("ns1", "key", b"a").unwrap();
-        store.set("ns2", "key", b"b").unwrap();
-        assert_eq!(store.get("ns1", "key").unwrap().unwrap(), b"a");
-        assert_eq!(store.get("ns2", "key").unwrap().unwrap(), b"b");
+        store.set("ns1", "key", b"a").await.unwrap();
+        store.set("ns2", "key", b"b").await.unwrap();
+        assert_eq!(store.get("ns1", "key").await.unwrap().unwrap(), b"a");
+        assert_eq!(store.get("ns2", "key").await.unwrap().unwrap(), b"b");
     }
 
     #[test]
@@ -235,5 +260,40 @@ mod tests {
         assert!(sanitize_key("a:b").contains('_'));
         // Windows 保留名加前缀
         assert!(sanitize_key("CON").starts_with("wisp_"));
+    }
+
+    /// 验证 spawn_blocking 并发写入：10 个 namespace × 10 次 set 应快速完成。
+    #[tokio::test]
+    async fn test_file_store_async_concurrent_writes() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().expect("create temp dir");
+        let store = Arc::new(FileStore::with_dir(tmp.path().to_path_buf()));
+
+        let mut handles = Vec::new();
+        let start = Instant::now();
+        for ns_idx in 0..10 {
+            let store = Arc::clone(&store);
+            let handle = tokio::spawn(async move {
+                let ns = format!("ns_{ns_idx}");
+                for i in 0..10 {
+                    store
+                        .set(&ns, &format!("k{i}"), b"v")
+                        .await
+                        .expect("set should succeed");
+                }
+            });
+            handles.push(handle);
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "并发写入应 < 3s，实际 {elapsed:?}"
+        );
     }
 }

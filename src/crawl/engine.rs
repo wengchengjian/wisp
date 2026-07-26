@@ -614,7 +614,7 @@ pub(crate) async fn persist_spider_checkpoint(
             "checkpoint 序列化失败: {e}"
         )))
     })?;
-    crate::storage::save_checkpoint(store, spider_name, &blob).map_err(|e| {
+    crate::storage::save_checkpoint(store, spider_name, &blob).await.map_err(|e| {
         crate::error::WispError::Storage(crate::error::StorageError::General(format!(
             "checkpoint 保存失败: {e}"
         )))
@@ -967,6 +967,7 @@ mod tests {
             .expect("persist_spider_checkpoint should succeed");
 
         let blob = crate::storage::load_checkpoint(&store, "seen_persist_spider")
+            .await
             .expect("load checkpoint ok")
             .expect("checkpoint should exist");
         let state: CrawlState = bincode::deserialize(&blob).expect("deserialize state");

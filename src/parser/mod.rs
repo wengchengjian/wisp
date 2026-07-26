@@ -155,7 +155,7 @@ impl Node {
     /// Adaptive CSS selection with SQLite-backed snapshot persistence.
     ///
     /// See `adaptive::css_adaptive` for details.
-    pub fn css_adaptive(
+    pub async fn css_adaptive(
         &self,
         selector: &str,
         key: &str,
@@ -164,7 +164,7 @@ impl Node {
         auto_save: bool,
         tolerance: f64,
     ) -> Option<Node> {
-        adaptive::css_adaptive(self, selector, key, url, store, auto_save, tolerance)
+        adaptive::css_adaptive(self, selector, key, url, store, auto_save, tolerance).await
     }
 
     /// Get the text content of the document/element.

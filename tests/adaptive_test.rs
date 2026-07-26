@@ -29,8 +29,8 @@ const HTML_AFTER: &str = r#"
 </body></html>
 "#;
 
-#[test]
-fn test_capture_then_relocate_after_class_change() {
+#[tokio::test]
+async fn test_capture_then_relocate_after_class_change() {
     let store = make_store();
     let doc_before = Node::from_html(HTML_BEFORE);
     let apple_node = doc_before.select_one(".name").expect("should find .name");
@@ -39,10 +39,10 @@ fn test_capture_then_relocate_after_class_change() {
     let snapshot = ElementSnapshot::capture(&apple_node);
     let key = "product-name";
     let url = "https://example.com/products";
-    wisp::storage::save_element(&store, url, key, &snapshot.to_row(0)).unwrap();
+    wisp::storage::save_element(&store, url, key, &snapshot.to_row(0)).await.unwrap();
 
     // Simulate site redesign: .name → .title, parent ul.list → ul.items
-    let loaded = wisp::storage::load_element(&store, url, key).unwrap().unwrap();
+    let loaded = wisp::storage::load_element(&store, url, key).await.unwrap().unwrap();
     let loaded_snapshot = ElementSnapshot::from_row(loaded);
 
     let doc_after = Node::from_html(HTML_AFTER);
@@ -67,48 +67,48 @@ fn test_relocate_returns_none_when_no_match() {
     assert!(found.is_none(), "should not find a match in unrelated HTML");
 }
 
-#[test]
-fn test_relocate_finds_best_match_among_candidates() {
+#[tokio::test]
+async fn test_relocate_finds_best_match_among_candidates() {
     let store = make_store();
     let doc = Node::from_html(HTML_BEFORE);
     let banana = doc.select_all(".name").into_iter().nth(1).unwrap();
     let snapshot = ElementSnapshot::capture(&banana);
-    wisp::storage::save_element(&store, "u", "k", &snapshot.to_row(0)).unwrap();
+    wisp::storage::save_element(&store, "u", "k", &snapshot.to_row(0)).await.unwrap();
 
     // Re-parse same HTML - should find Banana (not Apple)
     let doc2 = Node::from_html(HTML_BEFORE);
-    let loaded = wisp::storage::load_element(&store, "u", "k").unwrap().unwrap();
+    let loaded = wisp::storage::load_element(&store, "u", "k").await.unwrap().unwrap();
     let loaded_snap = ElementSnapshot::from_row(loaded);
     let found = relocate_with_snapshot(&doc2, &loaded_snap, 0.3).unwrap();
     assert_eq!(found.text(), "Banana");
 }
 
-#[test]
-fn test_css_adaptive_falls_back_to_snapshot() {
+#[tokio::test]
+async fn test_css_adaptive_falls_back_to_snapshot() {
     let store = make_store();
     let url = "https://example.com/p";
 
     // First call: CSS works, snapshot is auto-saved
     let doc_before = Node::from_html(HTML_BEFORE);
-    let found = doc_before.css_adaptive(".name", "name-key", url, &store, true, 0.5);
+    let found = doc_before.css_adaptive(".name", "name-key", url, &store, true, 0.5).await;
     assert!(found.is_some());
     assert_eq!(found.unwrap().text(), "Apple");
 
     // Verify snapshot was saved
-    let row = wisp::storage::load_element(&store, url, "name-key").unwrap();
+    let row = wisp::storage::load_element(&store, url, "name-key").await.unwrap();
     assert!(row.is_some());
 
     // Second call: CSS fails (.name not in HTML_AFTER), should relocate via snapshot
     let doc_after = Node::from_html(HTML_AFTER);
-    let found = doc_after.css_adaptive(".name", "name-key", url, &store, true, 0.5);
+    let found = doc_after.css_adaptive(".name", "name-key", url, &store, true, 0.5).await;
     assert!(found.is_some(), "css_adaptive should relocate via snapshot");
     assert_eq!(found.unwrap().text(), "Apple");
 }
 
-#[test]
-fn test_css_adaptive_returns_none_when_no_snapshot_and_css_fails() {
+#[tokio::test]
+async fn test_css_adaptive_returns_none_when_no_snapshot_and_css_fails() {
     let store = make_store();
     let doc = Node::from_html(HTML_BEFORE);
-    let found = doc.css_adaptive(".nonexistent", "missing-key", "url", &store, false, 0.5);
+    let found = doc.css_adaptive(".nonexistent", "missing-key", "url", &store, false, 0.5).await;
     assert!(found.is_none());
 }

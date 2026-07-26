@@ -157,7 +157,7 @@ pub async fn adaptive_scrape(args: Value, store: &Arc<dyn Store>) -> Result<Valu
 
     use crate::parser::css_adaptive;
     let tolerance = crate::parser::DEFAULT_TOLERANCE;
-    let found = css_adaptive(&doc, selector, key, url, store.as_ref(), true, tolerance);
+    let found = css_adaptive(&doc, selector, key, url, store.as_ref(), true, tolerance).await;
 
     match found {
         Some(node) => Ok(json!({

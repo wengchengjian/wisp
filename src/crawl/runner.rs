@@ -231,7 +231,7 @@ impl Engine {
         let spider_name = spider.name().to_string();
         let mut restored_pending = false;
         if let Some(ref store) = self.checkpoint_store {
-            if let Some(blob) = crate::storage::load_checkpoint(&**store, &spider_name)? {
+            if let Some(blob) = crate::storage::load_checkpoint(&**store, &spider_name).await? {
                 match bincode::deserialize::<CrawlState>(&blob) {
                     Ok(state) => {
                         if !state.pending_urls.is_empty() {
@@ -522,7 +522,7 @@ impl Engine {
         spider.on_close().await;
 
         if let Some(ref store) = self.checkpoint_store {
-            if let Err(e) = crate::storage::delete_checkpoint(&**store, &spider_name) {
+            if let Err(e) = crate::storage::delete_checkpoint(&**store, &spider_name).await {
                 tracing::warn!("删除 checkpoint 失败: {}", e);
             }
         }
