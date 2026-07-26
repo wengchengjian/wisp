@@ -122,6 +122,48 @@ pub struct ElementSnapshotRow {
 }
 
 // ============================================================================
+// ElementSnapshot <-> ElementSnapshotRow 转换
+// ============================================================================
+
+/// ElementSnapshot -> ElementSnapshotRow（捕获时间由 storage 层生成）。
+///
+/// ARCH: parser 只产出 ElementSnapshot 值对象，持久化转换由 storage 层承担。
+/// captured_at 在转换时取当前时间戳（与原 to_row(now) 行为一致）。
+impl From<crate::parser::ElementSnapshot> for ElementSnapshotRow {
+    fn from(s: crate::parser::ElementSnapshot) -> Self {
+        Self {
+            tag: s.tag,
+            attrs: serde_json::to_value(&s.attrs).unwrap_or(serde_json::json!({})),
+            text_preview: s.text_preview,
+            ancestor_path: serde_json::to_value(&s.ancestor_path).unwrap_or(serde_json::json!([])),
+            sibling_tags: serde_json::to_value(&s.sibling_tags).unwrap_or(serde_json::json!([])),
+            position_in_parent: s.position_in_parent as i64,
+            parent_tag: s.parent_tag,
+            parent_attrs: serde_json::to_value(&s.parent_attrs).unwrap_or(serde_json::json!({})),
+            captured_at: chrono::Utc::now().timestamp(),
+        }
+    }
+}
+
+/// ElementSnapshotRow -> ElementSnapshot（反序列化恢复）。
+///
+/// ARCH: parser 不依赖 storage 类型，反向转换由 storage 层提供。
+impl From<ElementSnapshotRow> for crate::parser::ElementSnapshot {
+    fn from(row: ElementSnapshotRow) -> Self {
+        Self {
+            tag: row.tag,
+            attrs: serde_json::from_value(row.attrs).unwrap_or_default(),
+            text_preview: row.text_preview,
+            ancestor_path: serde_json::from_value(row.ancestor_path).unwrap_or_default(),
+            sibling_tags: serde_json::from_value(row.sibling_tags).unwrap_or_default(),
+            position_in_parent: row.position_in_parent as usize,
+            parent_tag: row.parent_tag,
+            parent_attrs: serde_json::from_value(row.parent_attrs).unwrap_or_default(),
+        }
+    }
+}
+
+// ============================================================================
 // 业务层自由函数
 // ============================================================================
 
@@ -416,5 +458,75 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn element_snapshot_roundtrip_via_from() {
+        use crate::parser::ElementSnapshot;
+
+        let mut attrs = std::collections::HashMap::new();
+        attrs.insert("class".to_string(), "item main".to_string());
+        attrs.insert("id".to_string(), "product-1".to_string());
+
+        let mut parent_attrs = std::collections::HashMap::new();
+        parent_attrs.insert("class".to_string(), "container".to_string());
+
+        let snap = ElementSnapshot {
+            tag: "div".to_string(),
+            attrs,
+            text_preview: "Hello World".to_string(),
+            ancestor_path: vec![
+                "html".to_string(),
+                "body".to_string(),
+                "div.container".to_string(),
+            ],
+            sibling_tags: vec!["div".to_string(), "span".to_string(), "div".to_string()],
+            position_in_parent: 1,
+            parent_tag: "section".to_string(),
+            parent_attrs,
+        };
+
+        // ElementSnapshot -> ElementSnapshotRow
+        let row: ElementSnapshotRow = snap.into();
+        assert_eq!(row.tag, "div");
+        assert_eq!(row.text_preview, "Hello World");
+        assert_eq!(row.position_in_parent, 1);
+        assert_eq!(row.parent_tag, "section");
+        assert!(row.attrs.is_object());
+        assert!(row.ancestor_path.is_array());
+        assert!(row.sibling_tags.is_array());
+        assert!(row.parent_attrs.is_object());
+        assert!(row.captured_at > 0);
+
+        // ElementSnapshotRow -> ElementSnapshot
+        let restored: ElementSnapshot = row.into();
+        assert_eq!(restored.tag, "div");
+        assert_eq!(restored.text_preview, "Hello World");
+        assert_eq!(restored.position_in_parent, 1);
+        assert_eq!(restored.parent_tag, "section");
+        assert_eq!(
+            restored.attrs.get("class").map(String::as_str),
+            Some("item main")
+        );
+        assert_eq!(
+            restored.attrs.get("id").map(String::as_str),
+            Some("product-1")
+        );
+        assert_eq!(
+            restored.ancestor_path,
+            vec![
+                "html".to_string(),
+                "body".to_string(),
+                "div.container".to_string(),
+            ]
+        );
+        assert_eq!(
+            restored.sibling_tags,
+            vec!["div".to_string(), "span".to_string(), "div".to_string()]
+        );
+        assert_eq!(
+            restored.parent_attrs.get("class").map(String::as_str),
+            Some("container")
+        );
     }
 }

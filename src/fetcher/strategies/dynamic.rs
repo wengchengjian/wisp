@@ -125,7 +125,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "需要 Chrome 浏览器环境"]
     async fn test_dynamic_strategy_navigates() {
-        use crate::browser::{Browser, BrowserPool};
+        use crate::browser::BrowserPool;
         use crate::config::LaunchOptions;
         use crate::fetcher::response::Request;
 
