@@ -814,6 +814,7 @@ mod tests {
             obey_robots: false,
             pages_crawled: 0,
             errors: 0,
+            config: std::sync::Arc::new(crate::crawl::runner::EngineConfig::default()),
         }
     }
 

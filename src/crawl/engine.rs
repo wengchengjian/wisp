@@ -527,6 +527,7 @@ pub(crate) fn build_crawl_context(ctx: &EngineContext) -> middleware::CrawlConte
         obey_robots: ctx.config.obey_robots,
         pages_crawled: ctx.state.stats.pages.load(Ordering::SeqCst),
         errors: ctx.state.stats.errors.load(Ordering::SeqCst),
+        config: Arc::clone(&ctx.config),
     }
 }
 

@@ -80,6 +80,7 @@ pub enum ErrorAction {
 /// 引擎上下文只读视图（暴露给中间件）。
 ///
 /// 中间件可读取引擎级配置和统计信息，用于决策（如根据已爬取页数调整策略）。
+/// PR4 重构：新增 config 字段（Arc<EngineConfig>），中间件可通过 config() 访问完整配置。
 #[derive(Debug, Clone)]
 pub struct CrawlContext {
     /// Spider 名称
@@ -96,6 +97,16 @@ pub struct CrawlContext {
     pub pages_crawled: usize,
     /// 错误数（只读快照）
     pub errors: usize,
+    /// 完整引擎配置（Arc 共享，中间件可访问任意配置字段）。
+    pub config: std::sync::Arc<crate::crawl::runner::EngineConfig>,
+}
+
+impl CrawlContext {
+    /// 获取完整引擎配置引用。
+    #[must_use]
+    pub fn config(&self) -> &crate::crawl::runner::EngineConfig {
+        &self.config
+    }
 }
 
 // === Middleware trait ===
@@ -267,5 +278,31 @@ impl MiddlewareChain {
         for pipeline in &self.pipelines {
             pipeline.close(ctx).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PR4 Task 6：验证 CrawlContext 持有 config 字段并提供 config() 方法。
+    #[test]
+    fn test_crawl_context_has_config_field() {
+        let config = std::sync::Arc::new(crate::crawl::runner::EngineConfig::default());
+        let ctx = CrawlContext {
+            spider_name: "test".to_string(),
+            fetch_mode: crate::fetcher::FetchMode::Http,
+            max_concurrent: 8,
+            max_pages: 100,
+            obey_robots: false,
+            pages_crawled: 0,
+            errors: 0,
+            config: std::sync::Arc::clone(&config),
+        };
+        // 验证 config() 方法返回 &EngineConfig
+        let cfg: &crate::crawl::runner::EngineConfig = ctx.config();
+        assert_eq!(cfg.max_concurrent, 8);
+        assert_eq!(cfg.max_pages, 1000); // default
+        assert_eq!(cfg.fetch_mode, crate::fetcher::FetchMode::Auto); // default
     }
 }
