@@ -248,7 +248,6 @@ impl Engine {
         }
         let rule_engine = Arc::new(Mutex::new(rule_engine));
         let fetch_mode = self.config().fetch_mode;
-        let max_concurrent = self.config().max_concurrent;
         let max_depth = spider.max_depth();
         let obey_robots = self.config().obey_robots;
 
@@ -299,15 +298,8 @@ impl Engine {
         let mw_robots_cache = robots_cache.clone();
 
         let ctx = Arc::new(engine::EngineContext {
-            config: engine::EngineConfig {
-                client: fetch_client,
-                fetch_mode,
-                max_concurrent,
-                obey_robots,
-                engine_max_pages: self.config().max_pages,
-                max_refetch_rounds: self.config().max_refetch_rounds,
-                max_retries: self.config().max_retries,
-            },
+            config: Arc::clone(self.config()),
+            client: fetch_client,
             shared: engine::EngineShared {
                 sched: sched.clone(),
                 follow_tx,
@@ -408,7 +400,7 @@ impl Engine {
                         // 引擎级 max_pages 兜底
                         let pages = ctx.state.stats.pages.load(Ordering::SeqCst);
                         if pages + ctx.state.global_in_flight.load(Ordering::SeqCst)
-                            >= ctx.config.engine_max_pages
+                            >= ctx.config.max_pages
                         {
                             if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
                                 return None;
