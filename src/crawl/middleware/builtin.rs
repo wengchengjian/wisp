@@ -537,17 +537,44 @@ impl DynamicUpgradeMiddleware {
     }
 
     /// 评估响应 body 的 JS 渲染需求分数。
-    fn score_body(&self, body: &[u8]) -> u8 {
+    ///
+    /// 大 body (>1MB) 用 `spawn_blocking` 移到 blocking pool，避免阻塞 tokio worker；
+    /// 小 body 直接同步执行，避免 spawn 开销。
+    pub async fn score_body(&self, body: &[u8]) -> u8 {
+        const LARGE_BODY_THRESHOLD: usize = 1 << 20; // 1MB
+
+        if body.len() > LARGE_BODY_THRESHOLD {
+            // 大 body 移到 blocking pool
+            let body_vec = body.to_vec();
+            let spa = self.spa_matcher.clone();
+            let dom = self.dom_matcher.clone();
+            let script = self.script_matcher.clone();
+            tokio::task::spawn_blocking(move || Self::score_body_sync(&body_vec, &spa, &dom, &script))
+                .await
+                .expect("score_body spawn_blocking join failed")
+        } else {
+            // 小 body 直接同步执行
+            Self::score_body_sync(body, &self.spa_matcher, &self.dom_matcher, &self.script_matcher)
+        }
+    }
+
+    /// score_body 的同步实现（纯 CPU 计算，无 await）。
+    fn score_body_sync(
+        body: &[u8],
+        spa_matcher: &aho_corasick::AhoCorasick,
+        dom_matcher: &aho_corasick::AhoCorasick,
+        script_matcher: &aho_corasick::AhoCorasick,
+    ) -> u8 {
         // 强信号：SPA 框架标识 → 直接满分
-        if self.spa_matcher.find(body).is_some() {
+        if spa_matcher.find(body).is_some() {
             return 10;
         }
         // 中信号：DOM 修改方法 → 7 分
-        if self.dom_matcher.find(body).is_some() {
+        if dom_matcher.find(body).is_some() {
             return 7;
         }
         // 弱信号：`<script` 标签密度 >= 6 → 7 分
-        if self.script_matcher.find_iter(body).count() >= SCRIPT_DENSITY_THRESHOLD {
+        if script_matcher.find_iter(body).count() >= SCRIPT_DENSITY_THRESHOLD {
             return 7;
         }
         0
@@ -569,7 +596,7 @@ impl Middleware for DynamicUpgradeMiddleware {
         if resp.status != 200 {
             return MwAction::Continue;
         }
-        if self.score_body(&resp.body) >= 7 {
+        if self.score_body(&resp.body).await >= 7 {
             let mut new_req = resp.request.clone();
             new_req.fetch_mode_override = Some(FetchMode::Dynamic);
             tracing::info!(
@@ -1031,6 +1058,50 @@ mod tests {
         let mut resp = make_resp(200, body);
         let action = mw.process_response(&mut resp, &ctx).await;
         assert_eq!(action, MwAction::Continue);
+    }
+
+    /// M8：验证大 body（>1MB）score_body 不阻塞 tokio runtime。
+    ///
+    /// OPTIMIZE: 旧实现直接在 async worker 上执行 aho-corasick + HTML 解析，
+    /// 大 body 会阻塞 worker。改用 spawn_blocking 后，大 body 移到 blocking pool。
+    #[tokio::test]
+    async fn test_score_body_large_does_not_block_runtime() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::{Duration, Instant};
+
+        // 构造一个 2MB 的 HTML body（> 1MB 阈值）
+        let large_body: Vec<u8> = b"<html><body>".repeat(200_000); // ~2.4MB
+
+        let middleware = DynamicUpgradeMiddleware::new();
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = Arc::clone(&counter);
+
+        // 后台 task：每 1ms 自增 counter
+        let task = tokio::spawn(async move {
+            for _ in 0..100 {
+                c.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+
+        // 同时执行 score_body（应 spawn_blocking，不阻塞 runtime）
+        let start = Instant::now();
+        let _score = middleware.score_body(&large_body).await;
+        let elapsed = start.elapsed();
+
+        task.await.unwrap();
+
+        let counter_val = counter.load(Ordering::SeqCst);
+        // 后台 task 应在 score_body 期间继续推进（spawn_blocking 不占用 worker）
+        assert!(
+            counter_val > 50,
+            "后台 task 应在 score_body 期间继续，实际 counter={counter_val}"
+        );
+        // score_body 应 < 2s（spawn_blocking 不阻塞）
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "score_body 应 < 2s，实际 {elapsed:?}"
+        );
     }
 
     // === BlockedRetryMiddleware 测试 ===
