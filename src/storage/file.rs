@@ -1,15 +1,17 @@
 //! 文件系统存储后端。每条 entry 一个文件，子目录隔离 namespace。
 //!
 //! 所有同步 fs I/O 用 `tokio::task::spawn_blocking` 包装移出 async worker。
-//! 已删除 `write_lock`：spawn_blocking 已是线程外执行，同 key 并发写依赖文件
-//! 系统原子性，与旧实现行为一致。
+//! 写入采用 `tempfile::NamedTempFile::persist` 原子替换：先写到同目录下随机命名
+//! 的临时文件，再 `rename` 到目标路径。POSIX `rename` 原子，保证并发写同 key 时
+//! 文件内容不会交错损坏（最后一个写者决定最终内容）。
 
 use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use tempfile::NamedTempFile;
 
 use crate::error::{Result, WispError, StorageError};
 use super::Store;
@@ -111,6 +113,26 @@ fn unpack_and_check(data: &[u8]) -> Option<Vec<u8>> {
     Some(data[8..].to_vec())
 }
 
+/// 原子写入：先写到同目录下随机命名的临时文件，再 `rename` 到目标路径。
+///
+/// POSIX `rename` 原子，保证并发写同 path 时文件内容不会交错损坏。
+/// 失败时临时文件会被 NamedTempFile drop 自动清理。
+fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+    })?;
+    fs::create_dir_all(parent)?;
+    let mut tmp = NamedTempFile::new_in(parent)?;
+    std::io::Write::write_all(&mut tmp, data)?;
+    tmp.persist(path).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("persist failed: {e}"),
+        )
+    })?;
+    Ok(())
+}
+
 #[async_trait]
 impl Store for FileStore {
     async fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
@@ -120,12 +142,8 @@ impl Store for FileStore {
         let value = value.to_vec();
         tokio::task::spawn_blocking(move || {
             let path = root.join(&namespace).join(sanitize_key(&key));
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| WispError::Storage(StorageError::General(format!("mkdir: {e}"))))?;
-            }
             let packed = pack_with_ttl(&value, None);
-            fs::write(&path, packed)
+            atomic_write(&path, &packed)
                 .map_err(|e| WispError::Storage(StorageError::General(format!("write: {e}"))))?;
             Ok(())
         })
@@ -189,12 +207,8 @@ impl Store for FileStore {
         let value = value.to_vec();
         tokio::task::spawn_blocking(move || {
             let path = root.join(&namespace).join(sanitize_key(&key));
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| WispError::Storage(StorageError::General(format!("mkdir: {e}"))))?;
-            }
             let packed = pack_with_ttl(&value, ttl);
-            fs::write(&path, packed)
+            atomic_write(&path, &packed)
                 .map_err(|e| WispError::Storage(StorageError::General(format!("write: {e}"))))?;
             Ok(())
         })
