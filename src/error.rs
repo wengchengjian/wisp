@@ -210,6 +210,7 @@ pub enum StorageError {
 /// - `Mcp(...)` — MCP 协议
 /// - `Storage(...)` — 存储
 /// - `Engine(...)` — 引擎状态错误（ND-001-ARCH）
+/// - `Config(...)` — 配置 / 使用方式错误
 /// - `Timeout` / `Io` — 跨领域通用
 #[derive(Debug, Error)]
 pub enum WispError {
@@ -238,6 +239,10 @@ pub enum WispError {
     /// 语义上不属于网络/浏览器/解析等任何领域，应使用此变体。
     #[error("Engine state error: {0}")]
     Engine(String),
+
+    /// 配置 / 使用方式错误（如 `Fetcher::from_client` 创建 Dynamic/Stealth 模式后调用 fetch）。
+    #[error("Config error: {0}")]
+    Config(String),
 
     /// 通用超时（跨领域）
     #[error("Timeout: {0}")]
