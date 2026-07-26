@@ -27,7 +27,7 @@ pub use auto::ModeRuleEngine;
 pub use builder::{ClosureSpider, SpiderBuilder};
 pub use engine::{fetch_page, fetch_page_inner, record_status};
 pub use items::{Items, JsonlWriter};
-pub use runner::{Engine, EngineBuilder};
+pub use runner::{Engine, EngineBuilder, EngineConfig};
 pub use state::CrawlState;
 pub use stop::{
     FnStopCondition, MaxErrors, MaxItems, MaxPages, NeverStop, StopCondition, StopContext, Timeout,
@@ -481,5 +481,13 @@ mod tests {
         assert_eq!(Method::Post.as_str(), "POST");
         assert_eq!(Method::Put.as_str(), "PUT");
         assert_eq!(Method::Delete.as_str(), "DELETE");
+    }
+
+    /// PR4 Task 7：验证 wisp::crawl::EngineConfig 公开可访问。
+    #[test]
+    fn test_engine_config_public_accessible() {
+        let config = crate::crawl::EngineConfig::default();
+        assert_eq!(config.max_concurrent, 8);
+        assert_eq!(config.max_pages, 1000);
     }
 }
