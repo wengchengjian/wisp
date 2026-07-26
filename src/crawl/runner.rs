@@ -15,6 +15,66 @@ use super::{
 use crate::error::Result;
 use crate::fetcher::{FetchClient, FetchClientConfig};
 
+/// 所有只读引擎配置聚合（Arc 共享，构建后不可变）。
+///
+/// ARCH: 替代散落在 Engine/EngineConfig/EngineShared 的 26 字段。
+/// 构建后通过 Arc 共享，所有模块通过 `&Arc<EngineConfig>` 访问。
+#[derive(Debug, Clone)]
+pub struct EngineConfig {
+    // === 并发与配额 ===
+    /// 最大并发数。
+    pub max_concurrent: usize,
+    /// 最大爬取页数（引擎级兜底）。
+    pub max_pages: usize,
+    /// 最大错误数（达到此上限引擎停止）。
+    pub max_errors: usize,
+
+    // === 抓取行为 ===
+    /// 抓取模式（Http/Dynamic/Stealth/Auto）。
+    pub fetch_mode: crate::fetcher::FetchMode,
+    /// 是否遵守 robots.txt。
+    pub obey_robots: bool,
+    /// 网络错误重试上限（fetch 失败后同步重试）。
+    pub max_retries: u32,
+    /// 响应中间件 Refetch 最大轮数。
+    pub max_refetch_rounds: usize,
+    /// 下载延迟（每次请求前的等待时间）。
+    pub download_delay: Duration,
+
+    // === 检查点 ===
+    /// 检查点保存间隔（页数）。
+    pub checkpoint_interval: usize,
+    /// 检查点自定义名称（默认使用 spider name）。
+    pub checkpoint_name: Option<String>,
+
+    // === 自动模式规则 ===
+    /// Auto 模式 URL 正则规则（优先级最高，跳过嗅探）。
+    pub auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
+
+    // === HTTP 配置（含 proxy 子字段） ===
+    /// FetchClient 配置（HTTP 连接池/超时/浏览器等基础设施配置）。
+    pub fetch_client_config: crate::fetcher::FetchClientConfig,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent: 8,
+            max_pages: 1000,
+            max_errors: 1000,
+            fetch_mode: crate::fetcher::FetchMode::Auto,
+            obey_robots: true,
+            max_retries: 3,
+            max_refetch_rounds: 5,
+            download_delay: Duration::ZERO,
+            checkpoint_interval: 100,
+            checkpoint_name: None,
+            auto_rules: Vec::new(),
+            fetch_client_config: crate::fetcher::FetchClientConfig::default(),
+        }
+    }
+}
+
 /// 爬虫引擎基础设施。长期持有，多次 run 不同 Spider。
 ///
 /// Task 3 重构：从"Spider 容器"变为"纯基础设施"。
