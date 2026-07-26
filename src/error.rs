@@ -167,9 +167,34 @@ pub enum McpError {
 /// SQLite / 持久化存储相关错误。
 #[derive(Debug, Error)]
 pub enum StorageError {
-    /// 通用存储错误。
+    /// 通用存储错误（保留向后兼容，新代码应使用具体变体）。
     #[error("Storage error: {0}")]
     General(String),
+
+    /// 键不存在（namespace + key 定位）。
+    #[error("Key not found in namespace {namespace}: {key}")]
+    NotFound {
+        /// 命名空间（如 "checkpoint"/"element"/"response"）。
+        namespace: String,
+        /// 键名。
+        key: String,
+    },
+
+    /// 序列化/反序列化失败。
+    #[error("Serialization failed: {0}")]
+    Serialization(String),
+
+    /// 后端错误（SQLite/文件系统等底层错误）。
+    #[error("Backend error: {0}")]
+    Backend(String),
+
+    /// 数据损坏（存储的内容无法解析）。
+    #[error("Data corrupted: {0}")]
+    Corrupted(String),
+
+    /// IO 错误。
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 // ============================================================================
@@ -225,3 +250,61 @@ pub enum WispError {
 
 /// Wisp 统一结果类型。
 pub type Result<T> = std::result::Result<T, WispError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_error_general_display() {
+        let e = StorageError::General("msg".into());
+        assert_eq!(e.to_string(), "Storage error: msg");
+    }
+
+    #[test]
+    fn storage_error_not_found_display() {
+        let e = StorageError::NotFound {
+            namespace: "checkpoint".into(),
+            key: "spider1".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "Key not found in namespace checkpoint: spider1"
+        );
+    }
+
+    #[test]
+    fn storage_error_serialization_display() {
+        let e = StorageError::Serialization("bad json".into());
+        assert_eq!(e.to_string(), "Serialization failed: bad json");
+    }
+
+    #[test]
+    fn storage_error_backend_display() {
+        let e = StorageError::Backend("sqlite locked".into());
+        assert_eq!(e.to_string(), "Backend error: sqlite locked");
+    }
+
+    #[test]
+    fn storage_error_corrupted_display() {
+        let e = StorageError::Corrupted("invalid magic".into());
+        assert_eq!(e.to_string(), "Data corrupted: invalid magic");
+    }
+
+    #[test]
+    fn storage_error_io_from_std_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let storage_err: StorageError = io_err.into();
+        assert!(storage_err.to_string().contains("file missing"));
+    }
+
+    #[test]
+    fn storage_error_converts_to_wisp_error() {
+        let storage_err = StorageError::NotFound {
+            namespace: "ns".into(),
+            key: "k".into(),
+        };
+        let wisp_err: WispError = storage_err.into();
+        assert!(matches!(wisp_err, WispError::Storage(StorageError::NotFound { .. })));
+    }
+}

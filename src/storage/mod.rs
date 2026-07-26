@@ -157,7 +157,7 @@ pub async fn save_element(
 ) -> Result<()> {
     let composite = format!("{url}|{key}");
     let bytes = serde_json::to_vec(row).map_err(|e| {
-        WispError::Storage(StorageError::General(format!("serialize element: {e}")))
+        WispError::Storage(StorageError::Serialization(format!("serialize element: {e}")))
     })?;
     store.set(NS_ELEMENT, &composite, &bytes).await
 }
@@ -174,7 +174,7 @@ pub async fn load_element(
         .await?
         .map(|v| serde_json::from_slice(&v))
         .transpose()
-        .map_err(|e| WispError::Storage(StorageError::General(format!("parse element: {e}"))))
+        .map_err(|e| WispError::Storage(StorageError::Corrupted(format!("parse element: {e}"))))
 }
 
 // === Response Cache ===
@@ -188,7 +188,7 @@ pub async fn save_response(
 ) -> Result<()> {
     let composite = format!("{method}|{url}");
     let bytes = serde_json::to_vec(resp).map_err(|e| {
-        WispError::Storage(StorageError::General(format!("serialize response: {e}")))
+        WispError::Storage(StorageError::Serialization(format!("serialize response: {e}")))
     })?;
     store
         .set_with_ttl(NS_RESPONSE, &composite, &bytes, resp.ttl)
@@ -207,7 +207,7 @@ pub async fn load_response(
         .await?
         .map(|v| serde_json::from_slice(&v))
         .transpose()
-        .map_err(|e| WispError::Storage(StorageError::General(format!("parse response: {e}"))))
+        .map_err(|e| WispError::Storage(StorageError::Corrupted(format!("parse response: {e}"))))
 }
 
 /// 删除响应缓存。
