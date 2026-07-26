@@ -112,16 +112,20 @@ impl Page {
         };
 
         // Inject stealth scripts (conditional on headless/headed)
-        let stealth_script = if headless {
-            crate::stealth::patches::HEADLESS_STEALTH_SCRIPT
-        } else {
-            crate::stealth::patches::HEADED_STEALTH_SCRIPT
-        };
-        page.cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            json!({"source": stealth_script}),
-        )
-        .await?;
+        // ARCH: 反检测脚本仅在 stealth feature 启用时注入；browser-only 模式跳过。
+        #[cfg(feature = "stealth")]
+        {
+            let stealth_script = if headless {
+                crate::stealth::patches::HEADLESS_STEALTH_SCRIPT
+            } else {
+                crate::stealth::patches::HEADED_STEALTH_SCRIPT
+            };
+            page.cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": stealth_script}),
+            )
+            .await?;
+        }
         // NOTE: shadow_dom patch removed - it overrides Element.prototype.attachShadow
         // which Turnstile detects. We use CDP DOM.getDocument(pierce=true) instead.
 

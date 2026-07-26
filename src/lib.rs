@@ -89,6 +89,7 @@
 /// Cookie 存储 trait + 三实现（Http/Browser/Cf）。
 pub mod cookie;
 /// 浏览器进程管理：启动 Chrome、CDP 会话、页面操作。
+#[cfg(feature = "browser")]
 pub mod browser;
 /// 浏览器启动选项和代理配置。
 pub mod config;
@@ -103,12 +104,14 @@ pub mod fetcher;
 /// HTTP 客户端（TLS 指纹模拟，基于 wreq）。
 pub mod http;
 /// MCP Server（AI 辅助爬取，stdio JSON-RPC）。
+#[cfg(feature = "mcp")]
 pub mod mcp;
 /// HTML 解析：CSS/XPath 选择器 + 自适应重定位。
 pub mod parser;
 /// 代理池管理与轮换策略。
 pub mod proxy;
 /// 反检测补丁 + Cloudflare 挑战解决 + 人类行为模拟。
+#[cfg(feature = "stealth")]
 pub mod stealth;
 /// 可插拔存储（MemoryStore + FileStore，可选 SqliteStore）。
 pub mod storage;
@@ -120,12 +123,18 @@ pub mod utils;
 // === 统一入口 ===
 pub use fetcher::{FetchClient, FetchClientConfig, FetchMode, Fetcher, FetcherBuilder};
 pub use fetcher::{Method, Request, Response};
+#[cfg(feature = "stealth")]
 pub use stealth::TurnstileConfig;
 
 // === Cookie 管理 ===
-pub use cookie::{BrowserCookieJar, CfCookieJar, CfSession, Cookie, CookieJar, HttpCookieJar};
+pub use cookie::{Cookie, CookieJar, HttpCookieJar};
+#[cfg(feature = "browser")]
+pub use cookie::BrowserCookieJar;
+#[cfg(feature = "stealth")]
+pub use cookie::{CfCookieJar, CfSession};
 
 // === 核心类型 ===
+#[cfg(feature = "browser")]
 pub use browser::{Browser, Page};
 pub use config::{LaunchOptions, ProxyConfig};
 pub use error::{
@@ -155,6 +164,7 @@ pub use http::UaRotator;
 pub use http::DomainBlocker;
 
 #[cfg(test)]
+#[cfg(all(feature = "browser", feature = "stealth"))]
 mod cookie_module_tests {
     use std::sync::Arc;
 

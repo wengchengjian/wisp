@@ -6,8 +6,21 @@ description = "Lightweight undetected browser automation for Rust - built for sc
 license = "Apache-2.0"
 
 [features]
-default = []
-# 启用 SQLite 存储后端（默认禁用，使用 FileStore）
+default = ["http"]
+
+# HTTP 模式（默认启用）：HTTP fetcher + parser + storage + crawl 基础
+http = []
+
+# 浏览器模式（Dynamic）：启用 browser 模块 + DynamicStrategy
+browser = ["dep:tokio-tungstenite", "dep:tungstenite", "dep:zip"]
+
+# Stealth 模式：启用 stealth 模块 + StealthStrategy（依赖 browser）
+stealth = ["browser"]
+
+# MCP 服务：启用 mcp 模块（依赖 crawl）
+mcp = []
+
+# SQLite 存储后端
 sqlite = ["dep:turso"]
 
 [dependencies]
@@ -21,8 +34,8 @@ futures = "0.3"
 which = "7"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-tungstenite = "0.30"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"], optional = true }
+tungstenite = { version = "0.30", optional = true }
 rand = "0.10"
 # Scraping / parsing（启用 atomic feature 使 Html: Send，支持 tokio::spawn）
 scraper = { version = "0.27", features = ["atomic"] }
@@ -60,7 +73,7 @@ parking_lot = "0.12"
 # 临时目录自动清理（替代 Drop 中 thread::spawn + remove_dir_all）
 tempfile = "3"
 # Chrome for Testing 安装器：解压下载的 zip 包
-zip = "2"
+zip = { version = "2", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -73,6 +86,9 @@ harness = false
 [[bin]]
 name = "wisp"
 path = "src/bin/wisp.rs"
+# bin/wisp.rs 包含 Browser/Mcp 命令，需要全部 feature 才能编译
+# HTTP-only 模式下用 `cargo build --lib --no-default-features --features http`
+required-features = ["browser", "stealth", "mcp"]
 
 # ND-001-DEP：release profile 优化（性能敏感的爬虫框架）
 # 注意：未启用 panic = "abort"，因为部分 Drop 实现依赖 catch_unwind 语义

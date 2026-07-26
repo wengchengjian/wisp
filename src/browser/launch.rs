@@ -77,9 +77,13 @@ pub fn build_default_args(options: &LaunchOptions) -> Vec<String> {
 /// 构建完整启动参数（common + stealth_extra），无 "--" 前缀。
 ///
 /// ARCH: 保留原 `build_stealth_args` 名字以兼容 `Browser::launch` 调用。
+#[allow(unused_mut)]
 pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
     let mut args = build_common_args(options);
-    args.extend(build_stealth_extra_args(options));
+    #[cfg(feature = "stealth")]
+    {
+        args.extend(build_stealth_extra_args(options));
+    }
     args
 }
 
@@ -142,9 +146,8 @@ pub fn build_common_args(options: &LaunchOptions) -> Vec<String> {
 
 /// 构建 stealth 专用额外参数。
 ///
-/// ARCH: PR2 阶段无 cfg gate（stealth 模块仍总是编译）。
-/// PR3 启用 feature gate 后，此函数加 `#[cfg(feature = "stealth")]`，
-/// `build_default_args` 中的调用也加对应 cfg。
+/// ARCH: 仅在 stealth feature 启用时编译。browser-only 模式下不包含反检测参数。
+#[cfg(feature = "stealth")]
 pub fn build_stealth_extra_args(_options: &LaunchOptions) -> Vec<String> {
     vec![
         // Core anti-detection flag
@@ -173,6 +176,7 @@ mod tests {
         let args = build_stealth_args(&opts);
         assert!(args.contains(&"no-first-run".to_string()));
         assert!(args.contains(&"disable-background-networking".to_string()));
+        #[cfg(feature = "stealth")]
         assert!(args.contains(&"disable-blink-features=AutomationControlled".to_string()));
     }
 
@@ -239,6 +243,7 @@ mod tests {
         assert!(!args.contains(&"disable-blink-features=AutomationControlled".to_string()));
     }
 
+    #[cfg(feature = "stealth")]
     #[test]
     fn test_build_stealth_extra_args_contains_stealth_specific() {
         let opts = LaunchOptions::default();
@@ -248,6 +253,7 @@ mod tests {
         assert!(!args.contains(&"no-first-run".to_string()));
     }
 
+    #[cfg(feature = "stealth")]
     #[test]
     fn test_build_default_args_combines_common_and_stealth() {
         let opts = LaunchOptions::default();
@@ -258,6 +264,7 @@ mod tests {
         assert!(args.iter().any(|a| a == "--disable-blink-features=AutomationControlled"));
     }
 
+    #[cfg(feature = "stealth")]
     #[test]
     fn test_build_stealth_args_equals_common_plus_stealth_extra() {
         let opts = LaunchOptions::default();

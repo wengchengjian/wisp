@@ -802,6 +802,8 @@ pub async fn fetch_page_inner(
     proxy_clients: &moka::sync::Cache<String, Arc<Client>>,
 ) -> Result<Response> {
     // 浏览器模式：通过 BrowserPool 复用实例（RAII 自动归还，无泄漏）
+    // ARCH: 浏览器路径只在 browser feature 启用时编译。
+    #[cfg(feature = "browser")]
     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
         let fetch_req = crate::fetcher::Request {
             url: req.url.clone(),
@@ -817,14 +819,23 @@ pub async fn fetch_page_inner(
                 fetch_client.fetch_browser(&fetch_req, &strategy).await?
             }
             FetchMode::Stealth => {
-                let config = fetch_client.config();
-                let cf_jar = std::sync::Arc::new(crate::cookie::CfCookieJar::new(
-                    &config.cf_data_dir,
-                    config.cf_cookie_ttl,
-                ));
-                let strategy =
-                    crate::fetcher::StealthStrategy::from_config(config, cf_jar);
-                fetch_client.fetch_browser(&fetch_req, &strategy).await?
+                #[cfg(feature = "stealth")]
+                {
+                    let config = fetch_client.config();
+                    let cf_jar = std::sync::Arc::new(crate::cookie::CfCookieJar::new(
+                        &config.cf_data_dir,
+                        config.cf_cookie_ttl,
+                    ));
+                    let strategy =
+                        crate::fetcher::StealthStrategy::from_config(config, cf_jar);
+                    fetch_client.fetch_browser(&fetch_req, &strategy).await?
+                }
+                #[cfg(not(feature = "stealth"))]
+                {
+                    return Err(crate::error::WispError::Config(
+                        "Stealth mode requires 'stealth' feature".into(),
+                    ));
+                }
             }
             _ => unreachable!("上方 if 已过滤非浏览器模式"),
         };
@@ -854,6 +865,12 @@ pub async fn fetch_page_inner(
             content_type,
             false,
         ));
+    }
+    #[cfg(not(feature = "browser"))]
+    if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
+        return Err(crate::error::WispError::Config(format!(
+            "{mode:?} mode requires 'browser' feature"
+        )));
     }
 
     // Http 模式：统一使用 Client::fetch() 直接返回 fetcher::Response，无中间类型转换。

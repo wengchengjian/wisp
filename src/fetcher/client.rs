@@ -11,13 +11,18 @@ use std::time::Duration;
 
 use wreq_util::Profile;
 
+#[cfg(feature = "browser")]
 use crate::browser::BrowserPool;
+#[cfg(feature = "browser")]
 use crate::config::LaunchOptions;
 use crate::cookie::{CookieJar, HttpCookieJar};
-use crate::error::{BrowserError, Result, WispError};
+use crate::error::Result;
+#[cfg(feature = "browser")]
+use crate::error::WispError;
 use crate::http::{block::DomainBlocker, Client};
 
 use super::response::{Request, Response};
+#[cfg(feature = "browser")]
 use super::strategy::BrowserFetchStrategy;
 
 /// 统一请求客户端配置。
@@ -60,6 +65,7 @@ pub struct FetchClientConfig {
     /// 默认 false（启用验证）。设为 true 等价于 curl -k，存在中间人攻击风险。
     pub danger_accept_invalid_certs: bool,
     /// Turnstile 解决器参数配置。
+    #[cfg(feature = "stealth")]
     pub turnstile: crate::stealth::TurnstileConfig,
     /// CF 会话缓存 TTL（默认 30 分钟）。
     pub cf_cookie_ttl: Duration,
@@ -87,6 +93,7 @@ impl Default for FetchClientConfig {
             max_concurrent_pages: 4,
             max_response_size: 64 * 1024 * 1024, // 64MB
             danger_accept_invalid_certs: false,
+            #[cfg(feature = "stealth")]
             turnstile: crate::stealth::TurnstileConfig::default(),
             cf_cookie_ttl: Duration::from_mins(30),
             cf_data_dir: PathBuf::from("wisp-data"),
@@ -101,6 +108,7 @@ impl Default for FetchClientConfig {
 /// - Cookie 管理：通过 `cookie_jar` 统一 HTTP/浏览器/CF cookie 状态
 pub struct FetchClient {
     http: Arc<Client>,
+    #[cfg(feature = "browser")]
     browser_pool: Option<Arc<BrowserPool>>,
     config: FetchClientConfig,
     /// 共享 cookie jar（默认 HttpCookieJar，StealthStrategy 可注入 CfCookieJar）
@@ -112,10 +120,12 @@ impl FetchClient {
     pub fn new(config: FetchClientConfig) -> Result<Self> {
         let http_jar = Arc::new(HttpCookieJar::new());
         let http = Arc::new(Self::build_http_client(&config, http_jar.jar())?);
+        #[cfg(feature = "browser")]
         let browser_pool = Self::build_browser_pool(&config);
         let cookie_jar: Arc<dyn CookieJar> = http_jar;
         Ok(Self {
             http,
+            #[cfg(feature = "browser")]
             browser_pool,
             config,
             cookie_jar,
@@ -142,6 +152,7 @@ impl FetchClient {
 
     /// 获取浏览器池引用（若有）。
     #[must_use]
+    #[cfg(feature = "browser")]
     pub fn browser_pool(&self) -> Option<&Arc<BrowserPool>> {
         self.browser_pool.as_ref()
     }
@@ -162,13 +173,14 @@ impl FetchClient {
     /// ARCH: 替代 `fetch_browser(&req, solve_cf: bool)`。
     /// strategy 由调用方传入，FetchClient 不再关心 CF/Dynamic 差异。
     /// 120s 总超时由本方法包装。
+    #[cfg(feature = "browser")]
     pub async fn fetch_browser(
         &self,
         req: &Request,
         strategy: &dyn BrowserFetchStrategy,
     ) -> Result<Response> {
         let pool = self.browser_pool.as_ref().ok_or_else(|| {
-            WispError::Browser(BrowserError::Other(
+            WispError::Browser(crate::error::BrowserError::Other(
                 "browser pool not configured (max_concurrent_pages=0)".into(),
             ))
         })?;
@@ -223,6 +235,7 @@ impl FetchClient {
         builder.build()
     }
 
+    #[cfg(feature = "browser")]
     fn build_browser_pool(config: &FetchClientConfig) -> Option<Arc<BrowserPool>> {
         if config.max_concurrent_pages == 0 {
             return None;
@@ -265,10 +278,12 @@ mod tests {
             ..Default::default()
         };
         let client = FetchClient::new(config).expect("build client");
+        #[cfg(feature = "browser")]
         assert!(client.browser_pool().is_none());
         assert_eq!(client.http().config_ref().timeout, Duration::from_secs(30));
     }
 
+    #[cfg(feature = "browser")]
     #[test]
     fn test_fetch_client_with_browser_pool() {
         let config = FetchClientConfig::default();
@@ -310,62 +325,67 @@ mod tests {
         assert_eq!(config.cf_data_dir, std::path::PathBuf::from("wisp-data"));
     }
 
-    use crate::fetcher::strategy::BrowserFetchStrategy;
-    use crate::browser::Page;
-    use async_trait::async_trait;
+    #[cfg(feature = "browser")]
+    #[cfg(test)]
+    mod browser_tests {
+        use super::*;
+        use crate::browser::Page;
+        use crate::fetcher::strategy::BrowserFetchStrategy;
+        use async_trait::async_trait;
 
-    /// Mock 策略：返回固定响应，用于验证 fetch_browser 调用契约。
-    struct MockStrategy {
-        called: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl BrowserFetchStrategy for MockStrategy {
-        async fn fetch(&self, _page: &mut Page, req: &Request) -> Result<Response> {
-            self.called.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(Response::from_browser(
-                200,
-                req.url.clone(),
-                "<html>mock</html>".to_string(),
-                "mock".to_string(),
-                Vec::new(),
-                req.clone(),
-            ))
+        /// Mock 策略：返回固定响应，用于验证 fetch_browser 调用契约。
+        struct MockStrategy {
+            called: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         }
-    }
 
-    #[tokio::test]
-    async fn test_fetch_browser_invokes_strategy() {
-        // max_concurrent_pages=0 会导致无 browser_pool，需 >0
-        let config = FetchClientConfig::default();
-        let client = FetchClient::new(config).expect("build client");
-        let called = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let strategy = MockStrategy { called: called.clone() };
-        let req = Request::get("data:text/html,<html></html>");
-
-        // 注意：此测试需要真实 Chrome（BrowserPool::acquire 会启动浏览器）
-        // 若无 Chrome 环境，会返回 LaunchFailed 错误
-        let result = client.fetch_browser(&req, &strategy).await;
-        if result.is_ok() {
-            assert_eq!(called.load(std::sync::atomic::Ordering::Relaxed), 1);
+        #[async_trait]
+        impl BrowserFetchStrategy for MockStrategy {
+            async fn fetch(&self, _page: &mut Page, req: &Request) -> Result<Response> {
+                self.called.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(Response::from_browser(
+                    200,
+                    req.url.clone(),
+                    "<html>mock</html>".to_string(),
+                    "mock".to_string(),
+                    Vec::new(),
+                    req.clone(),
+                ))
+            }
         }
-        // 无 Chrome 环境下不报错（忽略结果）
-    }
 
-    #[tokio::test]
-    async fn test_fetch_browser_no_pool_returns_error() {
-        let config = FetchClientConfig {
-            max_concurrent_pages: 0,
-            ..Default::default()
-        };
-        let client = FetchClient::new(config).expect("build client");
-        let called = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let strategy = MockStrategy { called: called.clone() };
-        let req = Request::get("https://example.com/");
+        #[tokio::test]
+        async fn test_fetch_browser_invokes_strategy() {
+            // max_concurrent_pages=0 会导致无 browser_pool，需 >0
+            let config = FetchClientConfig::default();
+            let client = FetchClient::new(config).expect("build client");
+            let called = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let strategy = MockStrategy { called: called.clone() };
+            let req = Request::get("data:text/html,<html></html>");
 
-        let result = client.fetch_browser(&req, &strategy).await;
-        assert!(result.is_err(), "无 browser_pool 应返回错误");
-        // 策略不应被调用
-        assert_eq!(called.load(std::sync::atomic::Ordering::Relaxed), 0);
+            // 注意：此测试需要真实 Chrome（BrowserPool::acquire 会启动浏览器）
+            // 若无 Chrome 环境，会返回 LaunchFailed 错误
+            let result = client.fetch_browser(&req, &strategy).await;
+            if result.is_ok() {
+                assert_eq!(called.load(std::sync::atomic::Ordering::Relaxed), 1);
+            }
+            // 无 Chrome 环境下不报错（忽略结果）
+        }
+
+        #[tokio::test]
+        async fn test_fetch_browser_no_pool_returns_error() {
+            let config = FetchClientConfig {
+                max_concurrent_pages: 0,
+                ..Default::default()
+            };
+            let client = FetchClient::new(config).expect("build client");
+            let called = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let strategy = MockStrategy { called: called.clone() };
+            let req = Request::get("https://example.com/");
+
+            let result = client.fetch_browser(&req, &strategy).await;
+            assert!(result.is_err(), "无 browser_pool 应返回错误");
+            // 策略不应被调用
+            assert_eq!(called.load(std::sync::atomic::Ordering::Relaxed), 0);
+        }
     }
 }

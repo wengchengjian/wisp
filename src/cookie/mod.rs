@@ -10,11 +10,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+#[cfg(feature = "browser")]
 pub mod browser;
+#[cfg(feature = "stealth")]
 pub mod cf;
 pub mod http;
 
+#[cfg(feature = "browser")]
 pub use browser::BrowserCookieJar;
+#[cfg(feature = "stealth")]
 pub use cf::{CfCookieJar, CfSession};
 pub use http::HttpCookieJar;
 

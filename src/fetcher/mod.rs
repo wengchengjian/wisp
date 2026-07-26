@@ -30,10 +30,15 @@
 
 pub mod client;
 pub mod response;
+#[cfg(feature = "browser")]
 pub mod strategy;
+#[cfg(feature = "browser")]
 pub mod strategies;
 
-pub use strategies::{DynamicStrategy, StealthStrategy};
+#[cfg(feature = "browser")]
+pub use strategies::DynamicStrategy;
+#[cfg(feature = "stealth")]
+pub use strategies::StealthStrategy;
 
 pub use client::{FetchClient, FetchClientConfig};
 pub use response::{Method, Request, Response};
@@ -42,8 +47,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use wreq_util::Profile;
 
+#[cfg(feature = "stealth")]
 use crate::cookie::CfCookieJar;
 use crate::error::{Result, WispError};
+#[cfg(feature = "browser")]
 use crate::fetcher::strategy::BrowserFetchStrategy;
 
 /// 抓取模式。
@@ -69,6 +76,7 @@ pub struct Fetcher {
     mode: FetchMode,
     /// 浏览器模式下的 strategy（Http/Auto 为 None）。
     /// ARCH: 由 Fetcher::new 根据 mode 自动构造。
+    #[cfg(feature = "browser")]
     browser_strategy: Option<Arc<dyn BrowserFetchStrategy>>,
 }
 
@@ -98,6 +106,7 @@ impl Fetcher {
         Self {
             client,
             mode,
+            #[cfg(feature = "browser")]
             browser_strategy: None,
         }
     }
@@ -105,30 +114,65 @@ impl Fetcher {
     /// 从配置创建 Fetcher。
     pub fn new(mode: FetchMode, config: FetchClientConfig) -> Result<Self> {
         let client = Arc::new(FetchClient::new(config.clone())?);
-        let browser_strategy = Self::build_strategy(mode, &config)?;
-        Ok(Self {
-            client,
-            mode,
-            browser_strategy,
-        })
+        #[cfg(feature = "browser")]
+        {
+            let browser_strategy = Self::build_strategy(mode, &config)?;
+            Ok(Self {
+                client,
+                mode,
+                browser_strategy,
+            })
+        }
+        #[cfg(not(feature = "browser"))]
+        {
+            // 非 browser feature 下，Dynamic/Stealth 模式不可用
+            match mode {
+                FetchMode::Http | FetchMode::Auto => Ok(Self { client, mode }),
+                FetchMode::Dynamic | FetchMode::Stealth => Err(WispError::Config(format!(
+                    "{mode:?} mode requires 'browser' feature"
+                ))),
+            }
+        }
     }
 
     /// 根据 mode 构造 browser_strategy。
+    #[cfg(feature = "browser")]
     fn build_strategy(
         mode: FetchMode,
         config: &FetchClientConfig,
     ) -> Result<Option<Arc<dyn BrowserFetchStrategy>>> {
         match mode {
             FetchMode::Http | FetchMode::Auto => Ok(None),
-            FetchMode::Dynamic => Ok(Some(Arc::new(DynamicStrategy::from_config(config)))),
-            FetchMode::Stealth => {
-                let cf_jar = Arc::new(CfCookieJar::new(
-                    &config.cf_data_dir,
-                    config.cf_cookie_ttl,
-                ));
-                Ok(Some(Arc::new(StealthStrategy::from_config(config, cf_jar))))
-            }
+            FetchMode::Dynamic => Self::build_dynamic_strategy(config),
+            FetchMode::Stealth => Self::build_stealth_strategy(config),
         }
+    }
+
+    #[cfg(feature = "browser")]
+    fn build_dynamic_strategy(
+        config: &FetchClientConfig,
+    ) -> Result<Option<Arc<dyn BrowserFetchStrategy>>> {
+        Ok(Some(Arc::new(DynamicStrategy::from_config(config))))
+    }
+
+    #[cfg(feature = "stealth")]
+    fn build_stealth_strategy(
+        config: &FetchClientConfig,
+    ) -> Result<Option<Arc<dyn BrowserFetchStrategy>>> {
+        let cf_jar = Arc::new(CfCookieJar::new(
+            &config.cf_data_dir,
+            config.cf_cookie_ttl,
+        ));
+        Ok(Some(Arc::new(StealthStrategy::from_config(config, cf_jar))))
+    }
+
+    #[cfg(all(feature = "browser", not(feature = "stealth")))]
+    fn build_stealth_strategy(
+        _: &FetchClientConfig,
+    ) -> Result<Option<Arc<dyn BrowserFetchStrategy>>> {
+        Err(WispError::Config(
+            "Stealth mode requires 'stealth' feature".into(),
+        ))
     }
 
     /// 获取当前模式。
@@ -151,6 +195,7 @@ impl Fetcher {
 
     /// 获取浏览器策略引用（如有）。
     #[must_use]
+    #[cfg(feature = "browser")]
     pub fn browser_strategy(&self) -> Option<&Arc<dyn BrowserFetchStrategy>> {
         self.browser_strategy.as_ref()
     }
@@ -176,13 +221,23 @@ impl Fetcher {
         match self.mode {
             FetchMode::Http | FetchMode::Auto => self.client.fetch_http(&req).await,
             FetchMode::Dynamic | FetchMode::Stealth => {
-                let strategy = self.browser_strategy.as_ref().ok_or_else(|| {
-                    WispError::Config(format!(
-                        "{:?} mode requires browser_strategy, use Fetcher::new() instead of from_client()",
+                #[cfg(feature = "browser")]
+                {
+                    let strategy = self.browser_strategy.as_ref().ok_or_else(|| {
+                        WispError::Config(format!(
+                            "{:?} mode requires browser_strategy, use Fetcher::new() instead of from_client()",
+                            self.mode
+                        ))
+                    })?;
+                    self.client.fetch_browser(&req, strategy.as_ref()).await
+                }
+                #[cfg(not(feature = "browser"))]
+                {
+                    Err(WispError::Config(format!(
+                        "{:?} mode requires 'browser' feature",
                         self.mode
-                    ))
-                })?;
-                self.client.fetch_browser(&req, strategy.as_ref()).await
+                    )))
+                }
             }
         }
     }
@@ -269,6 +324,7 @@ impl FetcherBuilder {
 
     /// 设置 Turnstile 解决器参数。
     #[must_use]
+    #[cfg(feature = "stealth")]
     pub fn turnstile_config(mut self, cfg: crate::stealth::TurnstileConfig) -> Self {
         self.config.turnstile = cfg;
         self
@@ -435,6 +491,7 @@ mod tests {
     fn test_fetcher_http_mode_has_no_strategy() {
         let fetcher = Fetcher::new(FetchMode::Http, FetchClientConfig::default())
             .expect("build fetcher");
+        #[cfg(feature = "browser")]
         assert!(fetcher.browser_strategy.is_none());
     }
 
@@ -442,9 +499,11 @@ mod tests {
     fn test_fetcher_auto_mode_has_no_strategy() {
         let fetcher = Fetcher::new(FetchMode::Auto, FetchClientConfig::default())
             .expect("build fetcher");
+        #[cfg(feature = "browser")]
         assert!(fetcher.browser_strategy.is_none());
     }
 
+    #[cfg(feature = "browser")]
     #[test]
     fn test_fetcher_dynamic_mode_has_strategy() {
         let fetcher = Fetcher::new(FetchMode::Dynamic, FetchClientConfig::default())
@@ -452,6 +511,7 @@ mod tests {
         assert!(fetcher.browser_strategy.is_some(), "Dynamic 模式应有 strategy");
     }
 
+    #[cfg(feature = "stealth")]
     #[test]
     fn test_fetcher_stealth_mode_has_strategy() {
         let fetcher = Fetcher::new(FetchMode::Stealth, FetchClientConfig::default())
