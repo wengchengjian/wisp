@@ -59,7 +59,9 @@ pub(crate) struct EngineConfig {
 pub(crate) struct EngineShared {
     pub sched: Arc<scheduler::Scheduler>,
     pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
-    pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Request>>>,
+    // OPTIMIZE: follow_rx 移出 EngineShared，由 runner.rs unfold 状态持有。
+    // 旧实现 `Arc<Mutex<UnboundedReceiver>>` 串行化所有 follow drain，但 Receiver 是
+    // 单消费者类型，无需 Mutex；保留 Mutex 只增加锁争用与无谓 await 开销。
     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）。
     ///
     /// ND-009-SEC：使用 moka::sync::Cache 限制最大条目数，防止攻击者注入大量
@@ -854,7 +856,7 @@ mod tests {
     /// 返回上下文与对应 stats 的 Arc 克隆，便于测试断言计数器。
     fn make_ctx() -> (EngineContext, Arc<SpiderStats>) {
         let stats = Arc::new(SpiderStats::new());
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        let (follow_tx, _) = tokio::sync::mpsc::unbounded_channel::<Request>();
         let ctx = EngineContext {
             config: EngineConfig {
                 client: Arc::new(
@@ -871,7 +873,6 @@ mod tests {
             shared: EngineShared {
                 sched: Arc::new(scheduler::Scheduler::new()),
                 follow_tx,
-                follow_rx: Arc::new(Mutex::new(follow_rx)),
                 proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
                 control: Arc::new(control::EngineControl::new()),
                 work_notify: Arc::new(tokio::sync::Notify::new()),
@@ -966,7 +967,7 @@ mod tests {
     /// 构造带 RetryMiddleware 的 EngineContext（max_retries 可配置）。
     fn make_ctx_with_retry(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
         let stats = Arc::new(SpiderStats::new());
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        let (follow_tx, _) = tokio::sync::mpsc::unbounded_channel::<Request>();
         let mut chain = middleware::MiddlewareChain::new();
         chain
             .middlewares
@@ -990,7 +991,6 @@ mod tests {
             shared: EngineShared {
                 sched: Arc::new(scheduler::Scheduler::new()),
                 follow_tx,
-                follow_rx: Arc::new(Mutex::new(follow_rx)),
                 proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
                 control: Arc::new(control::EngineControl::new()),
                 work_notify: Arc::new(tokio::sync::Notify::new()),
@@ -1078,7 +1078,7 @@ mod tests {
     /// Stealth 模式快速返回 "browser pool not configured" 错误）。
     fn make_ctx_auto(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
         let stats = Arc::new(SpiderStats::new());
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        let (follow_tx, _) = tokio::sync::mpsc::unbounded_channel::<Request>();
         let mut chain = middleware::MiddlewareChain::new();
         chain
             .middlewares
@@ -1106,7 +1106,6 @@ mod tests {
             shared: EngineShared {
                 sched: Arc::new(scheduler::Scheduler::new()),
                 follow_tx,
-                follow_rx: Arc::new(Mutex::new(follow_rx)),
                 proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
                 control: Arc::new(control::EngineControl::new()),
                 work_notify: Arc::new(tokio::sync::Notify::new()),
@@ -1271,7 +1270,7 @@ mod tests {
         tokio::sync::mpsc::Receiver<CrawlEvent>,
     ) {
         let stats = Arc::new(SpiderStats::new());
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        let (follow_tx, _) = tokio::sync::mpsc::unbounded_channel::<Request>();
         let (tx, rx) = tokio::sync::mpsc::channel::<CrawlEvent>(128);
         let ctx = EngineContext {
             config: EngineConfig {
@@ -1289,7 +1288,6 @@ mod tests {
             shared: EngineShared {
                 sched: Arc::new(scheduler::Scheduler::new()),
                 follow_tx,
-                follow_rx: Arc::new(Mutex::new(follow_rx)),
                 proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
                 control: Arc::new(control::EngineControl::new()),
                 work_notify: Arc::new(tokio::sync::Notify::new()),

@@ -279,7 +279,6 @@ impl Engine {
             shared: engine::EngineShared {
                 sched: sched.clone(),
                 follow_tx,
-                follow_rx: Arc::new(Mutex::new(follow_rx)),
                 // ND-009-SEC：moka::Cache 限制 proxy client 缓存最大 1024 条
                 proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
                 control: self.control.clone(),
@@ -355,8 +354,9 @@ impl Engine {
             } else {
                 ctx.config.max_concurrent
             };
-            stream::unfold((), move |_| {
-                let ctx = ctx.clone();
+            // OPTIMIZE: follow_rx move 进 unfold 状态。UnboundedReceiver 是单消费者，
+            // 无需 Mutex 串行化；旧实现 `Arc<Mutex<UnboundedReceiver>>` 的锁是冗余的。
+            stream::unfold((ctx, follow_rx), move |(ctx, mut rx)| {
                 let autoscale = autoscale.clone();
                 async move {
                     loop {
@@ -366,12 +366,11 @@ impl Engine {
                             return None;
                         }
 
-                        // drain follow channel
-                        let mut rx_guard = ctx.shared.follow_rx.lock().await;
-                        while let Ok(req) = rx_guard.try_recv() {
+                        // OPTIMIZE: 直接 try_recv drain follow channel，无 Mutex 锁争用。
+                        // Receiver 是单消费者类型，串行化访问无意义。
+                        while let Ok(req) = rx.try_recv() {
                             ctx.shared.sched.push(req).await;
                         }
-                        drop(rx_guard);
 
                         // 引擎级 max_pages 兜底
                         let pages = ctx.state.stats.pages.load(Ordering::SeqCst);
@@ -455,7 +454,7 @@ impl Engine {
                                 engine::process_response(&ctx_c, resp).await;
                             }
                         };
-                        return Some((fut, ()));
+                        return Some((fut, (ctx, rx)));
                     }
                 }
             })
@@ -650,5 +649,28 @@ impl EngineBuilder {
             download_delay: self.download_delay,
             auto_rules: self.auto_rules,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Task 3：验证 UnboundedReceiver 可直接 try_recv drain，无需 Mutex 包装。
+    ///
+    /// Receiver 是单消费者类型，本身串行化访问；原实现 `Arc<Mutex<UnboundedReceiver>>`
+    /// 的 Mutex 是冗余的，本测试确认 try_recv drain 模式可行。
+    #[tokio::test]
+    async fn test_follow_rx_drained_without_mutex() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<i32>();
+
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+
+        let mut drained = Vec::new();
+        while let Ok(v) = rx.try_recv() {
+            drained.push(v);
+        }
+
+        assert_eq!(drained, vec![1, 2, 3]);
     }
 }
