@@ -803,7 +803,6 @@ pub async fn fetch_page_inner(
 ) -> Result<Response> {
     // 浏览器模式：通过 BrowserPool 复用实例（RAII 自动归还，无泄漏）
     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
-        let solve_cf = mode == FetchMode::Stealth;
         let fetch_req = crate::fetcher::Request {
             url: req.url.clone(),
             method: req.method,
@@ -811,7 +810,24 @@ pub async fn fetch_page_inner(
             body: req.body.clone(),
             ..Default::default()
         };
-        let resp = fetch_client.fetch_browser(&fetch_req, solve_cf).await?;
+        // ARCH: 按 mode 注入对应 Strategy（替代旧 solve_cf bool 标志）
+        let resp = match mode {
+            FetchMode::Dynamic => {
+                let strategy = crate::fetcher::DynamicStrategy::from_config(fetch_client.config());
+                fetch_client.fetch_browser(&fetch_req, &strategy).await?
+            }
+            FetchMode::Stealth => {
+                let config = fetch_client.config();
+                let cf_jar = std::sync::Arc::new(crate::cookie::CfCookieJar::new(
+                    &config.cf_data_dir,
+                    config.cf_cookie_ttl,
+                ));
+                let strategy =
+                    crate::fetcher::StealthStrategy::from_config(config, cf_jar);
+                fetch_client.fetch_browser(&fetch_req, &strategy).await?
+            }
+            _ => unreachable!("上方 if 已过滤非浏览器模式"),
+        };
         // 从 headers 提取 content_type（与 HTTP 模式一致），供 encoding 解码和缓存恢复使用
         let content_type = resp
             .headers

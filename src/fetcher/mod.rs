@@ -42,6 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use wreq_util::Profile;
 
+use crate::cookie::CfCookieJar;
 use crate::error::Result;
 
 /// 抓取模式。
@@ -138,8 +139,22 @@ impl Fetcher {
     pub async fn fetch(&self, req: Request) -> Result<Response> {
         match self.mode {
             FetchMode::Http | FetchMode::Auto => self.client.fetch_http(&req).await,
-            FetchMode::Dynamic => self.client.fetch_browser(&req, false).await,
-            FetchMode::Stealth => self.client.fetch_browser(&req, true).await,
+            FetchMode::Dynamic => {
+                let strategy = DynamicStrategy::from_config(self.client.config());
+                self.client.fetch_browser(&req, &strategy).await
+            }
+            FetchMode::Stealth => {
+                // ARCH: StealthStrategy 持有 CfCookieJar。
+                // Fetcher 是一次性请求场景，每次创建新 jar 实例（文件层持久化保证跨请求 CF cookie 复用）；
+                // 持续爬取场景应直接使用 FetchClient + 长生命周期 CfCookieJar。
+                let config = self.client.config();
+                let cf_jar = Arc::new(CfCookieJar::new(
+                    &config.cf_data_dir,
+                    config.cf_cookie_ttl,
+                ));
+                let strategy = StealthStrategy::from_config(config, cf_jar);
+                self.client.fetch_browser(&req, &strategy).await
+            }
         }
     }
 }
