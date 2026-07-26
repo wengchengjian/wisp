@@ -643,14 +643,17 @@ pub async fn fetch_page(
                 .unwrap_or_default();
 
             // 双重检测：先检查 cookie 是否已存在（其他请求可能已解决 CF）
-            if fetch_client.has_cf_cookies(&req.url).await {
+            let url_parsed = url::Url::parse(&req.url).ok();
+            let cookie_header = match url_parsed.as_ref() {
+                Some(u) => fetch_client.cookie_jar().header(u).await,
+                None => None,
+            };
+            if cookie_header.is_some() {
                 let mut http_req = req.clone();
-                if let Some(cookie_header) = fetch_client.get_cf_cookie_header(&req.url).await {
-                    http_req.headers.insert("Cookie".to_string(), cookie_header);
+                if let Some(header) = cookie_header {
+                    http_req.headers.insert("Cookie".to_string(), header);
                 }
-                if let Some(ua) = fetch_client.get_cf_ua(&req.url).await {
-                    http_req.headers.insert("User-Agent".to_string(), ua);
-                }
+                // UA 复用：PR1 中 HttpCookieJar 不存 UA，PR2 由 StealthStrategy 重新引入
                 http_req.fetch_mode_override = Some(FetchMode::Http);
                 let resp = fetch_page_inner(
                     fetch_client,
@@ -676,14 +679,16 @@ pub async fn fetch_page(
             let _guard = lock.lock().await;
 
             // 双重检测：等待期间其他请求可能已解决 CF
-            if fetch_client.has_cf_cookies(&req.url).await {
+            let cookie_header = match url_parsed.as_ref() {
+                Some(u) => fetch_client.cookie_jar().header(u).await,
+                None => None,
+            };
+            if cookie_header.is_some() {
                 let mut http_req = req.clone();
-                if let Some(cookie_header) = fetch_client.get_cf_cookie_header(&req.url).await {
-                    http_req.headers.insert("Cookie".to_string(), cookie_header);
+                if let Some(header) = cookie_header {
+                    http_req.headers.insert("Cookie".to_string(), header);
                 }
-                if let Some(ua) = fetch_client.get_cf_ua(&req.url).await {
-                    http_req.headers.insert("User-Agent".to_string(), ua);
-                }
+                // UA 复用：PR1 中 HttpCookieJar 不存 UA，PR2 由 StealthStrategy 重新引入
                 http_req.fetch_mode_override = Some(FetchMode::Http);
                 let resp = fetch_page_inner(
                     fetch_client,
@@ -720,18 +725,19 @@ pub async fn fetch_page(
     // 2. Auto 模式：始终先尝试 HTTP（带 CF cookie），失败后由中间件升级
     if mode == FetchMode::Auto {
         // 检查是否有 CF cookie 可用（若有则 HTTP 可能直接成功）
-        let has_cf_cookies = fetch_client.has_cf_cookies(&req.url).await;
+        let url_parsed = url::Url::parse(&req.url).ok();
+        let cookie_header = match url_parsed.as_ref() {
+            Some(u) => fetch_client.cookie_jar().header(u).await,
+            None => None,
+        };
 
-        if has_cf_cookies {
-            // 有 CF cookie：先尝试 HTTP（快速路径，注入 cookie + 浏览器实际 UA）
+        if cookie_header.is_some() {
+            // 有 CF cookie：先尝试 HTTP（快速路径，注入 cookie）
             let mut http_req = req.clone();
-            if let Some(cookie_header) = fetch_client.get_cf_cookie_header(&req.url).await {
-                http_req.headers.insert("Cookie".to_string(), cookie_header);
+            if let Some(header) = cookie_header {
+                http_req.headers.insert("Cookie".to_string(), header);
             }
-            // 使用浏览器实际 UA（CF 验证 cookie 时检查 UA 一致性）
-            if let Some(ua) = fetch_client.get_cf_ua(&req.url).await {
-                http_req.headers.insert("User-Agent".to_string(), ua);
-            }
+            // UA 复用：PR1 中 HttpCookieJar 不存 UA，PR2 由 StealthStrategy 重新引入
             let resp = fetch_page_inner(
                 fetch_client,
                 &http_req,

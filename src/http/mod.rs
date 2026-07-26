@@ -45,6 +45,9 @@ pub struct Config {
     /// ND-011-SEC：是否禁用 TLS 证书验证（危险！仅用于测试或自签名证书内部站点）。
     /// 默认 false（启用验证）。设为 true 等价于 curl -k，存在中间人攻击风险。
     pub danger_accept_invalid_certs: bool,
+    /// 外部 cookie jar（HttpCookieJar 注入）。
+    /// `None` 时使用 wreq::Client 内置 cookie_store。
+    pub cookie_jar: Option<std::sync::Arc<wreq::cookie::Jar>>,
 }
 
 impl Default for Config {
@@ -61,6 +64,7 @@ impl Default for Config {
             dns_over_https: None,
             max_body_size: 64 * 1024 * 1024,
             danger_accept_invalid_certs: false,
+            cookie_jar: None,
         }
     }
 }
@@ -164,6 +168,16 @@ impl ClientBuilder {
         self
     }
 
+    /// 注入外部 cookie jar（与 wreq::Client 共享 cookie 状态）。
+    ///
+    /// ARCH: HttpCookieJar 自创建 `wreq::cookie::Jar`，通过此方法注入到 wreq::Client，
+    /// 实现 HttpCookieJar 与 wreq::Client 自动 cookie 管理共享同一个 jar。
+    #[must_use]
+    pub fn cookie_provider(mut self, jar: std::sync::Arc<wreq::cookie::Jar>) -> Self {
+        self.config.cookie_jar = Some(jar);
+        self
+    }
+
     /// 获取配置引用（测试用）
     #[doc(hidden)]
     #[must_use]
@@ -172,12 +186,18 @@ impl ClientBuilder {
     }
 
     /// 构建 HTTP 客户端。
-    pub fn build(self) -> Result<Client> {
+    pub fn build(mut self) -> Result<Client> {
         let mut builder = wreq::Client::builder()
             .timeout(self.config.timeout)
             .redirect(wreq::redirect::Policy::limited(self.config.max_redirects))
-            .tls_cert_verification(!self.config.danger_accept_invalid_certs)
-            .cookie_store(true);
+            .tls_cert_verification(!self.config.danger_accept_invalid_certs);
+
+        // 优先使用外部注入的 cookie jar（HttpCookieJar），否则启用 wreq 内置 cookie_store
+        if let Some(jar) = self.config.cookie_jar.take() {
+            builder = builder.cookie_provider(jar);
+        } else {
+            builder = builder.cookie_store(true);
+        }
 
         if let Some(ref ua) = self.config.user_agent {
             builder = builder.user_agent(ua);
