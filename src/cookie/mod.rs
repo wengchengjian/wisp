@@ -10,9 +10,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+pub mod browser;
 pub mod cf;
 pub mod http;
 
+pub use browser::BrowserCookieJar;
 pub use cf::{CfCookieJar, CfSession};
 pub use http::HttpCookieJar;
 
