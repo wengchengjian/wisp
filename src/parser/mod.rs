@@ -6,7 +6,7 @@ pub mod document;
 pub mod generate;
 
 pub use adaptive::{
-    css_adaptive, relocate_with_snapshot, similarity, ElementSnapshot, DEFAULT_TOLERANCE,
+    relocate_with_snapshot, similarity, ElementSnapshot, DEFAULT_TOLERANCE,
 };
 
 use document::Document;
@@ -152,21 +152,6 @@ impl Node {
             .select(&selector)
             .next()
             .map(|el| Node::from_element_ref(self.doc.clone(), el))
-    }
-
-    /// Adaptive CSS selection with SQLite-backed snapshot persistence.
-    ///
-    /// See `adaptive::css_adaptive` for details.
-    pub async fn css_adaptive(
-        &self,
-        selector: &str,
-        key: &str,
-        url: &str,
-        store: &dyn crate::storage::Store,
-        auto_save: bool,
-        tolerance: f64,
-    ) -> Option<Node> {
-        adaptive::css_adaptive(self, selector, key, url, store, auto_save, tolerance).await
     }
 
     /// Get the text content of the document/element.

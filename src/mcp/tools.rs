@@ -175,9 +175,13 @@ pub async fn adaptive_scrape(args: Value, store: &Arc<dyn Store>) -> Result<Valu
     let html = resp.text()?;
     let doc = Node::from_html(&html);
 
-    use crate::parser::css_adaptive;
+    use crate::crawl::AdaptiveTracker;
     let tolerance = crate::parser::DEFAULT_TOLERANCE;
-    let found = css_adaptive(&doc, selector, key, url, store.as_ref(), true, tolerance).await;
+    let tracker = AdaptiveTracker::new(std::sync::Arc::clone(store));
+    let found = tracker
+        .css_adaptive(&doc, selector, key, url, true, tolerance)
+        .await
+        .unwrap_or(None);
 
     match found {
         Some(node) => Ok(json!({
