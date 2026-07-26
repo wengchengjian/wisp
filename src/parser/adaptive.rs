@@ -5,7 +5,7 @@
 
 use super::difflib::SequenceMatcher;
 use super::Node;
-use crate::storage::{ElementSnapshotRow, Store};
+use crate::storage::Store;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -110,45 +110,6 @@ impl ElementSnapshot {
             sibling_tags,
             position_in_parent,
             parent_tag,
-            parent_attrs,
-        }
-    }
-
-    /// Convert to a storage row for SQLite persistence.
-    #[must_use]
-    pub fn to_row(&self, captured_at: i64) -> ElementSnapshotRow {
-        ElementSnapshotRow {
-            tag: self.tag.clone(),
-            attrs: serde_json::to_value(&self.attrs).unwrap_or(serde_json::json!({})),
-            text_preview: self.text_preview.clone(),
-            ancestor_path: serde_json::to_value(&self.ancestor_path)
-                .unwrap_or(serde_json::json!([])),
-            sibling_tags: serde_json::to_value(&self.sibling_tags).unwrap_or(serde_json::json!([])),
-            position_in_parent: self.position_in_parent as i64,
-            parent_tag: self.parent_tag.clone(),
-            parent_attrs: serde_json::to_value(&self.parent_attrs).unwrap_or(serde_json::json!({})),
-            captured_at,
-        }
-    }
-
-    /// Reconstruct from a storage row.
-    #[must_use]
-    pub fn from_row(row: ElementSnapshotRow) -> Self {
-        let attrs: HashMap<String, String> = serde_json::from_value(row.attrs).unwrap_or_default();
-        let ancestor_path: Vec<String> =
-            serde_json::from_value(row.ancestor_path).unwrap_or_default();
-        let sibling_tags: Vec<String> =
-            serde_json::from_value(row.sibling_tags).unwrap_or_default();
-        let parent_attrs: HashMap<String, String> =
-            serde_json::from_value(row.parent_attrs).unwrap_or_default();
-        Self {
-            tag: row.tag,
-            attrs,
-            text_preview: row.text_preview,
-            ancestor_path,
-            sibling_tags,
-            position_in_parent: row.position_in_parent as usize,
-            parent_tag: row.parent_tag,
             parent_attrs,
         }
     }
@@ -306,8 +267,8 @@ pub async fn css_adaptive(
         // Refresh snapshot if requested (site markup unchanged)
         if auto_save {
             let snap = ElementSnapshot::capture(&node);
-            let now = chrono::Utc::now().timestamp();
-            let _ = crate::storage::save_element(store, url, key, &snap.to_row(now)).await;
+            let row: crate::storage::ElementSnapshotRow = snap.into();
+            let _ = crate::storage::save_element(store, url, key, &row).await;
         }
         return Some(node);
     }
@@ -317,14 +278,14 @@ pub async fn css_adaptive(
         .await
         .ok()
         .flatten()?;
-    let saved = ElementSnapshot::from_row(saved_row);
+    let saved: ElementSnapshot = saved_row.into();
     let found = relocate_with_snapshot(doc, &saved, tolerance)?;
 
     // 3. Auto-save new snapshot if relocated
     if auto_save {
         let snap = ElementSnapshot::capture(&found);
-        let now = chrono::Utc::now().timestamp();
-        let _ = crate::storage::save_element(store, url, key, &snap.to_row(now)).await;
+        let row: crate::storage::ElementSnapshotRow = snap.into();
+        let _ = crate::storage::save_element(store, url, key, &row).await;
     }
 
     Some(found)
@@ -380,5 +341,33 @@ fn parent_attrs_of(node: &Node) -> HashMap<String, String> {
     match node.parent() {
         Some(p) => p.attrs(),
         None => HashMap::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn element_snapshot_no_longer_has_to_row_or_from_row() {
+        // 验证 to_row/from_row 方法已删除（编译期检查）
+        // 通过 storage::ElementSnapshotRow::from 转换（而非 snap.to_row(0)）
+        let snap = ElementSnapshot {
+            tag: "div".into(),
+            attrs: std::collections::HashMap::new(),
+            text_preview: String::new(),
+            ancestor_path: vec![],
+            sibling_tags: vec![],
+            position_in_parent: 0,
+            parent_tag: String::new(),
+            parent_attrs: std::collections::HashMap::new(),
+        };
+
+        let row: crate::storage::ElementSnapshotRow = snap.into();
+        assert_eq!(row.tag, "div");
+
+        // 反向转换
+        let restored: ElementSnapshot = row.into();
+        assert_eq!(restored.tag, "div");
     }
 }
