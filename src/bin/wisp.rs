@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     #[cfg(feature = "sqlite")]
                     {
                         if db != ":memory:" && !db.is_empty() {
-                            Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db))?)
+                            Arc::new(wisp::SqliteStore::open(std::path::Path::new(&db)).await?)
                         } else {
                             Arc::new(wisp::FileStore::default())
                         }
