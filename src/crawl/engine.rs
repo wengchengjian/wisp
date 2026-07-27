@@ -250,7 +250,10 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let page_url_for_log = resp.url.clone();
     let status_for_log = resp.status;
     // 仅浏览器模式下有值；HTTP 模式为空字符串。不在此处调用 parse() 以免占用单次解析槽位。
-    let title_for_log = resp.title().unwrap_or_default().to_string();
+    // 用 mem::take 取出 title 避免 String 分配：resp 紧接着被 move 进 spider.handle，
+    // 若以 &str 借用会触发 borrow checker。title 字段为诊断字段，spider handler 不读取。
+    let title_owned = resp.title.take();
+    let title_for_log: &str = title_owned.as_deref().unwrap_or("");
     let (items, follows) = spider.handle(resp).await;
     // 诊断：items 和 follows 都为 0 时输出 warn，帮助定位解析失败
     if items.is_empty() && follows.is_empty() {

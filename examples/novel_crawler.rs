@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ".novellist li a",
                 ],
                 "detail",
-                |a, _idx| {
+                |a| {
                     let book_title = a.text().trim().to_string();
                     if book_title.is_empty() {
                         None
@@ -94,8 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut follows = Vec::new();
 
             // 章节列表（常见选择器）—— 此处需同时提取作者 + 章节列表，
-            // 调用 enqueue_links_with 会触发第二次 parse 而 panic，
-            // 因此保留显式手写循环（详见 plan Step 8 结论）。
+            // 调用 enqueue_links_with 会触发第二次 parse 而 panic
+            // （Response 单次解析约束），因此保留显式手写循环。
             let chapters = doc.select(".list ul li .name a");
             for (idx, ch) in chapters.iter().enumerate() {
                 let Some(href) = ch.attr("href") else { continue };

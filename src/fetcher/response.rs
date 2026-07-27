@@ -458,6 +458,15 @@ impl Response {
     /// 读取 meta 中的字符串字段。缺失/类型不符/meta 非 Object 时返回空字符串。
     ///
     /// 替代样板代码：`meta.get("x").and_then(|v| v.as_str()).unwrap_or("").to_string()`。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use wisp::Response;
+    /// # fn example(resp: &Response) {
+    /// let title = resp.meta_str("title").to_string();  // 拥有所有权
+    /// # }
+    /// ```
     pub fn meta_str(&self, key: &str) -> &str {
         self.request
             .meta
@@ -467,6 +476,15 @@ impl Response {
     }
 
     /// 读取 meta 中的 u64 字段。缺失/类型不符/meta 非 Object 时返回 0。
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use wisp::Response;
+    /// # fn example(resp: &Response) {
+    /// let idx = resp.meta_u64("chapter_index") as usize;
+    /// # }
+    /// ```
     pub fn meta_u64(&self, key: &str) -> u64 {
         self.request
             .meta
@@ -479,6 +497,9 @@ impl Response {
     ///
     /// 按顺序尝试 `selectors`，第一个匹配到元素的 selector 即停止（多选择器回退）。
     /// 自动跳过 `href` 为空或文本为空白的 `<a>` 元素。
+    ///
+    /// 注意：即使该 selector 的所有匹配都被空值过滤掉，回退也会停止——
+    /// 不会自动尝试下一个 selector。
     ///
     /// 等价于示例中的样板代码：
     /// ```ignore
@@ -506,16 +527,18 @@ impl Response {
     /// 内部调用 `self.parse()`，若此 Response 已被解析过（含通过 `css()`/`select_one()`
     /// 等便捷方法），将 panic。
     pub fn enqueue_links(&self, selectors: &[&str], callback: &str) -> Vec<Request> {
-        self.enqueue_links_with(selectors, callback, |_, _| Some(Value::Null))
+        self.enqueue_links_with(selectors, callback, |_| Some(Value::Null))
     }
 
     /// 批量提取链接 + 闭包注入 meta 的 follow 请求构造器。
     ///
-    /// 闭包接收每个匹配的 `<a>` 节点及其在当前 selector 结果中的索引（`usize`），
-    /// 返回：
+    /// 闭包接收每个匹配的 `<a>` 节点，返回：
     /// - `Some(meta)`：构造带 meta 的 follow 请求；若 meta 为 `Value::Null` 则使用
     ///   默认 meta（不调用 `with_meta`）
     /// - `None`：跳过该链接
+    ///
+    /// 注意：即使该 selector 的所有匹配都被空值过滤掉，回退也会停止——
+    /// 不会自动尝试下一个 selector。
     ///
     /// # Panics
     ///
@@ -527,7 +550,7 @@ impl Response {
         meta_fn: F,
     ) -> Vec<Request>
     where
-        F: Fn(&crate::parser::Node, usize) -> Option<Value>,
+        F: Fn(&crate::parser::Node) -> Option<Value>,
     {
         let doc = self.parse();
         let mut follows = Vec::new();
@@ -537,7 +560,7 @@ impl Response {
             if links.is_empty() {
                 continue;
             }
-            for (idx, a) in links.iter().enumerate() {
+            for a in links.iter() {
                 let Some(href) = a.attr("href") else { continue };
                 if href.is_empty() {
                     continue;
@@ -546,8 +569,9 @@ impl Response {
                 if text.trim().is_empty() {
                     continue;
                 }
-                let Some(meta) = meta_fn(a, idx) else { continue };
+                let Some(meta) = meta_fn(a) else { continue };
                 let Some(req) = self.follow_with(&href, callback) else {
+                    tracing::trace!("enqueue_links: 跳过无法解析的 href: {:?}", href);
                     continue;
                 };
                 follows.push(if meta.is_null() {
@@ -816,6 +840,8 @@ mod tests {
         assert_eq!(follows[0].url, "https://example.com/book/1");
         assert_eq!(follows[0].callback.as_deref(), Some("detail"));
         assert_eq!(follows[1].url, "https://example.com/book/2");
+        // 验证 meta == Null 时跳过 with_meta，使用 Request 默认 meta
+        assert_eq!(follows[0].meta, serde_json::Value::Null);
     }
 
     #[test]
@@ -894,7 +920,7 @@ mod tests {
             Request::get("https://example.com/"),
         );
 
-        let follows = resp.enqueue_links_with(&["ul a"], "detail", |a, _idx| {
+        let follows = resp.enqueue_links_with(&["ul a"], "detail", |a| {
             let title = a.text().trim().to_string();
             if title.is_empty() {
                 None
@@ -925,7 +951,7 @@ mod tests {
             Request::get("https://example.com/"),
         );
 
-        let follows = resp.enqueue_links_with(&["ul a"], "detail", |a, _idx| {
+        let follows = resp.enqueue_links_with(&["ul a"], "detail", |a| {
             if a.text().trim() == "skip" {
                 None
             } else {
