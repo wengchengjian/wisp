@@ -135,33 +135,50 @@ pub async fn solve_turnstile_with_config(
 /// 1. cf_clearance cookie 存在 + 标题非挑战页 = 立即返回 true
 /// 2. 页面内容检查作为备用
 async fn check_bypassed(page: &Page) -> Result<bool> {
-    // 检查 cf_clearance cookie
-    let cookies_result = page.cmd("Network.getCookies", json!({})).await;
-    let has_cf_clearance = if let Ok(cookies) = cookies_result {
-        cookies
-            .pointer("/cookies")
-            .and_then(|c| c.as_array())
-            .is_some_and(|arr| {
-                arr.iter()
-                    .any(|c| c.get("name").and_then(|n| n.as_str()) == Some("cf_clearance"))
-            })
-    } else {
-        false
+    let has_cf_clearance = has_cf_clearance_cookie(page).await;
+
+    let Some(frame_id) = get_main_frame_id(page).await? else {
+        return Ok(has_cf_clearance);
     };
 
-    // 获取 frame tree
+    check_title_not_challenge(page, &frame_id, has_cf_clearance).await
+}
+
+/// 检查 cf_clearance cookie 是否存在。
+async fn has_cf_clearance_cookie(page: &Page) -> bool {
+    let Ok(cookies) = page.cmd("Network.getCookies", json!({})).await else {
+        return false;
+    };
+    cookies
+        .pointer("/cookies")
+        .and_then(|c| c.as_array())
+        .is_some_and(|arr| {
+            arr.iter()
+                .any(|c| c.get("name").and_then(|n| n.as_str()) == Some("cf_clearance"))
+        })
+}
+
+/// 获取主 frame id，空则返回 None。
+async fn get_main_frame_id(page: &Page) -> Result<Option<String>> {
     let frame_tree = page.cmd("Page.getFrameTree", json!({})).await?;
     let frame_id = frame_tree
         .pointer("/frameTree/frame/id")
         .and_then(|id| id.as_str())
-        .unwrap_or("")
-        .to_string();
-
+        .unwrap_or("");
     if frame_id.is_empty() {
-        return Ok(has_cf_clearance);
+        Ok(None)
+    } else {
+        Ok(Some(frame_id.to_string()))
     }
+}
 
-    // 创建 isolated world 检查标题
+/// 在 isolated world 中检查标题是否为非挑战页。
+/// cf_clearance + 标题非挑战页 = 确认绕过；无 cf_clearance 但标题非挑战页 = 也绕过。
+async fn check_title_not_challenge(
+    page: &Page,
+    frame_id: &str,
+    has_cf_clearance: bool,
+) -> Result<bool> {
     let world = page
         .cmd(
             "Page.createIsolatedWorld",
@@ -180,52 +197,63 @@ async fn check_bypassed(page: &Page) -> Result<bool> {
         Err(_) => None,
     };
 
-    match context_id {
-        Some(ctx_id) => {
-            // 只检查标题（快速，不依赖 body 加载完成）
-            let check_js = r"(() => {
-                const title = document.title || '';
-                const onChallenge = title.includes('Just a moment') ||
-                                    title.includes('请稍候') ||
-                                    title.includes('请稍後') ||
-                                    title.includes('Attention Required') ||
-                                    title === '';
-                return !onChallenge;
-            })()";
+    let Some(ctx_id) = context_id else {
+        return Ok(has_cf_clearance);
+    };
 
-            let result = page
-                .cmd(
-                    "Runtime.evaluate",
-                    json!({
-                        "expression": check_js,
-                        "contextId": ctx_id,
-                        "returnByValue": true,
-                        "awaitPromise": false
-                    }),
-                )
-                .await;
+    // 只检查标题（快速，不依赖 body 加载完成）
+    let check_js = r"(() => {
+        const title = document.title || '';
+        const onChallenge = title.includes('Just a moment') ||
+                            title.includes('请稍候') ||
+                            title.includes('请稍後') ||
+                            title.includes('Attention Required') ||
+                            title === '';
+        return !onChallenge;
+    })()";
 
-            match result {
-                Ok(r) => {
-                    let title_ok = r
-                        .pointer("/result/value")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
-                    // cf_clearance + 标题非挑战页 = 确认绕过
-                    // 无 cf_clearance 但标题非挑战页 = 也绕过
-                    Ok(title_ok)
-                }
-                Err(_) => Ok(has_cf_clearance),
-            }
-        }
-        None => Ok(has_cf_clearance),
+    let result = page
+        .cmd(
+            "Runtime.evaluate",
+            json!({
+                "expression": check_js,
+                "contextId": ctx_id,
+                "returnByValue": true,
+                "awaitPromise": false
+            }),
+        )
+        .await;
+
+    match result {
+        Ok(r) => Ok(r
+            .pointer("/result/value")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)),
+        Err(_) => Ok(has_cf_clearance),
     }
 }
 
 /// Use CDP to pierce shadow DOM, find Turnstile iframe, and click it.
 async fn try_click_turnstile_cdp(page: &Page, round: u32, cfg: &TurnstileConfig) -> bool {
-    // Step 1: Get full DOM tree with shadow DOM piercing
-    let doc = match page
+    // Step 1+2: 获取 DOM 树（穿透 shadow DOM）并找到 Turnstile iframe
+    let Some(iframe_node_id) = find_turnstile_iframe(page, cfg).await else {
+        return false;
+    };
+
+    // Step 3: 获取 iframe 坐标并计算点击位置（多轮轮换）
+    let Some((cx, cy)) = get_click_position(page, iframe_node_id, round).await else {
+        return false;
+    };
+
+    // Step 4+5: 模拟鼠标移动 + 点击
+    simulate_move_and_click(page, cx, cy, round, cfg).await;
+
+    true
+}
+
+/// 获取 DOM 树（穿透 shadow DOM）并递归查找 Turnstile iframe nodeId。
+async fn find_turnstile_iframe(page: &Page, cfg: &TurnstileConfig) -> Option<u32> {
+    let doc = page
         .cmd(
             "DOM.getDocument",
             json!({
@@ -234,24 +262,14 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32, cfg: &TurnstileConfig)
             }),
         )
         .await
-    {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+        .ok()?;
+    let root = doc.get("root")?;
+    find_turnstile_node(root)
+}
 
-    // Step 2: Recursively find Turnstile iframe nodeId
-    let root = match doc.get("root") {
-        Some(r) => r,
-        None => return false,
-    };
-
-    let iframe_node_id = match find_turnstile_node(root) {
-        Some(id) => id,
-        None => return false,
-    };
-
-    // Step 3: Get iframe viewport coordinates via GetContentQuads
-    let quads_result = match page
+/// 获取 iframe 坐标，计算点击位置（5 个候选位置按 round 轮换）。
+async fn get_click_position(page: &Page, iframe_node_id: u32, round: u32) -> Option<(f64, f64)> {
+    let quads_result = page
         .cmd(
             "DOM.getContentQuads",
             json!({
@@ -259,36 +277,27 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32, cfg: &TurnstileConfig)
             }),
         )
         .await
-    {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+        .ok()?;
 
-    let quads = match quads_result.get("quads").and_then(|q| q.as_array()) {
-        Some(q) if !q.is_empty() => q,
-        _ => return false,
-    };
-
-    let quad = match quads[0].as_array() {
-        Some(q) if q.len() >= 8 => q,
-        _ => return false,
-    };
+    let quads = quads_result.get("quads").and_then(|q| q.as_array())?;
+    let quad = quads.first()?.as_array()?;
+    if quad.len() < 8 {
+        return None;
+    }
 
     let iframe_x = quad[0].as_f64().unwrap_or(0.0);
     let iframe_y = quad[1].as_f64().unwrap_or(0.0);
     let iframe_h = quad[5].as_f64().unwrap_or(65.0) - iframe_y;
 
-    // Turnstile checkbox is at left ~32px, vertically centered
-    // Try multiple positions to account for different widget sizes
-    let positions: Vec<(f64, f64)> = vec![
+    // Turnstile checkbox 在左侧 ~32px，垂直居中；多个位置应对不同 widget 尺寸
+    let positions: [(f64, f64); 5] = [
         (iframe_x + 32.0, iframe_y + iframe_h / 2.0), // standard checkbox position
         (iframe_x + 28.0, iframe_y + iframe_h / 2.0), // slightly left
         (iframe_x + 36.0, iframe_y + iframe_h / 2.0), // slightly right
-        (iframe_x + 32.0, iframe_y + iframe_h * 0.4), // slightly up
-        (iframe_x + 32.0, iframe_y + iframe_h * 0.6), // slightly down
+        (iframe_x + 32.0, iframe_y + iframe_h * 0.4),  // slightly up
+        (iframe_x + 32.0, iframe_y + iframe_h * 0.6),  // slightly down
     ];
     let pos_idx = (round as usize) % positions.len();
-    let (cx, cy) = positions[pos_idx];
 
     if round <= 3 {
         tracing::debug!(
@@ -297,12 +306,23 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32, cfg: &TurnstileConfig)
             iframe_node_id,
             iframe_x,
             iframe_y,
-            cx,
-            cy
+            positions[pos_idx].0,
+            positions[pos_idx].1
         );
     }
 
-    // Step 4: Simulate mouse movement (ease-out deceleration)
+    Some(positions[pos_idx])
+}
+
+/// 模拟鼠标移动（ease-out 减速）到目标位置并点击（press + release）。
+async fn simulate_move_and_click(
+    page: &Page,
+    cx: f64,
+    cy: f64,
+    round: u32,
+    cfg: &TurnstileConfig,
+) {
+    // Step 4: 模拟鼠标移动（ease-out deceleration）
     let steps = cfg.mouse_steps;
     let sx = cx - 50.0 + ((f64::from(round) % 7.0) - 3.0) * 15.0;
     let sy = cy - 40.0 + ((f64::from(round) % 5.0) - 2.0) * 12.0;
@@ -329,7 +349,7 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32, cfg: &TurnstileConfig)
         tokio::time::sleep(Duration::from_millis(cfg.mouse_step_delay_ms)).await;
     }
 
-    // Step 5: Click (press + release)
+    // Step 5: 点击（press + release）
     let _ = page
         .cmd(
             "Input.dispatchMouseEvent",
@@ -361,8 +381,6 @@ async fn try_click_turnstile_cdp(page: &Page, round: u32, cfg: &TurnstileConfig)
             }),
         )
         .await;
-
-    true
 }
 
 /// Recursively search DOM tree (including shadow roots) for Turnstile iframe.

@@ -2,6 +2,8 @@
 
 use futures::stream::{self, StreamExt};
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -213,344 +215,451 @@ impl Engine {
     }
 
     /// 内部运行逻辑：构建 ctx + 驱动流 + 汇总 stats。
+    ///
+    /// 重构后职责：编排 8 个 stage，每个 stage 委托给独立函数。
+    /// - 1. 并发保护（running flag + RunGuard）
+    /// - 2. 初始化基础资源（stats/rule_engine/sched/robots_cache/follow channel）
+    /// - 3. checkpoint 恢复 + start_urls 注入
+    /// - 4. 构建 EngineContext + 中间件初始化
+    /// - 5. autoscaler 后台 task
+    /// - 6. 驱动并发流 + 定期 checkpoint
+    /// - 7. 清理收尾（等待后台 / abort autoscaler / pipeline close / on_close / delete_checkpoint）
     async fn run_inner(
         &self,
         spider: Arc<dyn Spider>,
         tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
         items: Arc<Mutex<Vec<Value>>>,
     ) -> Result<CrawlStats> {
-        // 运行时并发保护：同一 Engine 实例不允许并发 run。
-        // 未来支持并发时移除此 guard，将 EngineControl 改为 per-run 即可。
-        // ND-001-ARCH：使用语义正确的 WispError::Engine 变体，而非 NetworkError::Http。
+        // 1. 并发保护
         if self.running.swap(true, Ordering::SeqCst) {
             return Err(crate::error::WispError::Engine(
                 "Engine is already running. Concurrent run/run_stream on the same Engine is not supported. \
                  Create separate Engine instances for concurrent spiders.".into(),
             ));
         }
-        // RAII guard：无论正常结束还是 panic，都释放 running 标志
-        struct RunGuard(Arc<AtomicBool>);
-        impl Drop for RunGuard {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::SeqCst);
-            }
-        }
         let _guard = RunGuard(self.running.clone());
-
-        // 重置 control（每次 run 清理上次状态）
         self.control.reset().await;
 
+        // 2. 初始化基础资源
         let stats = Arc::new(SpiderStats::new());
-        // ND-031-ARCH：引擎配置从 Engine 自身读取（而非 Spider trait 方法）
         let mut rule_engine = auto::ModeRuleEngine::new();
         for (pattern, mode) in &self.config().auto_rules {
             rule_engine.add_user_rule(pattern, *mode)?;
         }
         let rule_engine = Arc::new(Mutex::new(rule_engine));
-        let fetch_mode = self.config().fetch_mode;
-        let max_depth = spider.max_depth();
-        let obey_robots = self.config().obey_robots;
-
-        // 复用 Engine 持有的共享 FetchClient（HTTP 连接池 + BrowserPool 跨 Spider 复用）
-        let fetch_client = self.fetch_client.clone();
-
+        let spider_name = spider.name().to_string();
         let sched = Arc::new(scheduler::Scheduler::new());
         let robots_cache = Arc::new(robots::RobotsCache::new());
         let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        let setup = RunSetup {
+            spider_name,
+            stats,
+            sched,
+            robots_cache,
+            rule_engine,
+            follow_tx,
+        };
 
-        // checkpoint 恢复（单 Spider）
-        let spider_name = spider.name().to_string();
-        let mut restored_pending = false;
-        if let Some(ref store) = self.checkpoint_store {
-            if let Some(blob) = crate::storage::load_checkpoint(&**store, &spider_name).await? {
-                match bincode::deserialize::<CrawlState>(&blob) {
-                    Ok(state) => {
-                        if !state.pending_urls.is_empty() {
-                            let n = state.pending_urls.len();
-                            // 用 restore 一次性恢复 pending + seen 去重集合，
-                            // 避免逐个 push 时已爬 URL 因 seen 丢失被重新入队。
-                            let seen = state.seen_urls.clone();
-                            sched.restore(state.pending_urls, seen).await;
-                            tracing::info!(
-                                "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs (含 {} seen)",
-                                spider_name,
-                                n,
-                                sched.seen_urls().await.len()
-                            );
-                            restored_pending = true;
-                        }
-                    }
-                    Err(e) => tracing::warn!("checkpoint 反序列化失败: {}", e),
-                }
-            }
-        }
-
-        if !restored_pending {
+        // 3. checkpoint 恢复 + start_urls
+        let restored = restore_checkpoint(
+            self.checkpoint_store.as_ref(),
+            &setup.sched,
+            &setup.spider_name,
+        )
+        .await?;
+        if !restored {
             for url in spider.start_urls() {
-                sched.push(Request::get(&url)).await;
+                setup.sched.push(Request::get(&url)).await;
             }
         }
-
         spider.on_start().await;
 
-        // 默认中间件注入所需资源（在 ctx 字面量 move 这些 Arc 前提取）
-        let mw_http_client = fetch_client.http_arc();
-        let mw_robots_cache = robots_cache.clone();
+        // 4. 构建 ctx + 中间件初始化
+        let ctx = build_run_context(self, &spider, &setup, items, tx).await;
 
-        let ctx = Arc::new(engine::EngineContext {
-            config: Arc::clone(self.config()),
-            client: fetch_client,
-            sched: sched.clone(),
-            follow_tx,
-            // ND-009-SEC：moka::Cache 限制 proxy client 缓存最大 1024 条
-            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-            control: self.control.clone(),
-            work_notify: Arc::new(tokio::sync::Notify::new()),
-            middleware_chain: {
-                // 默认中间件链：按 fetch_mode + spider 配置注入（详见 builtin::default_middlewares）
-                let defaults = middleware::builtin::default_middlewares(
-                    middleware::builtin::DefaultMiddlewareConfig {
-                        fetch_mode,
-                        delay: self.config().download_delay,
-                        obey_robots,
-                        allowed_domains: spider.allowed_domains(),
-                        max_depth,
-                        cache_store: self.cache_store.clone(),
-                        http_client: mw_http_client,
-                        robots_cache: mw_robots_cache,
-                        rule_engine: rule_engine.clone(),
-                        max_retries: self.config().max_retries,
-                    },
-                );
-                let mut chain = middleware::MiddlewareChain::new();
-                // 用户中间件 + 默认中间件合并，sort 按 priority 统一排序
-                chain.middlewares = spider.middlewares();
-                chain.middlewares.extend(defaults);
-                chain.pipelines = spider.pipelines();
-                chain.sort();
-                Arc::new(chain)
-            },
-            rule_engine,
-            cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
-            state: engine::EngineState {
-                spider: spider.clone(),
-                stats: stats.clone(),
-                items,
-                abort_flag: Arc::new(AtomicBool::new(false)),
-                start: std::time::Instant::now(),
-                tx,
-                global_in_flight: Arc::new(AtomicUsize::new(0)),
-            },
-        });
+        // 5. autoscaler 后台 task
+        let autoscaler_handle = spawn_autoscaler(self.autoscale.as_ref(), &ctx);
 
-        // 中间件初始化：在爬取开始前调用所有中间件的 init + pipeline 的 open
-        if !ctx.middleware_chain.is_empty() {
-            let crawl_ctx = engine::build_crawl_context(&ctx);
-            ctx.middleware_chain.run_init(&crawl_ctx).await;
-            ctx.middleware_chain
-                .run_pipelines_open(&crawl_ctx)
-                .await;
-        }
+        // 6. 驱动并发流 + 定期 checkpoint
+        let checkpoint_tasks = drive_crawl_stream(
+            ctx.clone(),
+            follow_rx,
+            self.autoscale.clone(),
+            &setup.sched,
+            &setup.spider_name,
+            self.checkpoint_store.as_ref(),
+            self.config().checkpoint_interval,
+        )
+        .await;
 
-        // 启用 autoscale 时，spawn 后台 autoscaler task
-        let autoscaler_handle = if let Some(ref pool) = self.autoscale {
-            // ND-004-CORR：注入 work_notify，autoscale 扩容时唤醒主循环，
-            // 避免主循环 10ms timeout 轮询。
-            pool.set_work_notify(Arc::clone(&ctx.work_notify));
-            let pool = Arc::clone(pool);
-            let stats = Arc::clone(&stats);
-            Some(tokio::spawn(async move {
-                pool.run_autoscaler(stats).await;
-            }))
-        } else {
-            None
-        };
-
-        // 构建并发流：单 Spider，无路由
-        let stream = {
-            let ctx = ctx.clone();
-            let autoscale = self.autoscale.clone();
-            // buffer_unordered 的 ceiling：autoscale 启用时用 max_concurrency()，否则用 max_concurrent
-            let buffer_ceiling = if let Some(ref pool) = autoscale {
-                pool.max_concurrency()
-            } else {
-                ctx.config.max_concurrent
-            };
-            // OPTIMIZE: follow_rx move 进 unfold 状态。UnboundedReceiver 是单消费者，
-            // 无需 Mutex 串行化；旧实现 `Arc<Mutex<UnboundedReceiver>>` 的锁是冗余的。
-            stream::unfold((ctx, follow_rx), move |(ctx, mut rx)| {
-                let autoscale = autoscale.clone();
-                async move {
-                    loop {
-                        if ctx.control.is_shutdown()
-                            || ctx.state.abort_flag.load(Ordering::SeqCst)
-                        {
-                            return None;
-                        }
-
-                        // OPTIMIZE: 直接 try_recv drain follow channel，无 Mutex 锁争用。
-                        // Receiver 是单消费者类型，串行化访问无意义。
-                        while let Ok(req) = rx.try_recv() {
-                            ctx.sched.push(req).await;
-                        }
-
-                        // 引擎级 max_pages 兜底
-                        let pages = ctx.state.stats.pages.load(Ordering::SeqCst);
-                        if pages + ctx.state.global_in_flight.load(Ordering::SeqCst)
-                            >= ctx.config.max_pages
-                        {
-                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
-                                return None;
-                            }
-                            tokio::task::yield_now().await;
-                            continue;
-                        }
-
-                        // Spider until 终止条件检查
-                        let queue_size = ctx.sched.len().await;
-                        let stop_ctx = stop::StopContext {
-                            pages: ctx.state.stats.pages.load(Ordering::SeqCst),
-                            items: ctx.state.stats.items.load(Ordering::SeqCst),
-                            errors: ctx.state.stats.errors.load(Ordering::SeqCst),
-                            in_flight: ctx.state.stats.in_flight.load(Ordering::SeqCst),
-                            elapsed: ctx.state.stats.start.elapsed(),
-                            queue_size,
-                        };
-                        if ctx.state.spider.until().should_stop(&stop_ctx) {
-                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
-                                tracing::info!(
-                                    "Spider until() 终止条件触发，停止派发: pages={}, items={}, queue={}",
-                                    stop_ctx.pages,
-                                    stop_ctx.items,
-                                    stop_ctx.queue_size
-                                );
-                                return None;
-                            }
-                            tokio::task::yield_now().await;
-                            continue;
-                        }
-
-                        // 动态并发限制：autoscale 启用时检查 current_concurrency
-                        let limit = if let Some(ref pool) = autoscale {
-                            pool.current_concurrency()
-                        } else {
-                            ctx.config.max_concurrent
-                        };
-                        if ctx.state.global_in_flight.load(Ordering::SeqCst) >= limit {
-                            // ND-004-CORR/ND-007-PERF：已达并发上限，纯 Notify 驱动等待。
-                            // 唤醒来源：process_response 末尾 notify_one（in-flight 下降）、
-                            // autoscaler 扩容时 notify_one（limit 上升）。
-                            // 不再使用 10ms timeout 轮询，避免 CPU 浪费。
-                            ctx.work_notify.notified().await;
-                            continue;
-                        }
-
-                        let req = if let Some(req) = ctx.sched.pop().await { req } else {
-                            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
-                                return None;
-                            }
-                            // ND-004-CORR/ND-007-PERF：scheduler 空但仍有 in-flight，
-                            // 纯 Notify 驱动等待新 work（follow 请求通过 process_response notify）。
-                            ctx.work_notify.notified().await;
-                            continue;
-                        };
-
-                        // 单 Spider：直接派发，无路由
-                        ctx.state.global_in_flight.fetch_add(1, Ordering::SeqCst);
-                        ctx.state.stats.in_flight.fetch_add(1, Ordering::SeqCst);
-                        let ctx_c = ctx.clone();
-                        let fut = async move {
-                            let _g1 = engine::InFlightGuard {
-                                counter: ctx_c.state.global_in_flight.clone(),
-                                work_notify: ctx_c.work_notify.clone(),
-                            };
-                            let _g2 = engine::InFlightGuard {
-                                counter: ctx_c.state.stats.in_flight.clone(),
-                                work_notify: ctx_c.work_notify.clone(),
-                            };
-                            // 请求阶段 → 响应阶段（同级编排，process_request 不再内嵌 process_response）
-                            if let Some(resp) = engine::process_request(&ctx_c, req).await {
-                                engine::process_response(&ctx_c, resp).await;
-                            }
-                        };
-                        return Some((fut, (ctx, rx)));
-                    }
-                }
-            })
-            .buffer_unordered(buffer_ceiling)
-        };
-
-        // 驱动流 + 定期 checkpoint
-        tokio::pin!(stream);
-        let mut pages_since_checkpoint = 0usize;
-        // 跟踪后台 checkpoint task，run 结束时统一 await，避免 delete_checkpoint 后 task 仍写入。
-        let mut checkpoint_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-        while stream.next().await.is_some() {
-            pages_since_checkpoint += 1;
-            if pages_since_checkpoint >= self.config().checkpoint_interval {
-                if let Some(ref store) = self.checkpoint_store {
-                    // OPTIMIZE: spawn 后台执行，主循环不等待；失败 tracing::warn + 补发 CrawlEvent::Error。
-                    // 旧实现直接 await persist_spider_checkpoint，慢存储会阻塞主循环拖慢吞吐。
-                    let store = Arc::clone(store);
-                    let spider_name = spider_name.clone();
-                    let sched = Arc::clone(&sched);
-                    let stats = Arc::clone(&ctx.state.stats);
-                    let tx = ctx.state.tx.clone();
-                    checkpoint_tasks.spawn(async move {
-                        if let Err(e) = engine::persist_spider_checkpoint(
-                            store.as_ref(),
-                            &spider_name,
-                            &sched,
-                            &stats,
-                        )
-                        .await
-                        {
-                            tracing::warn!("checkpoint 失败: {}", e);
-                            // 保留 ND-003-ERR 修复：通知 stream 消费者 checkpoint 失败
-                            if let Some(tx) = tx {
-                                let _ = tx.try_send(CrawlEvent::Error {
-                                    url: String::new(),
-                                    error: format!("checkpoint failed: {e}"),
-                                });
-                            }
-                        }
-                    });
-                }
-                pages_since_checkpoint = 0;
-            }
-        }
-
-        // 等待所有后台 checkpoint task 完成，避免 delete_checkpoint 后 task 又写入。
-        while checkpoint_tasks.join_next().await.is_some() {}
-
-        // abort autoscaler 后台 task
-        if let Some(handle) = autoscaler_handle {
-            handle.abort();
-        }
-
-        // pipeline 关闭：爬取结束后释放资源
-        if !ctx.middleware_chain.is_empty() {
-            let crawl_ctx = engine::build_crawl_context(&ctx);
-            ctx.middleware_chain
-                .run_pipelines_close(&crawl_ctx)
-                .await;
-        }
-
-        spider.on_close().await;
-
-        if let Some(ref store) = self.checkpoint_store {
-            if let Err(e) = crate::storage::delete_checkpoint(&**store, &spider_name).await {
-                tracing::warn!("删除 checkpoint 失败: {}", e);
-            }
-        }
-
-        let status_codes = ctx.state.stats.status_codes_snapshot();
-        Ok(engine::snapshot_stats_for(
-            &ctx.state.stats,
-            status_codes,
-            ctx.state.start,
-        ))
+        // 7. 清理 + 返回 stats
+        finalize_run(
+            &ctx,
+            &spider,
+            &setup.spider_name,
+            checkpoint_tasks,
+            autoscaler_handle,
+            self.checkpoint_store.as_ref(),
+        )
+        .await
     }
+}
+
+// === run_inner 辅助类型 ===
+
+/// 运行时并发保护 guard：drop 时释放 running 标志。
+struct RunGuard(Arc<AtomicBool>);
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// run_inner 初始化产物聚合（减少函数参数传递）。
+struct RunSetup {
+    spider_name: String,
+    stats: Arc<SpiderStats>,
+    sched: Arc<scheduler::Scheduler>,
+    robots_cache: Arc<robots::RobotsCache>,
+    rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
+    follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
+}
+
+// === run_inner 拆分函数 ===
+
+/// checkpoint 恢复：加载 + 反序列化 + restore pending+seen。
+/// 返回 true 表示已恢复（调用方跳过 start_urls 注入）。
+async fn restore_checkpoint(
+    store: Option<&Arc<dyn crate::storage::Store>>,
+    sched: &scheduler::Scheduler,
+    spider_name: &str,
+) -> Result<bool> {
+    let Some(store) = store else {
+        return Ok(false);
+    };
+    let Some(blob) = crate::storage::load_checkpoint(store.as_ref(), spider_name).await? else {
+        return Ok(false);
+    };
+    let state = match bincode::deserialize::<CrawlState>(&blob) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("checkpoint 反序列化失败: {}", e);
+            return Ok(false);
+        }
+    };
+    if state.pending_urls.is_empty() {
+        return Ok(false);
+    }
+    let n = state.pending_urls.len();
+    let seen = state.seen_urls.clone();
+    sched.restore(state.pending_urls, seen).await;
+    tracing::info!(
+        "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs (含 {} seen)",
+        spider_name,
+        n,
+        sched.seen_urls().await.len()
+    );
+    Ok(true)
+}
+
+/// 构建 EngineContext + 初始化中间件链（run_init + run_pipelines_open）。
+async fn build_run_context(
+    engine: &Engine,
+    spider: &Arc<dyn Spider>,
+    setup: &RunSetup,
+    items: Arc<Mutex<Vec<Value>>>,
+    tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
+) -> Arc<engine::EngineContext> {
+    let fetch_client = engine.fetch_client.clone();
+    let mw_http_client = fetch_client.http_arc();
+    let mw_robots_cache = setup.robots_cache.clone();
+
+    let ctx = Arc::new(engine::EngineContext {
+        config: Arc::clone(engine.config()),
+        client: fetch_client,
+        sched: setup.sched.clone(),
+        follow_tx: setup.follow_tx.clone(),
+        // ND-009-SEC：moka::Cache 限制 proxy client 缓存最大 1024 条
+        proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+        control: engine.control.clone(),
+        work_notify: Arc::new(tokio::sync::Notify::new()),
+        middleware_chain: {
+            // 默认中间件链：按 fetch_mode + spider 配置注入
+            let defaults = middleware::builtin::default_middlewares(
+                middleware::builtin::DefaultMiddlewareConfig {
+                    fetch_mode: engine.config().fetch_mode,
+                    delay: engine.config().download_delay,
+                    obey_robots: engine.config().obey_robots,
+                    allowed_domains: spider.allowed_domains(),
+                    max_depth: spider.max_depth(),
+                    cache_store: engine.cache_store.clone(),
+                    http_client: mw_http_client,
+                    robots_cache: mw_robots_cache,
+                    rule_engine: setup.rule_engine.clone(),
+                    max_retries: engine.config().max_retries,
+                },
+            );
+            let mut chain = middleware::MiddlewareChain::new();
+            // 用户中间件 + 默认中间件合并，sort 按 priority 统一排序
+            chain.middlewares = spider.middlewares();
+            chain.middlewares.extend(defaults);
+            chain.pipelines = spider.pipelines();
+            chain.sort();
+            Arc::new(chain)
+        },
+        rule_engine: setup.rule_engine.clone(),
+        cf_domain_locks: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
+        state: engine::EngineState {
+            spider: spider.clone(),
+            stats: setup.stats.clone(),
+            items,
+            abort_flag: Arc::new(AtomicBool::new(false)),
+            start: std::time::Instant::now(),
+            tx,
+            global_in_flight: Arc::new(AtomicUsize::new(0)),
+        },
+    });
+
+    // 中间件初始化：在爬取开始前调用所有中间件的 init + pipeline 的 open
+    if !ctx.middleware_chain.is_empty() {
+        let crawl_ctx = engine::build_crawl_context(&ctx);
+        ctx.middleware_chain.run_init(&crawl_ctx).await;
+        ctx.middleware_chain
+            .run_pipelines_open(&crawl_ctx)
+            .await;
+    }
+
+    ctx
+}
+
+/// 启用 autoscale 时，spawn 后台 autoscaler task。
+/// 注入 work_notify，autoscale 扩容时唤醒主循环。
+fn spawn_autoscaler(
+    autoscale: Option<&Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
+    ctx: &Arc<engine::EngineContext>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let pool = autoscale?;
+    // ND-004-CORR：注入 work_notify，autoscale 扩容时唤醒主循环
+    pool.set_work_notify(Arc::clone(&ctx.work_notify));
+    let pool = Arc::clone(pool);
+    let stats = Arc::clone(&ctx.state.stats);
+    Some(tokio::spawn(async move {
+        pool.run_autoscaler(stats).await;
+    }))
+}
+
+/// 调度下一请求：终止检查 → drain follow → max_pages/until → 并发限制 → pop → dispatch。
+///
+/// 返回 `Some((fut, state))` 表示派发一个请求；`None` 表示流结束。
+/// `fut` 用 `Pin<Box<dyn Future>>` 包装，因为 async block 类型不可命名。
+async fn schedule_next_request(
+    ctx: Arc<engine::EngineContext>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Request>,
+    autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
+) -> Option<(
+    Pin<Box<dyn Future<Output = ()> + Send>>,
+    (Arc<engine::EngineContext>, tokio::sync::mpsc::UnboundedReceiver<Request>),
+)> {
+    loop {
+        // 终止检查
+        if ctx.control.is_shutdown() || ctx.state.abort_flag.load(Ordering::SeqCst) {
+            return None;
+        }
+
+        // OPTIMIZE: 直接 try_recv drain follow channel，无 Mutex 锁争用
+        while let Ok(req) = rx.try_recv() {
+            ctx.sched.push(req).await;
+        }
+
+        // 引擎级 max_pages 兜底
+        let pages = ctx.state.stats.pages.load(Ordering::SeqCst);
+        if pages + ctx.state.global_in_flight.load(Ordering::SeqCst) >= ctx.config.max_pages {
+            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
+                return None;
+            }
+            tokio::task::yield_now().await;
+            continue;
+        }
+
+        // Spider until 终止条件检查
+        let queue_size = ctx.sched.len().await;
+        let stop_ctx = stop::StopContext {
+            pages: ctx.state.stats.pages.load(Ordering::SeqCst),
+            items: ctx.state.stats.items.load(Ordering::SeqCst),
+            errors: ctx.state.stats.errors.load(Ordering::SeqCst),
+            in_flight: ctx.state.stats.in_flight.load(Ordering::SeqCst),
+            elapsed: ctx.state.stats.start.elapsed(),
+            queue_size,
+        };
+        if ctx.state.spider.until().should_stop(&stop_ctx) {
+            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
+                tracing::info!(
+                    "Spider until() 终止条件触发，停止派发: pages={}, items={}, queue={}",
+                    stop_ctx.pages,
+                    stop_ctx.items,
+                    stop_ctx.queue_size
+                );
+                return None;
+            }
+            tokio::task::yield_now().await;
+            continue;
+        }
+
+        // 动态并发限制：autoscale 启用时检查 current_concurrency
+        let limit = if let Some(ref pool) = autoscale {
+            pool.current_concurrency()
+        } else {
+            ctx.config.max_concurrent
+        };
+        if ctx.state.global_in_flight.load(Ordering::SeqCst) >= limit {
+            // ND-004-CORR/ND-007-PERF：已达并发上限，纯 Notify 驱动等待
+            ctx.work_notify.notified().await;
+            continue;
+        }
+
+        let req = if let Some(req) = ctx.sched.pop().await {
+            req
+        } else {
+            if ctx.state.global_in_flight.load(Ordering::SeqCst) == 0 {
+                return None;
+            }
+            // scheduler 空但仍有 in-flight，纯 Notify 驱动等待新 work
+            ctx.work_notify.notified().await;
+            continue;
+        };
+
+        // 单 Spider：直接派发，无路由
+        ctx.state.global_in_flight.fetch_add(1, Ordering::SeqCst);
+        ctx.state.stats.in_flight.fetch_add(1, Ordering::SeqCst);
+        let ctx_c = ctx.clone();
+        let fut = async move {
+            let _g1 = engine::InFlightGuard {
+                counter: ctx_c.state.global_in_flight.clone(),
+                work_notify: ctx_c.work_notify.clone(),
+            };
+            let _g2 = engine::InFlightGuard {
+                counter: ctx_c.state.stats.in_flight.clone(),
+                work_notify: ctx_c.work_notify.clone(),
+            };
+            // 请求阶段 → 响应阶段
+            if let Some(resp) = engine::process_request(&ctx_c, req).await {
+                engine::process_response(&ctx_c, resp).await;
+            }
+        };
+        return Some((Box::pin(fut), (ctx, rx)));
+    }
+}
+
+/// 驱动并发流 + 定期 checkpoint。
+///
+/// 构建 stream::unfold + buffer_unordered，驱动主循环，
+/// 每 checkpoint_interval 页 spawn 后台 checkpoint task。
+/// 返回 JoinSet 让调用方在 finalize 时统一 await。
+async fn drive_crawl_stream(
+    ctx: Arc<engine::EngineContext>,
+    follow_rx: tokio::sync::mpsc::UnboundedReceiver<Request>,
+    autoscale: Option<Arc<crate::crawl::runtime::autoscale::AutoscaledPool>>,
+    sched: &Arc<scheduler::Scheduler>,
+    spider_name: &str,
+    checkpoint_store: Option<&Arc<dyn crate::storage::Store>>,
+    checkpoint_interval: usize,
+) -> tokio::task::JoinSet<()> {
+    // buffer_unordered 的 ceiling：autoscale 启用时用 max_concurrency()，否则用 max_concurrent
+    let buffer_ceiling = if let Some(ref pool) = autoscale {
+        pool.max_concurrency()
+    } else {
+        ctx.config.max_concurrent
+    };
+
+    // OPTIMIZE: follow_rx move 进 unfold 状态。UnboundedReceiver 是单消费者，
+    // 无需 Mutex 串行化；旧实现 `Arc<Mutex<UnboundedReceiver>>` 的锁是冗余的。
+    let stream = stream::unfold((ctx.clone(), follow_rx), move |(ctx, rx)| {
+        let autoscale = autoscale.clone();
+        async move { schedule_next_request(ctx, rx, autoscale).await }
+    })
+    .buffer_unordered(buffer_ceiling);
+
+    // 驱动流 + 定期 checkpoint
+    tokio::pin!(stream);
+    let mut pages_since_checkpoint = 0usize;
+    let mut checkpoint_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+    while stream.next().await.is_some() {
+        pages_since_checkpoint += 1;
+        if pages_since_checkpoint >= checkpoint_interval {
+            if let Some(store) = checkpoint_store {
+                // OPTIMIZE: spawn 后台执行，主循环不等待；失败 tracing::warn + 补发 CrawlEvent::Error
+                let store = Arc::clone(store);
+                let spider_name = spider_name.to_string();
+                let sched = Arc::clone(sched);
+                let stats = Arc::clone(&ctx.state.stats);
+                let tx = ctx.state.tx.clone();
+                checkpoint_tasks.spawn(async move {
+                    if let Err(e) = engine::persist_spider_checkpoint(
+                        store.as_ref(),
+                        &spider_name,
+                        &sched,
+                        &stats,
+                    )
+                    .await
+                    {
+                        tracing::warn!("checkpoint 失败: {}", e);
+                        // ND-003-ERR：通知 stream 消费者 checkpoint 失败
+                        if let Some(tx) = tx {
+                            let _ = tx.try_send(CrawlEvent::Error {
+                                url: String::new(),
+                                error: format!("checkpoint failed: {e}"),
+                            });
+                        }
+                    }
+                });
+            }
+            pages_since_checkpoint = 0;
+        }
+    }
+
+    checkpoint_tasks
+}
+
+/// 清理收尾：等待后台 checkpoint + abort autoscaler + pipeline close + on_close + delete_checkpoint。
+async fn finalize_run(
+    ctx: &Arc<engine::EngineContext>,
+    spider: &Arc<dyn Spider>,
+    spider_name: &str,
+    mut checkpoint_tasks: tokio::task::JoinSet<()>,
+    autoscaler_handle: Option<tokio::task::JoinHandle<()>>,
+    checkpoint_store: Option<&Arc<dyn crate::storage::Store>>,
+) -> Result<CrawlStats> {
+    // 等待所有后台 checkpoint task 完成，避免 delete_checkpoint 后 task 又写入
+    while checkpoint_tasks.join_next().await.is_some() {}
+
+    // abort autoscaler 后台 task
+    if let Some(handle) = autoscaler_handle {
+        handle.abort();
+    }
+
+    // pipeline 关闭：爬取结束后释放资源
+    if !ctx.middleware_chain.is_empty() {
+        let crawl_ctx = engine::build_crawl_context(ctx);
+        ctx.middleware_chain
+            .run_pipelines_close(&crawl_ctx)
+            .await;
+    }
+
+    spider.on_close().await;
+
+    // 删除 checkpoint（爬取成功完成后）
+    if let Some(store) = checkpoint_store {
+        if let Err(e) = crate::storage::delete_checkpoint(store.as_ref(), spider_name).await {
+            tracing::warn!("删除 checkpoint 失败: {}", e);
+        }
+    }
+
+    let status_codes = ctx.state.stats.status_codes_snapshot();
+    Ok(engine::snapshot_stats_for(
+        &ctx.state.stats,
+        status_codes,
+        ctx.state.start,
+    ))
 }
 
 impl EngineBuilder {
