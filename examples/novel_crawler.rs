@@ -54,41 +54,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .pipeline(JsonlWriterPipeline::new("novel_output.jsonl"))
         // === 第一级：首页 → 提取书籍列表 → follow 到 "detail" ===
         .on("default", |resp| async move {
-            let doc = resp.parse();
-
-            let mut follows = vec![];
-
-            // 尝试多个常见小说站选择器（按优先级回退）
-            let selectors = [
-                ".txt-list li .s2 a",
-                ".list2 ul li .name a",
-                ".listmain dl dd a",
-                "#list dd a",
-                ".bookbox .bookname a",
-                ".book-item .title a",
-                ".novellist li a",
-            ];
-
-            for sel in &selectors {
-                let links = doc.select(sel);
-                if !links.is_empty() {
-                    for a in links.iter() {
-                        if let Some(href) = a.attr("href") {
-                            let book_title = a.text().trim().to_string();
-                            if !book_title.is_empty() && !href.is_empty() {
-                                if let Some(req) = resp.follow_meta(&href, json!({
-                                    "title": book_title,
-                                    "author": ""
-                                })) {
-                                    follows.push(req.with_callback("detail"));
-                                }
-                            }
-                        }
+            let follows = resp.enqueue_links_with(
+                &[
+                    ".txt-list li .s2 a",
+                    ".list2 ul li .name a",
+                    ".listmain dl dd a",
+                    "#list dd a",
+                    ".bookbox .bookname a",
+                    ".book-item .title a",
+                    ".novellist li a",
+                ],
+                "detail",
+                |a, _idx| {
+                    let book_title = a.text().trim().to_string();
+                    if book_title.is_empty() {
+                        None
+                    } else {
+                        Some(json!({"title": book_title, "author": ""}))
                     }
-                    break;
-                }
-            }
-
+                },
+            );
             (vec![], follows)
         })
         // === 第二级：书籍详情 → 提取章节列表 → follow 到 "chapter" ===
@@ -98,28 +83,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 从 meta 获取书名
             let title = resp.meta_str("title").to_string();
 
-            // 尝试提取作者
-            let author = doc.select_one(".txt ul:nth-child(1)")
+            // 尝试提取作者（与章节列表共用同一次 parse，避免触发单次解析断言）
+            let author = doc
+                .select_one(".txt ul:nth-child(1)")
                 .map(|n| n.text().trim().to_string())
                 .unwrap_or_default();
 
-            let mut follows = vec![];
+            let title_for_meta = title.clone();
+            let author_for_meta = author.clone();
+            let mut follows = Vec::new();
 
-            // 章节列表（常见选择器）
+            // 章节列表（常见选择器）—— 此处需同时提取作者 + 章节列表，
+            // 调用 enqueue_links_with 会触发第二次 parse 而 panic，
+            // 因此保留显式手写循环（详见 plan Step 8 结论）。
             let chapters = doc.select(".list ul li .name a");
             for (idx, ch) in chapters.iter().enumerate() {
-                if let Some(href) = ch.attr("href") {
-                    let ch_title = ch.text().trim().to_string();
-                    if !ch_title.is_empty() && !href.is_empty() {
-                        if let Some(req) = resp.follow_meta(&href, json!({
-                            "title": title,
-                            "author": author,
-                            "chapter_title": ch_title,
-                            "chapter_index": idx
-                        })) {
-                            follows.push(req.with_callback("chapter"));
-                        }
-                    }
+                let Some(href) = ch.attr("href") else { continue };
+                if href.is_empty() {
+                    continue;
+                }
+                let ch_title = ch.text().trim().to_string();
+                if ch_title.is_empty() {
+                    continue;
+                }
+                if let Some(req) = resp.follow_with(&href, "chapter") {
+                    follows.push(req.with_meta(json!({
+                        "title": title_for_meta,
+                        "author": author_for_meta,
+                        "chapter_title": ch_title,
+                        "chapter_index": idx,
+                    })));
                 }
             }
 

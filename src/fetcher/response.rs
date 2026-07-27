@@ -455,7 +455,7 @@ impl Response {
         )
     }
 
-    /// 读取 meta 中的字符串字段。缺失/类型不符/.meta 非 Object 时返回空字符串。
+    /// 读取 meta 中的字符串字段。缺失/类型不符/meta 非 Object 时返回空字符串。
     ///
     /// 替代样板代码：`meta.get("x").and_then(|v| v.as_str()).unwrap_or("").to_string()`。
     pub fn meta_str(&self, key: &str) -> &str {
@@ -466,13 +466,101 @@ impl Response {
             .unwrap_or("")
     }
 
-    /// 读取 meta 中的 u64 字段。缺失/类型不符时返回 0。
+    /// 读取 meta 中的 u64 字段。缺失/类型不符/meta 非 Object 时返回 0。
     pub fn meta_u64(&self, key: &str) -> u64 {
         self.request
             .meta
             .get(key)
             .and_then(|v| v.as_u64())
             .unwrap_or(0)
+    }
+
+    /// 批量提取链接并构造带 callback 的 follow 请求。
+    ///
+    /// 按顺序尝试 `selectors`，第一个匹配到元素的 selector 即停止（多选择器回退）。
+    /// 自动跳过 `href` 为空或文本为空白的 `<a>` 元素。
+    ///
+    /// 等价于示例中的样板代码：
+    /// ```ignore
+    /// let selectors = [".txt-list li .s2 a", ".list2 ul li .name a", ...];
+    /// for sel in &selectors {
+    ///     let links = doc.select(sel);
+    ///     if !links.is_empty() {
+    ///         for a in links.iter() {
+    ///             if let Some(href) = a.attr("href") {
+    ///                 let text = a.text().trim().to_string();
+    ///                 if !text.is_empty() && !href.is_empty() {
+    ///                     if let Some(req) = resp.follow_with(&href, "detail") {
+    ///                         follows.push(req);
+    ///                     }
+    ///                 }
+    ///             }
+    ///         }
+    ///         break;
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// 内部调用 `self.parse()`，若此 Response 已被解析过（含通过 `css()`/`select_one()`
+    /// 等便捷方法），将 panic。
+    pub fn enqueue_links(&self, selectors: &[&str], callback: &str) -> Vec<Request> {
+        self.enqueue_links_with(selectors, callback, |_, _| Some(Value::Null))
+    }
+
+    /// 批量提取链接 + 闭包注入 meta 的 follow 请求构造器。
+    ///
+    /// 闭包接收每个匹配的 `<a>` 节点及其在当前 selector 结果中的索引（`usize`），
+    /// 返回：
+    /// - `Some(meta)`：构造带 meta 的 follow 请求；若 meta 为 `Value::Null` 则使用
+    ///   默认 meta（不调用 `with_meta`）
+    /// - `None`：跳过该链接
+    ///
+    /// # Panics
+    ///
+    /// 同 `enqueue_links`：若 Response 已被解析过将 panic。
+    pub fn enqueue_links_with<F>(
+        &self,
+        selectors: &[&str],
+        callback: &str,
+        meta_fn: F,
+    ) -> Vec<Request>
+    where
+        F: Fn(&crate::parser::Node, usize) -> Option<Value>,
+    {
+        let doc = self.parse();
+        let mut follows = Vec::new();
+
+        for sel in selectors {
+            let links = doc.select(sel);
+            if links.is_empty() {
+                continue;
+            }
+            for (idx, a) in links.iter().enumerate() {
+                let Some(href) = a.attr("href") else { continue };
+                if href.is_empty() {
+                    continue;
+                }
+                let text = a.text();
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let Some(meta) = meta_fn(a, idx) else { continue };
+                let Some(req) = self.follow_with(&href, callback) else {
+                    continue;
+                };
+                follows.push(if meta.is_null() {
+                    req
+                } else {
+                    req.with_meta(meta)
+                });
+            }
+            // 多选择器回退：匹配到第一个非空 selector 即停止
+            break;
+        }
+
+        follows
     }
 }
 
@@ -703,5 +791,164 @@ mod tests {
         );
         assert_eq!(resp.meta_u64("chapter_index"), 0);
         assert_eq!(resp.meta_u64("missing"), 0);
+    }
+
+    #[test]
+    fn test_enqueue_links_returns_follows_for_first_matching_selector() {
+        let html = r#"<html><body>
+        <ul class="txt-list"><li><span class="s2"><a href="/book/1">书1</a></span></li>
+        <li><span class="s2"><a href="/book/2">书2</a></span></li>
+    </ul></body></html>"#;
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            html.as_bytes().to_vec(),
+            "text/html".into(),
+            Request::get("https://example.com/"),
+        );
+
+        let follows = resp.enqueue_links(
+            &[".txt-list li .s2 a", ".list2 ul li .name a"],
+            "detail",
+        );
+        assert_eq!(follows.len(), 2);
+        assert_eq!(follows[0].url, "https://example.com/book/1");
+        assert_eq!(follows[0].callback.as_deref(), Some("detail"));
+        assert_eq!(follows[1].url, "https://example.com/book/2");
+    }
+
+    #[test]
+    fn test_enqueue_links_falls_back_to_next_selector_when_first_empty() {
+        let html = r#"<html><body>
+        <div class="list2"><ul><li><span class="name"><a href="/book/3">书3</a></span></li></ul></div>
+    </body></html>"#;
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            html.as_bytes().to_vec(),
+            "text/html".into(),
+            Request::get("https://example.com/"),
+        );
+
+        let follows = resp.enqueue_links(
+            &[".txt-list li .s2 a", ".list2 ul li .name a"],
+            "detail",
+        );
+        assert_eq!(follows.len(), 1);
+        assert_eq!(follows[0].url, "https://example.com/book/3");
+    }
+
+    #[test]
+    fn test_enqueue_links_skips_empty_href_and_empty_text() {
+        let html = r#"<html><body>
+        <ul class="list"><li><a href="/book/1">书1</a></li>
+        <li><a href="">空href</a></li>
+        <li><a href="/book/2">   </a></li>
+        <li><a href="/book/3">书3</a></li>
+    </ul></body></html>"#;
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            html.as_bytes().to_vec(),
+            "text/html".into(),
+            Request::get("https://example.com/"),
+        );
+
+        let follows = resp.enqueue_links(&[".list a"], "detail");
+        assert_eq!(follows.len(), 2);
+        assert_eq!(follows[0].url, "https://example.com/book/1");
+        assert_eq!(follows[1].url, "https://example.com/book/3");
+    }
+
+    #[test]
+    fn test_enqueue_links_returns_empty_when_no_selector_matches() {
+        let html = r#"<html><body><p>no links here</p></body></html>"#;
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            html.as_bytes().to_vec(),
+            "text/html".into(),
+            Request::get("https://example.com/"),
+        );
+
+        let follows = resp.enqueue_links(&[".nonexistent a"], "detail");
+        assert!(follows.is_empty());
+    }
+
+    #[test]
+    fn test_enqueue_links_with_injects_meta_from_closure() {
+        let html = r#"<html><body>
+        <ul><li><a href="/book/1">书1</a></li>
+        <li><a href="/book/2">书2</a></li>
+    </ul></body></html>"#;
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            html.as_bytes().to_vec(),
+            "text/html".into(),
+            Request::get("https://example.com/"),
+        );
+
+        let follows = resp.enqueue_links_with(&["ul a"], "detail", |a, _idx| {
+            let title = a.text().trim().to_string();
+            if title.is_empty() {
+                None
+            } else {
+                Some(serde_json::json!({"title": title, "author": ""}))
+            }
+        });
+        assert_eq!(follows.len(), 2);
+        assert_eq!(follows[0].meta, serde_json::json!({"title": "书1", "author": ""}));
+        assert_eq!(follows[0].callback.as_deref(), Some("detail"));
+        assert_eq!(follows[1].meta, serde_json::json!({"title": "书2", "author": ""}));
+    }
+
+    #[test]
+    fn test_enqueue_links_with_skips_when_closure_returns_none() {
+        let html = r#"<html><body>
+        <ul>
+            <li><a href="/book/1">keep</a></li>
+            <li><a href="/book/2">skip</a></li>
+        </ul>
+    </body></html>"#;
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            html.as_bytes().to_vec(),
+            "text/html".into(),
+            Request::get("https://example.com/"),
+        );
+
+        let follows = resp.enqueue_links_with(&["ul a"], "detail", |a, _idx| {
+            if a.text().trim() == "skip" {
+                None
+            } else {
+                Some(serde_json::json!({}))
+            }
+        });
+        assert_eq!(follows.len(), 1);
+        assert_eq!(follows[0].url, "https://example.com/book/1");
+    }
+
+    #[test]
+    #[should_panic(expected = "Response::parse() 已被调用过")]
+    fn test_enqueue_links_panics_if_parse_already_called() {
+        let html = r#"<html><body><a href="/x">x</a></body></html>"#;
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            html.as_bytes().to_vec(),
+            "text/html".into(),
+            Request::get("https://example.com/"),
+        );
+        let _ = resp.parse(); // 先占用
+        let _ = resp.enqueue_links(&["a"], "detail"); // 应 panic
     }
 }
