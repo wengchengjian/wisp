@@ -170,7 +170,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
 ///
 /// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
 /// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
-#[tracing::instrument(level = "trace", skip(ctx, resp), fields(status = resp.status))]
+#[tracing::instrument(level = "trace", skip(ctx, resp), fields(status = resp.status, body_len = resp.body.len(), callback = ?resp.request.callback))]
 pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let spider = &ctx.state.spider;
     let stats = &ctx.state.stats;
@@ -249,20 +249,25 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     // Task 3：调用 handle()（callback 路由），而非 parse()
     let page_url_for_log = resp.url.clone();
     let status_for_log = resp.status;
+    // 仅浏览器模式下有值；HTTP 模式为空字符串。不在此处调用 parse() 以免占用单次解析槽位。
+    let title_for_log = resp.title().unwrap_or_default().to_string();
     let (items, follows) = spider.handle(resp).await;
     // 诊断：items 和 follows 都为 0 时输出 warn，帮助定位解析失败
     if items.is_empty() && follows.is_empty() {
         tracing::warn!(
-            "handle 返回空 (items=0, follows=0): url={}, status={}",
+            "handle 返回空 (items=0, follows=0): url={}, status={}, title={:?}",
             sanitize_url(&page_url_for_log),
-            status_for_log
+            status_for_log,
+            title_for_log,
         );
     } else {
         tracing::info!(
-            "handle 完成: url={}, items={}, follows={}",
+            "handle 完成: url={}, status={}, title={:?}, items={}, follows={}",
             sanitize_url(&page_url_for_log),
+            status_for_log,
+            title_for_log,
             items.len(),
-            follows.len()
+            follows.len(),
         );
     }
 

@@ -56,10 +56,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on("default", |resp| async move {
             let doc = resp.parse();
 
-            // 诊断信息：帮助确认页面是否加载成功
-            let title = doc.select_one("title").map(|n| n.text()).unwrap_or_default();
-            println!("[首页] status={} title={:?} body_len={}", resp.status, title, resp.body.len());
-
             let mut follows = vec![];
 
             // 尝试多个常见小说站选择器（按优先级回退）
@@ -73,11 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ".novellist li a",
             ];
 
-            let mut found_selector = "";
             for sel in &selectors {
                 let links = doc.select(sel);
                 if !links.is_empty() {
-                    found_selector = sel;
                     for a in links.iter() {
                         if let Some(href) = a.attr("href") {
                             let book_title = a.text().trim().to_string();
@@ -93,15 +87,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     break;
                 }
-            }
-
-            if follows.is_empty() {
-                // 未找到任何书籍，输出页面片段供调试
-                let body_text = String::from_utf8_lossy(&resp.body);
-                let snippet = &body_text[..body_text.len().min(500)];
-                eprintln!("[首页] 未找到书籍链接！页面片段:\n{}", snippet);
-            } else {
-                println!("[首页] 使用选择器 {:?} 发现 {} 本书籍", found_selector, follows.len());
             }
 
             (vec![], follows)
@@ -141,7 +126,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            println!("[详情] 《{}》 作者:{} 共 {} 章", title, author, follows.len());
             (vec![], follows)
         })
         // === 第三级：章节页 → 提取正文 → 组装 NovelItem ===
@@ -180,9 +164,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 content,
                 url: resp.url.clone(),
             };
-
-            println!("[章节] 《{}》第{}章 {} ({}字)",
-                item.title, item.chapter_index + 1, item.chapter_title, item.content.len());
 
             (vec![serde_json::to_value(&item).unwrap_or_default()], vec![])
         })
