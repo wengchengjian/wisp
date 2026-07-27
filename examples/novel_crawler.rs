@@ -96,10 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let doc = resp.parse();
 
             // 从 meta 获取书名
-            let title = resp.request.meta.get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("未知")
-                .to_string();
+            let title = resp.meta_str("title").to_string();
 
             // 尝试提取作者
             let author = doc.select_one(".txt ul:nth-child(1)")
@@ -132,11 +129,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on("chapter", |resp| async move {
             let doc = resp.parse();
 
-            let meta = &resp.request.meta;
-            let title = meta.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let author = meta.get("author").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let chapter_title = meta.get("chapter_title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let chapter_index = meta.get("chapter_index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let title = resp.meta_str("title").to_string();
+            let author = resp.meta_str("author").to_string();
+            let chapter_title = resp.meta_str("chapter_title").to_string();
+            let chapter_index = resp.meta_u64("chapter_index") as usize;
 
             // 提取正文（常见小说内容选择器）
             let content = doc.select_one("#content, #chaptercontent, .content, .chapter-content, #BookText, .read-content")

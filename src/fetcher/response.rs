@@ -454,6 +454,26 @@ impl Response {
                 .with_depth(self.request.depth + 1),
         )
     }
+
+    /// 读取 meta 中的字符串字段。缺失/类型不符/.meta 非 Object 时返回空字符串。
+    ///
+    /// 替代样板代码：`meta.get("x").and_then(|v| v.as_str()).unwrap_or("").to_string()`。
+    pub fn meta_str(&self, key: &str) -> &str {
+        self.request
+            .meta
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    }
+
+    /// 读取 meta 中的 u64 字段。缺失/类型不符时返回 0。
+    pub fn meta_u64(&self, key: &str) -> u64 {
+        self.request
+            .meta
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -606,5 +626,82 @@ mod tests {
         let cloned = resp.clone();
         let doc2 = cloned.parse();
         assert_eq!(doc2.select("h1").len(), 1);
+    }
+
+    #[test]
+    fn test_response_meta_str_returns_value_when_present() {
+        let mut req = Request::get("https://example.com/");
+        req.meta = serde_json::json!({"title": "你好", "author": ""});
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            b"<html></html>".to_vec(),
+            "text/html".into(),
+            req,
+        );
+        assert_eq!(resp.meta_str("title"), "你好");
+        assert_eq!(resp.meta_str("author"), "");
+    }
+
+    #[test]
+    fn test_response_meta_str_returns_empty_when_missing() {
+        let req = Request::get("https://example.com/");
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            b"<html></html>".to_vec(),
+            "text/html".into(),
+            req,
+        );
+        // meta 为 Null
+        assert_eq!(resp.meta_str("title"), "");
+    }
+
+    #[test]
+    fn test_response_meta_str_returns_empty_when_meta_not_object() {
+        let mut req = Request::get("https://example.com/");
+        req.meta = serde_json::Value::Null;
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            b"<html></html>".to_vec(),
+            "text/html".into(),
+            req,
+        );
+        assert_eq!(resp.meta_str("anything"), "");
+    }
+
+    #[test]
+    fn test_response_meta_u64_returns_value_when_present() {
+        let mut req = Request::get("https://example.com/");
+        req.meta = serde_json::json!({"chapter_index": 42});
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            b"<html></html>".to_vec(),
+            "text/html".into(),
+            req,
+        );
+        assert_eq!(resp.meta_u64("chapter_index"), 42);
+    }
+
+    #[test]
+    fn test_response_meta_u64_returns_zero_when_missing_or_invalid() {
+        let mut req = Request::get("https://example.com/");
+        req.meta = serde_json::json!({"chapter_index": "not a number"});
+        let resp = Response::from_http(
+            200,
+            "https://example.com/".into(),
+            std::collections::HashMap::new(),
+            b"<html></html>".to_vec(),
+            "text/html".into(),
+            req,
+        );
+        assert_eq!(resp.meta_u64("chapter_index"), 0);
+        assert_eq!(resp.meta_u64("missing"), 0);
     }
 }
