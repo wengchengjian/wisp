@@ -1,0 +1,196 @@
+ examples/novel_crawler.rs | 19 -------------------
+ src/crawl/engine.rs       | 15 ++++++++++-----
+ 2 files changed, 10 insertions(+), 24 deletions(-)
+--- commits ---
+486db94 engine: 补充 process_response 日志字段并移除示例手写诊断 println
+--- diff ---
+diff --git a/examples/novel_crawler.rs b/examples/novel_crawler.rs
+index 37cc4f0..49a8f48 100644
+--- a/examples/novel_crawler.rs
++++ b/examples/novel_crawler.rs
+@@ -49,68 +49,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
+             ("Referer".into(), "https://www.qishuxia.com/".into()),
+             ("Connection".into(), "keep-alive".into()),
+             ("Upgrade-Insecure-Requests".into(), "1".into()),
+         ]))
+         // Pipeline：item 产出后自动追加写入 JSONL 文件
+         .pipeline(JsonlWriterPipeline::new("novel_output.jsonl"))
+         // === 第一级：首页 → 提取书籍列表 → follow 到 "detail" ===
+         .on("default", |resp| async move {
+             let doc = resp.parse();
+ 
+-            // 诊断信息：帮助确认页面是否加载成功
+-            let title = doc.select_one("title").map(|n| n.text()).unwrap_or_default();
+-            println!("[首页] status={} title={:?} body_len={}", resp.status, title, resp.body.len());
+-
+             let mut follows = vec![];
+ 
+             // 尝试多个常见小说站选择器（按优先级回退）
+             let selectors = [
+                 ".txt-list li .s2 a",
+                 ".list2 ul li .name a",
+                 ".listmain dl dd a",
+                 "#list dd a",
+                 ".bookbox .bookname a",
+                 ".book-item .title a",
+                 ".novellist li a",
+             ];
+ 
+-            let mut found_selector = "";
+             for sel in &selectors {
+                 let links = doc.select(sel);
+                 if !links.is_empty() {
+-                    found_selector = sel;
+                     for a in links.iter() {
+                         if let Some(href) = a.attr("href") {
+                             let book_title = a.text().trim().to_string();
+                             if !book_title.is_empty() && !href.is_empty() {
+                                 if let Some(req) = resp.follow_meta(&href, json!({
+                                     "title": book_title,
+                                     "author": ""
+                                 })) {
+                                     follows.push(req.with_callback("detail"));
+                                 }
+                             }
+                         }
+                     }
+                     break;
+                 }
+             }
+ 
+-            if follows.is_empty() {
+-                // 未找到任何书籍，输出页面片段供调试
+-                let body_text = String::from_utf8_lossy(&resp.body);
+-                let snippet = &body_text[..body_text.len().min(500)];
+-                eprintln!("[首页] 未找到书籍链接！页面片段:\n{}", snippet);
+-            } else {
+-                println!("[首页] 使用选择器 {:?} 发现 {} 本书籍", found_selector, follows.len());
+-            }
+-
+             (vec![], follows)
+         })
+         // === 第二级：书籍详情 → 提取章节列表 → follow 到 "chapter" ===
+         .on("detail", |resp| async move {
+             let doc = resp.parse();
+ 
+             // 从 meta 获取书名
+             let title = resp.request.meta.get("title")
+                 .and_then(|v| v.as_str())
+                 .unwrap_or("未知")
+@@ -134,21 +119,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
+                             "author": author,
+                             "chapter_title": ch_title,
+                             "chapter_index": idx
+                         })) {
+                             follows.push(req.with_callback("chapter"));
+                         }
+                     }
+                 }
+             }
+ 
+-            println!("[详情] 《{}》 作者:{} 共 {} 章", title, author, follows.len());
+             (vec![], follows)
+         })
+         // === 第三级：章节页 → 提取正文 → 组装 NovelItem ===
+         .on("chapter", |resp| async move {
+             let doc = resp.parse();
+ 
+             let meta = &resp.request.meta;
+             let title = meta.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+             let author = meta.get("author").and_then(|v| v.as_str()).unwrap_or("").to_string();
+             let chapter_title = meta.get("chapter_title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+@@ -174,23 +158,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
+ 
+             let item = NovelItem {
+                 title,
+                 author,
+                 chapter_title,
+                 chapter_index,
+                 content,
+                 url: resp.url.clone(),
+             };
+ 
+-            println!("[章节] 《{}》第{}章 {} ({}字)",
+-                item.title, item.chapter_index + 1, item.chapter_title, item.content.len());
+-
+             (vec![serde_json::to_value(&item).unwrap_or_default()], vec![])
+         })
+         .until(MaxPages(200))
+         .build();
+ 
+     // 构建引擎并运行（代理通过 EngineBuilder.proxy 注入共享 FetchClient）
+     // ND-031-ARCH：delay/obey_robots 从 SpiderBuilder 迁移到 EngineBuilder
+     let engine = Engine::infra()
+         .max_concurrent(4)
+         .max_pages(200)
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index 6409eff..f346920 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -163,21 +163,21 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
+             }
+         }
+     }
+     final_resp
+ }
+ 
+ /// 处理已获取的响应：handle → Auto 升级 → items → events。
+ ///
+ /// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
+ /// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
+-#[tracing::instrument(level = "trace", skip(ctx, resp), fields(status = resp.status))]
++#[tracing::instrument(level = "trace", skip(ctx, resp), fields(status = resp.status, body_len = resp.body.len(), callback = ?resp.request.callback))]
+ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
+     let spider = &ctx.state.spider;
+     let stats = &ctx.state.stats;
+ 
+     if !resp.from_cache {
+         stats.pages.fetch_add(1, Ordering::SeqCst);
+     }
+     let page_url = resp.url.clone();
+ 
+     // 中间件链：响应后拦截（支持 Refetch 循环，最多 5 轮）
+@@ -242,34 +242,39 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
+                     return;
+                 }
+                 _ => break,
+             }
+         }
+     }
+ 
+     // Task 3：调用 handle()（callback 路由），而非 parse()
+     let page_url_for_log = resp.url.clone();
+     let status_for_log = resp.status;
++    // 仅浏览器模式下有值；HTTP 模式为空字符串。不在此处调用 parse() 以免占用单次解析槽位。
++    let title_for_log = resp.title().unwrap_or_default().to_string();
+     let (items, follows) = spider.handle(resp).await;
+     // 诊断：items 和 follows 都为 0 时输出 warn，帮助定位解析失败
+     if items.is_empty() && follows.is_empty() {
+         tracing::warn!(
+-            "handle 返回空 (items=0, follows=0): url={}, status={}",
++            "handle 返回空 (items=0, follows=0): url={}, status={}, title={:?}",
+             sanitize_url(&page_url_for_log),
+-            status_for_log
++            status_for_log,
++            title_for_log,
+         );
+     } else {
+         tracing::info!(
+-            "handle 完成: url={}, items={}, follows={}",
++            "handle 完成: url={}, status={}, title={:?}, items={}, follows={}",
+             sanitize_url(&page_url_for_log),
++            status_for_log,
++            title_for_log,
+             items.len(),
+-            follows.len()
++            follows.len(),
+         );
+     }
+ 
+     // 发送 items：经过 pipeline 链处理后收集到 ctx.items 和 tx（若有）
+     // ND-009-PERF：crawl_ctx 在循环外构建一次，避免每 item 重建
+     // OPTIMIZE: 本地 Vec 收集所有 processed items，单次 lock 批量 push，
+     // 避免 N 次 lock().await.push()。tx 改 try_send 非阻塞，消费者慢时不卡核心路径。
+     let pipeline_crawl_ctx = if ctx.middleware_chain.is_empty() {
+         None
+     } else {

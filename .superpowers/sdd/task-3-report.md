@@ -1,134 +1,133 @@
-# Task 3 报告：HttpCookieJar 实现（包装 wreq::cookie::Jar）
+# Task 3 Report: Response 添加 enqueue_links helper
 
-## 实施摘要
+## 实现内容
 
-按 plan 5 步 TDD 完成 `HttpCookieJar`，包装 `wreq::cookie::Jar`，通过 `ClientBuilder::cookie_provider` 注入到 wreq::Client。
+### 1. `Response::enqueue_links` 与 `Response::enqueue_links_with`
 
-### 文件变更
-- **新增** `/home/weng/wisp/src/cookie/http.rs`（254 行）：`HttpCookieJar` 结构 + `CookieJar` trait 实现 + 5 个内联测试
-- **修改** `/home/weng/wisp/src/cookie/mod.rs`：添加 `pub mod http;` 和 `pub use http::HttpCookieJar;`
+在 `src/fetcher/response.rs` 的 `meta_u64` 之后追加两个方法（直接采用 plan Step 7 最终签名，跳过 Step 6/7 中间形态）：
 
-### 核心实现
-- `HttpCookieJar::new()`：创建空 jar，内部 `Arc<wreq::cookie::Jar::default()>`
-- `HttpCookieJar::jar()`：返回 `Arc<wreq::cookie::Jar>` 供 `wreq::Client::builder().cookie_provider()` 使用
-- `CookieJar::get`：`jar.get_all()` + 按 domain/path 手动过滤，映射到统一 `Cookie` 结构
-- `CookieJar::set`：构造 Set-Cookie 字符串 + `https://{domain}/` URI，调用 `jar.add()`
-- `CookieJar::clear`：收集 host 匹配的 cookie，用其原始 domain/path 构造精确 URI 调用 `jar.remove()`
+- `enqueue_links(&self, selectors: &[&str], callback: &str) -> Vec<Request>`：批量提取链接的便捷方法，内部委托给 `enqueue_links_with`，传入常量闭包 `|_, _| Some(Value::Null)`。
+- `enqueue_links_with<F>(&self, selectors: &[&str], callback: &str, meta_fn: F) -> Vec<Request> where F: Fn(&crate::parser::Node, usize) -> Option<Value>`：
+  - 单次 `self.parse()`（避免触发单次解析断言）
+  - 多选择器回退：`for sel in selectors` + `break`，匹配到第一个非空 selector 即停止
+  - 空值过滤：跳过 `href` 为空或 `text().trim().is_empty()` 的 `<a>`
+  - 闭包注入：`meta_fn(a, idx)` 返回 `None` 跳过；返回 `Some(Value::Null)` 走 `req`（不覆盖默认 meta）；返回 `Some(非 Null)` 走 `req.with_meta(meta)`
+  - callback 自动设置：内部调用 `follow_with(&href, callback)`
+  - `usize` 索引参数支持 `chapter_index` 场景
 
-## 测试结果
+### 2. 默认 handler 重构（`examples/novel_crawler.rs`）
 
+- **default handler**：从 52 行手写循环压缩到 20 行，调用 `resp.enqueue_links_with(..., |a, _idx| { ... })`
+- **detail handler**：保留显式 `resp.parse()` + 手写循环模式（按 brief Step 8 结论）。原因：detail handler 需同时从 `.txt ul:nth-child(1)` 提作者 + 从 `.list ul li .name a` 提章节列表，调用 `enqueue_links_with` 会触发第二次 `parse()` 而 panic。这是 brief 文档化的诚实权衡。
+- 同时把原 `resp.follow_meta(&href, json!({...})).map(|r| r.with_callback("detail"))` 模式替换为 `enqueue_links_with` 内部的 `follow_with + with_meta` 等价路径。
+
+### 3. Task 2 的 2 个 Minor 文档错字修复
+
+在 `src/fetcher/response.rs` 同一文件中：
+- L458 `meta_str` 文档：`.meta 非 Object` → `meta 非 Object`（去掉多余的 `.`）
+- L469 `meta_u64` 文档：`缺失/类型不符时返回 0` → `缺失/类型不符/meta 非 Object 时返回 0`（与 `meta_str` 对称）
+
+## TDD 证据
+
+### RED（实现前）
+
+命令：`cargo test --package wisp --lib fetcher::response::tests::test_enqueue_links`
+
+输出片段（编译错误）：
 ```
-cargo test --lib cookie::http::tests
-test result: ok. 5 passed; 0 failed; 0 ignored
-```
+error[E0599]: no method named `enqueue_links` found for struct `response::Response` in the current scope
+   --> src/fetcher/response.rs:723:28
+    |
+211 | pub struct Response {
+    | ------------------- method `enqueue_links` not found for this struct
+...
+723 |         let follows = resp.enqueue_links(
+    |                       -----^^^^^^^^^^^^^ method not found in `response::Response`
 
-5 个测试：
-- `http_set_and_get_cookie` ✓
-- `http_header_returns_string` ✓
-- `http_clear_removes_matching` ✓
-- `http_jar_injectable_into_wreq_client` ✓（验证 `cookie_provider` 注入成功）
-- `http_domain_filter` ✓
-
-### 全量回归
-```
-cargo test --lib
-test result: ok. 303 passed; 0 failed; 8 ignored
-```
-（含 5 个新 http 测试 + 298 个原有测试，Task 1-2 的 mock/cf 测试全绿）
-
-### clippy
-`cargo clippy --lib --no-deps` 干净（0 warning），项目用 `clippy::pedantic`。
-
-## Commit
-
-- Hash: `89537b9`
-- Message: `feat: 添加 HttpCookieJar（包装 wreq::cookie::Jar）`
-- Parent: `408d6db`（Task 1-2 HEAD）
-
-## 自审发现（与 plan 的偏差）
-
-### 1. plan 中 `clear` 方法使用了不公开的 `wreq::cookie::RawCookie`
-
-**问题**：plan 的 `clear` 调用 `wreq::cookie::RawCookie::build(name).to_string()`，但 `RawCookie` 只是 wreq 内部的 `use cookie::{Cookie as RawCookie, ...}` 别名，**未公开导出**。`wreq::cookie` 模块只公开 `Cookie<'a>` 包装结构和 `Jar`、`CookieStore`、`IntoCookie` 等。
-
-**修复**：改用 `jar.get_all()` 返回的 `wreq::cookie::Cookie<'static>`（包装了 `RawCookie`），直接传给 `jar.remove(cookie, &uri)`。`Jar::remove<C, U>` 要求 `C: Into<RawCookie<'static>>`，而 wreq 已为 `Cookie<'c>` 实现 `From<Cookie<'c>> for RawCookie<'c>`，满足约束。
-
-**改进**：用每个 cookie 的原始 domain/path 构造精确 URI（`https://{domain}{path}`），而非统一用入参 URL。这样能删除该 domain 下所有路径的 cookie，而不只限于入参 URL 的精确 path。plan 原方案受限于 `Jar::remove` 按 `uri.path()` 查找，只能删除入参 URL path 下的条目。
-
-### 2. plan 中 `get` 方法有死代码
-
-**问题**：plan 的 `get` 方法开头转换 `let uri: wreq::Uri = match url.as_str().try_into() {...}`，但 `uri` 变量后续未使用（实际用 `url.host_str()` 和 `url.path()`）。
-
-**修复**：删除未使用的 `uri` 绑定，避免 warning。
-
-### 3. clippy pedantic 修复
-
-plan 代码触发两个 pedantic warning，已修复：
-- `c.path().map_or(true, |p| ...)` → `c.path().is_none_or(|p| ...)`（`unnecessary_map_or`）
-- `.map(|d| ...).unwrap_or(0.0)` → `.map_or(0.0, |d| ...)`（`map_unwrap_or`）
-
-## 状态
-
-✅ **完成**。Task 3 已实施并通过验证，可进入 Task 4（BrowserCookieJar via CDP）。
-
----
-
-## 修复（Important #1）：set 方法丢弃 expires 字段
-
-### 问题
-
-审查发现 `HttpCookieJar::set` 构造 Set-Cookie 字符串时未写入 `Max-Age` 或 `Expires`，导致带 `expires` 的 cookie 被当作 session cookie 存储，信息丢失。
-
-### 根因分析（与任务描述的偏离）
-
-任务描述建议追加 `; Max-Age={max_age}`（max_age = expires - now）。但实证验证发现该方案在 `wreq 6.0.0-rc.29` + `cookie 0.18.1` 下**无效**：
-
-- `cookie::Cookie` 把 `Max-Age` 和 `Expires` 存为**独立字段**（`max_age: Option<Duration>` vs `expires: Option<Expiration>`）
-- `wreq::cookie::Cookie::expires()` 实现（`src/cookie.rs:161-166`）**只读 `expires` 字段**，不读 `max_age`
-- 因此 `Max-Age=3600` 会被 parse 填入 `max_age` 字段，但 `cookies[0].expires` 读回仍是 `None`
-
-调试输出验证：
-```
-DEBUG cookies = [Cookie { ..., expires: None }]
+error[E0599]: no method named `enqueue_links_with` found for struct `response::Response` in the current scope
+   --> src/fetcher/response.rs:809:28
 ```
 
-### 修复方案
+### GREEN（实现后）
 
-改用 `Expires=<HTTP-date>`（RFC 7231 IMF-fixdate 格式，如 `Wed, 21 Oct 2025 07:28:00 GMT`）。`cookie::Cookie::parse` 会把它解析到 `expires` 字段（`Expiration::DateTime`），从而被 `wreq::cookie::Cookie::expires()` 正确读回。
+命令：`cargo test --package wisp --lib fetcher::response::tests::test_enqueue_links`
 
-### 实现要点
-
-`src/cookie/http.rs` 的 `set` 方法：
-
-1. 取当前 Unix 时间戳 `now`
-2. match `cookie.expires`：
-   - `Some(expires) if expires > now` → 用 `chrono::DateTime::<Utc>::from_timestamp(expires as i64, 0)` 转 `DateTime`，format 成 `"%a, %d %b %Y %H:%M:%S GMT"`
-   - `Some(_)` → 已过期，`return` 跳过不写入
-   - `None` → session cookie，正常写入不带 Expires
-3. 在 Set-Cookie 字符串末尾追加 `; Expires={http_date}`
-
-### 新增测试
-
-1. `http_set_with_expires`：写入 `expires = now + 3600`，读回 cookies[0].expires 应为 Some 且与入参偏差 < 5s
-2. `http_set_with_expired_expires_skipped`：写入 `expires = now - 10`（已过期），读回应为空
-
-### 验证
-
+输出：
 ```
-cargo test --lib cookie::http
-test result: ok. 7 passed; 0 failed; 0 ignored
+running 7 tests
+test fetcher::response::tests::test_enqueue_links_returns_empty_when_no_selector_matches ... ok
+test fetcher::response::tests::test_enqueue_links_falls_back_to_next_selector_when_first_empty ... ok
+test fetcher::response::tests::test_enqueue_links_with_skips_when_closure_returns_none ... ok
+test fetcher::response::tests::test_enqueue_links_returns_follows_for_first_matching_selector ... ok
+test fetcher::response::tests::test_enqueue_links_with_injects_meta_from_closure ... ok
+test fetcher::response::tests::test_enqueue_links_skips_empty_href_and_empty_text ... ok
+test fetcher::response::tests::test_enqueue_links_panics_if_parse_already_called - should panic ... ok
 
-cargo test --lib
-test result: ok. 305 passed; 0 failed; 8 ignored
-（原 303 + 新增 2 个测试）
-
-cargo clippy --lib -- -D warnings
-Finished, 0 warning
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.03s
 ```
 
-### Commit
+### 修复 brief 测试用例 HTML bug
 
-- Hash: `f5d5bf1`
-- Message: `fix: HttpCookieJar::set 写入 Expires 字段避免 expires 丢失`
-- Parent: `89537b9`（Task 3 原 HEAD）
+实现后第一次跑 GREEN 时，`test_enqueue_links_falls_back_to_next_selector_when_first_empty` 失败（left=0, right=1）。原因：brief 测试用例 HTML 写的是 `<ul class="list2">`，但 selector 是 `.list2 ul li .name a`（要求 `.list2` 是 div 容器内嵌 `<ul>`）。selector 来自 `examples/novel_crawler.rs` 的真实选择器列表（保留不变更合理），故修正 HTML 为 `<div class="list2"><ul>...</ul></div>` 以匹配 selector 语义。修正后该测试通过。
 
+## 文件变更
+
+### `src/fetcher/response.rs`
+- L458: `meta_str` 文档错字修复
+- L469: `meta_u64` 文档错字修复
+- L478-564: 新增 `enqueue_links` 和 `enqueue_links_with` 实现
+- L708-865: 新增 7 个测试用例
+
+### `examples/novel_crawler.rs`
+- L55-78: default handler 重构为 `enqueue_links_with`（52 行 → 20 行）
+- L79-120: detail handler 重构，使用显式 `resp.parse()` + 手写循环 + `follow_with` + `with_meta`，并补注释说明为何不使用 `enqueue_links_with`
+
+## Self-Review
+
+### 完整性
+- ✅ 7 个测试全部通过
+- ✅ `enqueue_links` 和 `enqueue_links_with` 都用最终 Step 7 签名 `Fn(&Node, usize) -> Option<Value>`
+- ✅ default handler 重构使用 `enqueue_links_with`（闭包 `|a, _idx|`）
+- ✅ detail handler 使用显式 `parse()` + 手写循环（不使用 `enqueue_links_with`）
+- ✅ Task 2 的 2 个文档错字已修复
+
+### 质量
+- ✅ `enqueue_links_with` 内单次 `self.parse()` 调用
+- ✅ 多选择器回退：`for sel in selectors { if !links.is_empty() { ...; break; } }`
+- ✅ 空 href 和空/空白 text 均被过滤
+- ✅ `Value::Null` meta 走 `req`（不调用 `with_meta`）
+- ✅ 文档注释全部中文
+
+### 纪律
+- ✅ 未添加 `enqueue_links_filtered`/`enqueue_links_strict` 等未要求的方法
+- ✅ 未修改 `Node::select`/`Node::attr` 等现有方法
+- ✅ 未碰 `tests/*.rs` 集成测试
+
+### 测试
+- ✅ RED：实现前编译错误
+- ✅ GREEN：实现后 7 测试通过
+- ✅ `cargo build --example novel_crawler` 通过
+- ✅ `cargo test --workspace --lib --bins` 通过（291 passed; 0 failed）
+
+## 最终测试命令与结果
+
+```
+$ cargo build --example novel_crawler
+   Compiling wisp v0.1.0 (/home/weng/wisp)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.61s
+
+$ cargo test --workspace --lib --bins
+   ...
+test result: ok. 291 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+```
+
+## 提交
+
+```
+575473d response: 新增 enqueue_links/enqueue_links_with 批量链接提取助手
+```
+
+## 关切点
+
+1. **brief 测试用例 HTML bug 修复**：`test_enqueue_links_falls_back_to_next_selector_when_first_empty` 原始 HTML 与 selector 语义不一致，已修正 HTML（让 `.list2` 作为 div 容器内嵌 `<ul>`），保留 selector 不变（因其来自示例 novel_crawler.rs 的真实选择器列表）。
+2. **detail handler 不使用 `enqueue_links_with`**：按 brief Step 8 "结论" 文档化的设计权衡，detail handler 保留显式循环。原因：detail handler 需要从两处不同 selector 提取（作者 + 章节列表），调用 `enqueue_links_with` 会触发第二次 `parse()` 而 panic。`enqueue_links_with` 的适用边界是「单 selector 查询 + meta 注入」场景。
