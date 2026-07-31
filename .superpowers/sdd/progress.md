@@ -141,3 +141,4 @@ Task 11: complete (commits 17d0716..801fa65, review clean)
 - 未移植（记录备查）：master 的 async `Store` trait 重构（会牵动 parser/middleware/checkpoint 全链路，独立大改动）；AdaptiveTracker（与 parser::css_adaptive 功能重复）；feature gates 完整下钻（仅默认全开）
 - 适配：crawl engine 的 CF 快速路径改用 `cookie_jar().header()`，浏览器路径改用 Dynamic/StealthStrategy；`fetch_browser(req, bool)` 旧签名在测试中更新
 - 验证：`cargo test --workspace --all-targets` 全绿；`cargo build --workspace` 无警告
+- 基准（master 99818b4，2026-08-01）：novel_flow/multi_spider_10books 中位数 32.928 ms（基线 32.303 ms，无回归）；auto_default 32.9 ms、http_with_transport 20.9 ms、http_minimal 21.5 ms、http_cached_replay 9.8 ms；docs/performance.md 已更新

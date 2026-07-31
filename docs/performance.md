@@ -35,22 +35,22 @@
 | 缓存命中 | 开启缓存后第二次起 pages_crawled=0、cache_hits>0 |
 | 峰值内存 | 持续运行 profiler 时的 WorkingSet/PrivateBytes 峰值 |
 
-## 4. 当前基线（2026-07-31，Windows + profiling/release）
+## 4. 当前基线（2026-08-01，master 合并 crate 拆分 + arch-refactor 后，Windows + profiling/release）
 
 ### novel_flow
 
 ```text
 novel_flow/multi_spider_10books
-    time: [30.425 ms 32.303 ms 34.261 ms]
+    time: [31.216 ms 32.928 ms 35.071 ms]
 ```
 
 折算：
 
 | 指标 | 值 |
 | --- | --- |
-| pages/s | 约 9,600 |
-| items/s | 约 9,300 |
-| ms/page | 约 0.104 |
+| pages/s | 约 9,400 |
+| items/s | 约 9,100 |
+| ms/page | 约 0.106 |
 
 ### 阶段占比（WISP_TIMING=1）
 
@@ -77,10 +77,10 @@ process_response      约 30%
 
 | 变体 | 时间 | 说明 |
 | --- | --- | --- |
-| auto_default | 约 33.3 ms | Auto 模式仍保留每请求 CF/规则快速检查 |
-| http_with_transport | 约 22.4 ms | 明确 Http 后省掉 Auto 嗅探 |
-| http_minimal | 约 22.1 ms | 传输中间件本身开销约 2-3% |
-| http_cached_replay | 约 9.5 ms | 缓存回放约是完整抓取吞吐的 3.5 倍 |
+| auto_default | 约 32.9 ms | Auto 模式仍保留每请求 CF/规则快速检查 |
+| http_with_transport | 约 20.9 ms | 明确 Http 后省掉 Auto 嗅探 |
+| http_minimal | 约 21.5 ms | 传输中间件本身开销约 2-3% |
+| http_cached_replay | 约 9.8 ms | 缓存回放约是完整抓取吞吐的 3.3 倍 |
 
 ## 5. 中间件清单
 
