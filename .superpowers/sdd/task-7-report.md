@@ -1,85 +1,41 @@
-# Task 7 报告：验证 stealth/challenge.rs 无需修改
+# Task 7 Report: 修复 robots.txt 端口丢失与失败缓存
 
-## 实施摘要
-
-按 plan 5 个步骤执行验证任务，确认 Task 1-6 的 CookieJar 重构未影响 `stealth/challenge.rs`，并搜索全局残留引用。
-
-## 验证步骤与结果
-
-### Step 1-2: 运行 challenge.rs 现有测试
-
-```
-$ cargo test --lib stealth::challenge::tests
-running 6 tests
-test stealth::challenge::tests::test_challenge_type_clone_copy ... ok
-test stealth::challenge::tests::test_detect_js_challenge_markers ... ignored, 需要 Chrome 浏览器环境
-test stealth::challenge::tests::test_detect_no_challenge_on_normal_page ... ignored, 需要 Chrome 浏览器环境
-test stealth::challenge::tests::test_is_cloudflare_page_normal ... ignored, 需要 Chrome 浏览器环境
-test stealth::challenge::tests::test_challenge_type_debug ... ok
-test stealth::challenge::tests::test_challenge_type_equality ... ok
-
-test result: ok. 3 passed; 0 failed; 3 ignored; 0 measured; 321 filtered out
-```
-
-**结果**：PASS。3 个单元测试全绿，3 个集成测试 `#[ignore]`（需 Chrome 环境），与预期一致。
-
-**结论**：Task 6 的 FetchClient 重构未影响 `stealth/challenge.rs`，该文件无 `cf_cache` 依赖，无需修改。
-
-### Step 3: 全局搜索 cf_cache 残留引用
-
-使用 Grep 工具搜索整个项目（不限 `src/`）：
-
-| 搜索模式 | 范围 | 结果 |
-|---------|------|------|
-| `cf_cache` | `/home/weng/wisp/src/` | No matches found |
-| `has_cf_cookies\|get_cf_cookie_header\|get_cf_ua` | `/home/weng/wisp/src/` | No matches found |
-| `cf_cache\|has_cf_cookies\|get_cf_cookie_header\|get_cf_ua` | `/home/weng/wisp/`（含 bin/、crawl/、mcp/） | No matches found |
-
-**结果**：零残留引用。
-
-- `fetcher/client.rs` 中已删除的 `cf_cache`/`has_cf_cookies`/`get_cf_cookie_header`/`get_cf_ua` 在整个项目（含 `src/bin/wisp.rs`、`src/crawl/`、`src/mcp/`）中均无任何引用。
-- `crawl/engine.rs` 的调用方已在 Task 6 中迁移至 `fetch_client.cookie_jar().header(u).await` 接口。
-- 无需更新任何调用方。
-
-### Step 4: 全部测试与编译验证
-
-```
-$ cargo test --lib
-test result: ok. 317 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out
-
-$ cargo build
-   Compiling wisp v0.1.0 (/home/weng/wisp)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.19s
-```
-
-**结果**：PASS。
-
-- 317 个 lib 测试全绿（Task 6 审查删除了 1 个空测试，由 318 → 317，符合预期）
-- 0 failed，10 ignored（需外部环境的集成测试）
-- `cargo build` 编译成功，无 warning
-
-### Step 5: 提交决策
-
-按 plan 规定："如果无改动，跳过提交，仅记录验证结论。"
-
-- Step 3 搜索结果为零残留，无需清理调用方
-- 本任务为纯验证任务，未修改任何源代码
-- **跳过提交**
+## Status
+✅ COMPLETE — `cargo build` 通过；`cargo test --lib` 201 passed；`cargo test --test cr_fix_robots_port_test` 2 passed；现有 robots 单元测试 12 passed。
 
 ## Commit
+`bcc90ba` — `fix(robots): 保留端口 + 失败不缓存`
+- 分支：`fix/code-review-2026-07-23`
+- 文件：`src/crawl/runtime/robots.rs`（+47/-2）、`tests/cr_fix_robots_port_test.rs`（新建，+89）
 
-无（验证任务，无代码改动）。
+## 改动摘要
+1. **`src/crawl/runtime/robots.rs` — `RobotsRules::is_empty_rules`**（新增 pub 方法）
+   `disallowed.is_empty() && crawl_delay.is_none() && request_rate.is_none()`，用于区分"fetch 失败返回的默认空规则"与"成功获取的有效规则"。
+2. **`src/crawl/runtime/robots.rs` — `rules_for` domain key 含端口**
+   `parsed.port()` 为 `Some(p)` 时拼 `scheme://host:p`，否则 `scheme://host`。修复 `http://example.com:8080` 错误地从 `http://example.com/robots.txt` 获取。
+3. **fetch 失败不缓存**
+   `if !rules.is_empty_rules() { self.cache.insert(...) }` — 失败返回的空规则不入缓存，下次 `rules_for` 重试。瞬态网络失败不再导致永久"允许全部"。
+4. **新增单元测试**：`test_is_empty_rules`、`test_domain_key_preserves_port`（锁定 `url::Url::port()` 行为假设）。
 
-当前 HEAD 仍为 `09ac90b`（Task 6 审查修复 commit），未推进。
+## 测试摘要
+| 测试 | 结果 |
+|---|---|
+| `cargo build` | ✅ |
+| `cargo test --lib crawl::runtime::robots` | ✅ 12/12 |
+| `cargo test --lib`（全量） | ✅ 201/201 |
+| `cargo test --test cr_fix_robots_port_test` | ✅ 2/2 |
+  - `robots_fetched_from_correct_port`：mock TcpListener 验证带端口 URL 命中正确端口（counter==1），且 /page 在 `Disallow: /private` 下被允许
+  - `fetch_failure_not_cached_so_retry_happens`：先 fetch 死端口（失败不缓存），再 fetch live 端口，counter==1 证明失败未缓存
 
-## 状态
+TDD 流程：先写测试 → 跑确认 2 个 FAIL（端口丢失致 counter==0；失败缓存致第二次仍 counter==0）→ 实现 → 跑确认 PASS。
 
-✅ 完成
+## API 兼容性
+✅ 向后兼容。`RobotsCache` 现有方法签名不变（`is_allowed` / `crawl_delay` / `rules_for` / `new` / `fetch_robots`）。仅新增 `RobotsRules::is_empty_rules` pub 方法，未删除/修改任何现有 API。
 
-- `stealth/challenge.rs` 无 `cf_cache` 依赖，无需修改
-- 全局搜索零残留引用（`cf_cache`、`has_cf_cookies`、`get_cf_cookie_header`、`get_cf_ua`）
-- 317 个 lib 测试全绿
-- `cargo build` 编译成功
-- 跳过提交（按 plan 规定）
+## 顾虑 / 取舍
+1. **空 robots.txt 不缓存（已知取舍）**：站点 robots.txt 真的为空（无任何 Disallow/Crawl-delay/Request-rate）时，`is_empty_rules` 返回 true，每次 `rules_for` 都重试 fetch。这是 brief 明确接受的取舍（空 robots.txt 少见，重试成本低）。若需精确区分"空规则"与"失败"，需 `fetch_robots` 返回 `Result`，改动更大，超出本 task 范围。
+2. **brief 中 mock 断言 bug 已修正**：brief Step 1 的 mock 返回 `Disallow: /` 却断言 `/page` allowed——`/page` 实际匹配 `Disallow: /`（`path.starts_with("/")` 为 true）会被阻止。改为 `Disallow: /private`（Content-Length 同步改为 32），保留 brief "验证 /page 被允许"的意图。
+3. **`fetch_failure_not_cached_so_retry_happens` 用 `port+1` 当死端口**：理论上 `port+1` 可能被其他进程占用导致 fetch 成功，但 mock server 已占用 `port`，且测试断言 counter==1（而非 0），若 `port+1` 偶然有 HTTP 服务返回非空规则，counter 仍为 0 → 测试 FAIL（而非误 PASS），不会产生假阳性。
 
-PR1 Task 7 验证任务完成，PR1 全部 7 个 Task 已完成。
+## 报告路径
+`/home/weng/wisp/.superpowers/sdd/task-7-report.md`

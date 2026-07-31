@@ -3,10 +3,11 @@
 //! 验证 ClosureSpider 的 `handle()` 方法根据 `resp.request.callback` 字段
 //! 路由到对应 handler 的逻辑。不依赖真实 HTTP 请求，直接构造 Response。
 
+use wisp::crawl::{Spider, SpiderBuilder, Request, Response};
+use wisp::crawl::stop::MaxPages;
+use wisp::parser::ResponseExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use wisp::crawl::stop::MaxPages;
-use wisp::crawl::{Request, Response, Spider, SpiderBuilder};
 
 /// 构造测试用 Response。
 fn make_resp(url: &str, body: &str, callback: Option<&str>) -> Response {
@@ -57,11 +58,7 @@ async fn test_callback_routes_detail_label() {
         })
         .build();
 
-    let resp = make_resp(
-        "https://example.com/detail/1",
-        "<html></html>",
-        Some("detail"),
-    );
+    let resp = make_resp("https://example.com/detail/1", "<html></html>", Some("detail"));
     let (items, _) = spider.handle(resp).await;
     assert_eq!(items[0]["stage"], "detail");
 }
@@ -100,11 +97,7 @@ async fn test_callback_unknown_label_falls_back_to_default() {
         })
         .build();
 
-    let resp = make_resp(
-        "https://example.com/unknown",
-        "<html></html>",
-        Some("unknown"),
-    );
+    let resp = make_resp("https://example.com/unknown", "<html></html>", Some("unknown"));
     let (items, _) = spider.handle(resp).await;
     assert_eq!(items[0]["fallback"], true);
 }
@@ -146,10 +139,10 @@ async fn test_callback_pipeline_produces_follows() {
         .start_urls(vec!["https://example.com/list"])
         .on("default", |resp| async move {
             // 列表页：follow 到 "detail"
-            let follows: Vec<_> = resp
-                .css("a")
-                .iter()
-                .filter_map(|a| a.attr("href").and_then(|h| resp.follow_with(&h, "detail")))
+            let follows: Vec<_> = resp.css("a").iter()
+                .filter_map(|a| {
+                    a.attr("href").and_then(|h| resp.follow_with(&h, "detail"))
+                })
                 .collect();
             (vec![], follows)
         })
@@ -175,12 +168,8 @@ async fn test_callback_pipeline_produces_follows() {
         assert_eq!(f.callback.as_deref(), Some("detail"));
     }
     // 验证 follow 的 URL 正确解析为绝对路径
-    assert!(follows
-        .iter()
-        .any(|f| f.url == "https://example.com/detail/1"));
-    assert!(follows
-        .iter()
-        .any(|f| f.url == "https://example.com/detail/2"));
+    assert!(follows.iter().any(|f| f.url == "https://example.com/detail/1"));
+    assert!(follows.iter().any(|f| f.url == "https://example.com/detail/2"));
 
     // 用其中一个 follow 构造响应，验证 detail handler 被调用
     let detail_resp = make_resp(
@@ -200,12 +189,8 @@ async fn test_spider_trait_handle_works() {
     struct PlainSpider;
     #[async_trait]
     impl Spider for PlainSpider {
-        fn name(&self) -> &str {
-            "plain"
-        }
-        fn start_urls(&self) -> Vec<String> {
-            vec![]
-        }
+        fn name(&self) -> &str { "plain" }
+        fn start_urls(&self) -> Vec<String> { vec![] }
         async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
             (vec![json!({"default_handle": true})], vec![])
         }

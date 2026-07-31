@@ -1,8 +1,8 @@
 //! P0-1: 验证 EngineBuilder.autoscale() API 可用。
 //! AutoscaledPool 已实现，此测试验证 Engine 正确持有 autoscale 配置。
 
+use wisp::crawl::runtime::autoscale::{AutoscaledPool, AutoscaleConfig};
 use std::time::Duration;
-use wisp::crawl::runtime::autoscale::{AutoscaleConfig, AutoscaledPool};
 
 #[tokio::test]
 async fn engine_builder_accepts_autoscale() {
@@ -10,11 +10,7 @@ async fn engine_builder_accepts_autoscale() {
         .max_concurrent(16)
         .autoscale(2, 8)
         .build();
-    assert!(
-        engine.is_ok(),
-        "build with autoscale should succeed: {:?}",
-        engine.err()
-    );
+    assert!(engine.is_ok(), "build with autoscale should succeed: {:?}", engine.err());
 }
 
 #[tokio::test]
@@ -41,10 +37,10 @@ fn autoscaled_pool_exposes_max_concurrency() {
 // 且并发数不超过 max_concurrency 上限。
 // 使用不可达 URL（127.0.0.1:1），请求会快速失败，验证引擎不卡死。
 
-use async_trait::async_trait;
-use serde_json::Value;
 use wisp::crawl::*;
 use wisp::fetcher::FetchMode;
+use async_trait::async_trait;
+use serde_json::Value;
 
 struct FailSpider {
     name: String,
@@ -52,15 +48,11 @@ struct FailSpider {
 
 #[async_trait]
 impl Spider for FailSpider {
-    fn name(&self) -> &str {
-        &self.name
-    }
+    fn name(&self) -> &str { &self.name }
     fn start_urls(&self) -> Vec<String> {
         vec!["http://127.0.0.1:1/a".into(), "http://127.0.0.1:1/b".into()]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
-        (vec![], vec![])
-    }
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) { (vec![], vec![]) }
 }
 
 #[tokio::test]
@@ -75,10 +67,7 @@ async fn run_with_autoscale_completes_without_deadlock() {
         .build()
         .expect("build engine");
 
-    let (stats, _items) = engine
-        .run(FailSpider {
-            name: "fail".into(),
-        })
+    let (stats, _items) = engine.run(FailSpider { name: "fail".into() })
         .await
         .expect("run should complete");
 

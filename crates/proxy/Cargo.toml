@@ -1,0 +1,10 @@
+[package]
+name = "wisp-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+rand = "0.10"
+tracing = "0.1"

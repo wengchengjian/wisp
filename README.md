@@ -18,7 +18,7 @@ Pure Rust CDP (Chrome DevTools Protocol) over WebSocket with anti-detection patc
 ## Quick Start
 
 ```rust
-use wisp::Fetcher;
+use wisp::{Fetcher, parser::ResponseExt};
 
 #[tokio::main]
 async fn main() -> wisp::Result<()> {
@@ -61,32 +61,15 @@ async fn main() -> wisp::Result<()> {
 
 All three modes return the same `Response` type with identical parsing APIs.
 
-## Session (Persistent Cookies)
-
-```rust
-use wisp::Session;
-
-let session = Session::stealth()
-    .proxy("http://127.0.0.1:7897")
-    .build()?;
-
-let _ = session.get("https://site.com/login").await?;
-let dashboard = session.get("https://site.com/dashboard").await?; // cookies preserved
-session.close().await;
-```
-
 ## Spider Crawling
 
 ```rust
-use wisp::{SpiderBuilder, Engine, FetchMode};
-use wisp::crawl::SpiderRequest;
+use wisp::{SpiderBuilder, Engine, FetchMode, parser::ResponseExt};
+use wisp::crawl::Request;
 use serde_json::json;
 
 let spider = SpiderBuilder::new("quotes")
     .start_urls(vec!["https://quotes.toscrape.com/"])
-    .mode(FetchMode::Http)
-    .delay_ms(200)
-    .obey_robots(false)
     .on("default", |resp| async move {
         let items = resp.css(".quote").iter().map(|q| {
             json!({
@@ -95,7 +78,7 @@ let spider = SpiderBuilder::new("quotes")
             })
         }).collect();
 
-        let follows: Vec<SpiderRequest> = resp.css(".next a").first()
+        let follows: Vec<Request> = resp.css(".next a").first()
             .and_then(|a| a.attr("href"))
             .and_then(|href| resp.follow(&href))
             .map(|r| vec![r])
@@ -105,7 +88,12 @@ let spider = SpiderBuilder::new("quotes")
     })
     .build();
 
-let engine = Engine::infra().max_pages(10).build()?;
+let engine = Engine::infra()
+    .max_pages(10)
+    .fetch_mode(FetchMode::Http)
+    .download_delay_ms(200)
+    .obey_robots(false)
+    .build()?;
 let (stats, _items) = engine.run(spider).await?;
 
 println!("{}", stats.summary());
@@ -116,17 +104,19 @@ println!("{}", stats.summary());
 Single Spider with multiple handlers for list → detail → content flows:
 
 ```rust
+use wisp::{SpiderBuilder, parser::ResponseExt};
+
 let spider = SpiderBuilder::new("pipeline")
     .start_urls(vec!["https://example.com/list"])
     .on("default", |resp| async move {
         let follows: Vec<_> = resp.css(".item a").iter()
-            .filter_map(|a| resp.follow_with(a.attr("href").unwrap_or(""), "detail"))
+            .filter_map(|a| resp.follow_with(&a.attr("href").unwrap_or_default(), "detail"))
             .collect();
         (vec![], follows)
     })
     .on("detail", |resp| async move {
         let follows: Vec<_> = resp.css("article a").iter()
-            .filter_map(|a| resp.follow_with(a.attr("href").unwrap_or(""), "content"))
+            .filter_map(|a| resp.follow_with(&a.attr("href").unwrap_or_default(), "content"))
             .collect();
         (vec![], follows)
     })
@@ -139,31 +129,62 @@ let engine = Engine::infra().max_pages(1000).build()?;
 let (stats, items) = engine.run(spider).await?;
 ```
 
+### Multi-Spider Shared Queue
+
+每个阶段可以是一个独立 Spider，`Engine::run_many` 使用共享队列并按 callback 路由；每个 Spider 独立 `until()` 和 stats：
+
+```rust
+use wisp::crawl::stop::MaxPages;
+use wisp::parser::ResponseExt;
+
+let home = SpiderBuilder::new("home")
+    .start_urls(vec!["https://example.com/list"])
+    .on("default", |resp| async move {
+        let follows = resp.css(".item a").iter()
+            .filter_map(|a| resp.follow_with(&a.attr("href").unwrap_or_default(), "detail"))
+            .collect();
+        (vec![], follows)
+    })
+    .build();
+
+let detail = SpiderBuilder::new("detail")
+    .on("detail", |resp| async move { (vec![], vec![]) })
+    .until(MaxPages(10))
+    .build();
+
+let engine = Engine::infra().max_pages(1000).build()?;
+let (stats, items) = engine.run_many(vec![home, detail]).await?;
+```
+
+传输能力（headers/UA/Cookie Challenge）和共享 pipeline 配置在 `EngineBuilder` 上，不在 `SpiderBuilder`：
+
+```rust
+let engine = Engine::infra()
+    .headers(vec![("Accept".into(), "text/html".into())])
+    .ua_rotation(wisp::crawl::middleware::UaRotationMiddleware::desktop())
+    .cookie_challenge(true)
+    .pipeline(Arc::new(wisp::crawl::middleware::JsonlWriterPipeline::new("items.jsonl")))
+    .build()?;
+```
+
 ## Architecture
 
+```text
+Cargo.toml                       workspace + facade package（bin/example/test/bench）
+src/lib.rs                       facade：模块 re-export + 顶层 API
+crates/core/                     Request/Response/Method/WispError/config/text/utils/encoding
+crates/storage/                  Store + Memory/File/Sqlite + CachedResponse
+crates/parser/                   Node/NodeList/adaptive + ResponseExt
+crates/proxy/                    ProxyPool/RotationStrategy + config_file
+crates/http/                     wreq Client/Config/DomainBlocker/UaRotator
+crates/browser/                  CDP browser automation
+crates/stealth/                  Challenge solver / human behavior / Turnstile
+crates/fetcher/                  Fetcher/FetchClient/FetchMode
+crates/crawl/                    Engine/Spider/middleware/scheduler/runtime
+crates/mcp/                      MCP server
 ```
-src/
-  fetcher/          Unified entry point (Fetcher + Response + Session)
-    mod.rs          Fetcher struct, FetchMode enum, FetcherBuilder
-    response.rs     Unified Response/Request types
-    session.rs      Session with cookie persistence
-  http/             HTTP client with TLS fingerprint emulation
-  parser/           HTML parsing (CSS/XPath/adaptive/text search)
-  crawl/            Spider engine (Spider trait, SpiderBuilder, Engine)
-    builder.rs      ClosureSpider + SpiderBuilder::on(label, handler)
-    engine.rs       Engine run loop (demand-driven unfold + buffer_unordered)
-    stop.rs         StopCondition (MaxPages/MaxItems/MaxErrors/Timeout)
-    scheduler.rs    Priority scheduler + dedup
-    request_cache.rs  Request-level cache (from_cache flag)
-  browser/          CDP browser automation (internal)
-  stealth/          Anti-detection + Cloudflare bypass (internal)
-    challenge.rs    JS Challenge / Managed Challenge solver
-    turnstile.rs    Cloudflare Turnstile solver
-    human.rs        Human behavior simulation
-  proxy.rs          Proxy pool with rotation strategies
-  storage/          Pluggable storage (MemoryStore + FileStore + optional SqliteStore)
-  mcp/              MCP server for AI-assisted scraping
-```
+
+依赖方向单向：`core <- storage/parser/proxy/http/browser <- stealth <- fetcher <- crawl <- mcp <- facade`。
 
 ## 存储后端
 
@@ -171,7 +192,7 @@ wisp 支持三种可插拔存储后端，通过 `Store` trait 抽象（仅 4 个
 
 | 后端 | feature 开关 | 默认用途 | 持久化 |
 |------|-------------|---------|--------|
-| `MemoryStore` | 始终启用 | 响应缓存（cache_store 默认） | 否（进程退出丢失） |
+| `MemoryStore` | 始终启用 | 响应缓存（需显式 `cache_store` 开启） | 否（进程退出丢失） |
 | `FileStore` | 始终启用 | 断点续爬（checkpoint_store 默认） | 是（`./wisp-data/`） |
 | `SqliteStore` | `sqlite` feature | 用户显式选择 | 是（`.db` 文件） |
 
@@ -189,7 +210,7 @@ wisp = { path = "../wisp" }
 wisp = { path = "../wisp", features = ["sqlite"] }
 ```
 
-业务层 API（`save_checkpoint`/`load_response`/`save_element` 等）以自由函数形式提供，调用底层 `Store` trait 原语并处理序列化。自定义存储后端：实现 `Store` trait 的 4 个原语，通过 `EngineBuilder::cache_store(...)` / `.checkpoint_store(...)` 注入。
+业务层 API（`save_checkpoint`/`load_response`/`save_element` 等）以自由函数形式提供，调用底层 `Store` trait 原语并处理序列化。自定义存储后端：实现 `Store` trait 的 4 个原语，通过 `EngineBuilder::cache_store(...)` / `.checkpoint(...)` 注入。
 
 ## Builder Options
 
@@ -222,7 +243,7 @@ cargo test --test builder_api_test --test unified_fetcher_test
 cargo test --test callback_routing_test --test engine_infra_test --test sitemap_test
 
 # Stop conditions & multi-spider routing
-cargo test --test stop_condition_test --test multi_spider_test
+cargo test --test stop_condition_test --test multi_spider_test --test multi_spider_routing_test --test novel_10_books_test
 
 # Real network tests (requires internet, uses proxy 127.0.0.1:7897)
 cargo test --test cf_bypass_real_test -- --ignored

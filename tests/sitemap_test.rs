@@ -13,7 +13,10 @@ fn test_sitemap_builder_creates_spider() {
     })
     .build();
     assert_eq!(spider.name(), "test");
-    assert_eq!(spider.start_urls(), vec!["https://example.com/sitemap.xml"]);
+    assert_eq!(
+        spider.start_urls(),
+        vec!["https://example.com/sitemap.xml"]
+    );
 }
 
 #[tokio::test]

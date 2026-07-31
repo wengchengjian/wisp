@@ -1,0 +1,335 @@
+# Review package: 6f5c44f..324b2a9
+
+## Commits
+324b2a9 perf: status_codes 改用 DashMap 无锁计数 (P1-1a)
+
+## Files changed
+ src/crawl/engine.rs              | 20 ++++++++++++--------
+ src/crawl/mod.rs                 |  3 ++-
+ src/crawl/observability/stats.rs | 14 +++++++++++---
+ src/crawl/runner.rs              |  2 +-
+ tests/p1_status_codes_test.rs    | 33 +++++++++++++++++++++++++++++++++
+ 5 files changed, 59 insertions(+), 13 deletions(-)
+
+## Diff
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index 426814a..e5c0662 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -156,40 +156,40 @@ async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_s
+             let resp = SpiderResponse {
+                 url: req.url.clone(),
+                 status: entry.status,
+                 headers: entry.headers,
+                 body: entry.body,
+                 request: req.clone(),
+                 tracker: None,
+                 from_cache: true,
+             };
+             stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+-            record_status(stats, resp.status).await;
++            record_status(stats, resp.status);
+             return CacheResult::Hit(Box::new(resp));
+         }
+     }
+ 
+     // 开发模式 SQLite 缓存检查
+     if ctx.config.dev_mode {
+         if let Some(ref store) = ctx.shared.cache_store {
+             if let Some(cached) = store.load_cached_response(&req.url, method_str).ok().flatten() {
+                 let resp = SpiderResponse {
+                     url: req.url.clone(),
+                     status: cached.status,
+                     headers: cached.headers,
+                     body: cached.body,
+                     request: req.clone(),
+                     tracker: None,
+                     from_cache: true,
+                 };
+                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+-                record_status(stats, resp.status).await;
++                record_status(stats, resp.status);
+                 return CacheResult::Hit(Box::new(resp));
+             }
+         }
+     }
+ 
+     CacheResult::Miss
+ }
+ 
+ /// Stage 4: robots 检查 → 域名信号量 → 延迟 → fetch_dispatch → 缓存写入。
+ ///
+@@ -291,21 +291,21 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+         let crawl_ctx = build_crawl_context(ctx);
+         match ctx.shared.middleware_chain.run_request_middlewares(&mut req, &crawl_ctx).await {
+             middleware::MwAction::Skip => return,
+             middleware::MwAction::Abort(reason) => {
+                 tracing::warn!("middleware abort: {} - {}", reason, req.url);
+                 return;
+             }
+             middleware::MwAction::Respond(cached_resp) => {
+                 // 中间件短路（如缓存命中），跳过网络请求直接处理响应
+                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+-                record_status(stats, cached_resp.status).await;
++                record_status(stats, cached_resp.status);
+                 return process_response(ctx, cached_resp, &req).await;
+             }
+             _ => {}
+         }
+     }
+ 
+     // 提前计算 method_str（缓存查询与写入都需要）
+     let method_str = req.method.as_str();
+ 
+     // 3. 缓存检查
+@@ -407,21 +407,21 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse,
+         }
+     }
+     for f in follows {
+         let _ = ctx.shared.follow_tx.send(f);
+     }
+     // 通知主循环有新工作到来
+     ctx.shared.work_notify.notify_one();
+ 
+     // PageScraped 事件
+     if let Some(ref tx) = ctx.state.tx {
+-        let status_codes_snapshot = stats.status_codes.lock().await.clone();
++        let status_codes_snapshot = stats.status_codes_snapshot();
+         let _ = tx.send(CrawlEvent::PageScraped {
+             url: page_url,
+             stats: snapshot_stats_for(stats, status_codes_snapshot, ctx.state.start),
+         }).await;
+     }
+ }
+ 
+ // === 抓取分发 ===
+ 
+ /// 抓取分发：fetch → blocked 检测 → transport 级重试 fallback。
+@@ -435,21 +435,21 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
+     let fetcher_config = &ctx.config.fetcher_config;
+     let rule_engine = &ctx.shared.rule_engine;
+     let max_retries = spider.max_retries();
+     let mut attempt: u32 = 0;
+ 
+     loop {
+         attempt += 1;
+         let proxy = req.proxy.clone();
+         match fetch_page(&ctx.config.client, req, proxy.as_deref(), fetch_mode, fetcher_config, rule_engine, &ctx.shared.proxy_clients).await {
+             Ok(resp) => {
+-                record_status(stats, resp.status).await;
++                record_status(stats, resp.status);
+                 if spider.is_blocked(&resp) {
+                     stats.blocked.fetch_add(1, Ordering::SeqCst);
+                     // attempt 从 1 起；attempt <= max_retries 表示还能重试，
+                     // 故 max_retries=3 时实际尝试 4 次（attempt 1..=4）。
+                     if attempt <= max_retries {
+                         stats.retries.fetch_add(1, Ordering::SeqCst);
+                         let delay = spider.download_delay();
+                         if delay > Duration::ZERO { tokio::time::sleep(delay).await; }
+                         tracing::warn!("blocked (status={}, attempt={}/{}), retrying: {}", resp.status, attempt, max_retries, req.url);
+                         continue;
+@@ -538,23 +538,27 @@ pub(crate) fn build_crawl_context(ctx: &EngineContext) -> middleware::CrawlConte
+         spider_name: ctx.state.spider.name().to_string(),
+         fetch_mode: ctx.config.fetch_mode,
+         max_concurrent: ctx.config.max_concurrent,
+         max_pages: ctx.config.engine_max_pages,
+         obey_robots: ctx.config.obey_robots,
+         pages_crawled: ctx.state.stats.pages.load(Ordering::SeqCst),
+         errors: ctx.state.stats.errors.load(Ordering::SeqCst),
+     }
+ }
+ 
+-async fn record_status(stats: &Arc<SpiderStats>, status: u16) {
+-    let mut m = stats.status_codes.lock().await;
+-    *m.entry(status).or_insert(0) += 1;
++/// 同步记录状态码计数（DashMap entry 原子累加，无 await）。
++pub fn record_status(stats: &Arc<SpiderStats>, status: u16) {
++    stats
++        .status_codes
++        .entry(status)
++        .and_modify(|c| { c.fetch_add(1, Ordering::Relaxed); })
++        .or_insert(AtomicUsize::new(1));
+ }
+ 
+ async fn apply_delay(ctx: &EngineContext, url: &str, spider: &Arc<dyn Spider>, obey_robots: bool) {
+     let mut delay = spider.download_delay();
+     if obey_robots {
+         let robots_delay = {
+             let mut rc = ctx.shared.robots_cache.lock().await;
+             rc.crawl_delay(&ctx.config.client, url).await
+         };
+         if let Some(secs) = robots_delay {
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index 5737044..a2e3bb7 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -24,36 +24,37 @@ pub use observability::events;
+ pub use observability::stats;
+ pub use observability::state;
+ 
+ pub use state::CrawlState;
+ pub use items::{Items, JsonlWriter};
+ pub use builder::{SpiderBuilder, ClosureSpider};
+ pub use auto::{SelectorTracker, ModeRuleEngine};
+ pub use request_cache::RequestCache;
+ pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
+ pub use runner::{Engine, EngineBuilder};
++pub use engine::record_status;
+ 
+ use std::collections::{HashMap, HashSet};
+ use std::time::Duration;
+ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use async_trait::async_trait;
+ use serde::{Serialize, Deserialize};
+ use serde_json::Value;
+ use futures::stream::{self, StreamExt};
+ use tokio::sync::Mutex;
+ 
+ use crate::error::{WispError, Result};
+ use crate::http::{self, Client};
+ use crate::parser::{Node, NodeList};
+ use crate::fetcher::FetchMode;
+-use self::stats::SpiderStats;
++pub use self::stats::SpiderStats;
+ 
+ /// HTTP method for spider requests.
+ #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+ pub enum Method { Get, Post, Put, Delete }
+ 
+ impl Method {
+     /// 返回标准 HTTP 动词字符串（大写）。
+     pub fn as_str(&self) -> &'static str {
+         match self {
+             Method::Get => "GET",
+diff --git a/src/crawl/observability/stats.rs b/src/crawl/observability/stats.rs
+index 33532f1..6d78632 100644
+--- a/src/crawl/observability/stats.rs
++++ b/src/crawl/observability/stats.rs
+@@ -1,49 +1,57 @@
+ //! Per-spider 统计计数器。
+ 
+ use std::collections::HashMap;
+ use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use std::time::{Duration, Instant};
+-use tokio::sync::Mutex;
++use dashmap::DashMap;
+ 
+ /// 单个 Spider 的运行时统计。引擎为每个 Spider 持有一个实例。
+ pub struct SpiderStats {
+     pub pages: AtomicUsize,
+     pub items: AtomicUsize,
+     pub errors: AtomicUsize,
+     pub blocked: AtomicUsize,
+     pub retries: AtomicUsize,
+     pub offsite: AtomicUsize,
+     pub cache_hits: AtomicUsize,
+     /// 在飞请求数。使用 Arc 以便 InFlightGuard 克隆。
+     pub in_flight: Arc<AtomicUsize>,
+-    pub status_codes: Mutex<HashMap<u16, usize>>,
++    pub status_codes: DashMap<u16, AtomicUsize>,
+     pub start: Instant,
+ }
+ 
+ impl SpiderStats {
+     pub fn new() -> Self {
+         Self {
+             pages: AtomicUsize::new(0),
+             items: AtomicUsize::new(0),
+             errors: AtomicUsize::new(0),
+             blocked: AtomicUsize::new(0),
+             retries: AtomicUsize::new(0),
+             offsite: AtomicUsize::new(0),
+             cache_hits: AtomicUsize::new(0),
+             in_flight: Arc::new(AtomicUsize::new(0)),
+-            status_codes: Mutex::new(HashMap::new()),
++            status_codes: DashMap::new(),
+             start: Instant::now(),
+         }
+     }
+ 
+     pub fn pages(&self) -> usize { self.pages.load(Ordering::SeqCst) }
+     pub fn items(&self) -> usize { self.items.load(Ordering::SeqCst) }
+     pub fn errors(&self) -> usize { self.errors.load(Ordering::SeqCst) }
+     pub fn in_flight(&self) -> usize { self.in_flight.load(Ordering::SeqCst) }
+     pub fn elapsed(&self) -> Duration { self.start.elapsed() }
++
++    /// 无锁快照状态码计数为 HashMap<u16, usize>。
++    pub fn status_codes_snapshot(&self) -> HashMap<u16, usize> {
++        self.status_codes
++            .iter()
++            .map(|r| (*r.key(), r.value().load(Ordering::SeqCst)))
++            .collect()
++    }
+ }
+ 
+ impl Default for SpiderStats {
+     fn default() -> Self { Self::new() }
+ }
+diff --git a/src/crawl/runner.rs b/src/crawl/runner.rs
+index b30b8f1..9dc6078 100644
+--- a/src/crawl/runner.rs
++++ b/src/crawl/runner.rs
+@@ -380,21 +380,21 @@ impl Engine {
+         }
+ 
+         spider.on_close().await;
+ 
+         if let Some(ref store) = self.checkpoint_store {
+             if let Err(e) = store.delete_checkpoint(&spider_name) {
+                 tracing::warn!("删除 checkpoint 失败: {}", e);
+             }
+         }
+ 
+-        let status_codes = ctx.state.stats.status_codes.lock().await.clone();
++        let status_codes = ctx.state.stats.status_codes_snapshot();
+         Ok(engine::snapshot_stats_for(&ctx.state.stats, status_codes, ctx.state.start))
+     }
+ }
+ 
+ impl EngineBuilder {
+     pub fn max_concurrent(mut self, n: usize) -> Self { self.max_concurrent = n; self }
+     pub fn max_pages(mut self, n: usize) -> Self { self.max_pages = n; self }
+     pub fn max_depth(mut self, n: u32) -> Self { self.max_depth = Some(n); self }
+     /// 设置中间件 Refetch 最大轮数（默认 5）。
+     pub fn max_refetch_rounds(mut self, n: usize) -> Self { self.max_refetch_rounds = n; self }
+diff --git a/tests/p1_status_codes_test.rs b/tests/p1_status_codes_test.rs
+new file mode 100644
+index 0000000..6266663
+--- /dev/null
++++ b/tests/p1_status_codes_test.rs
+@@ -0,0 +1,33 @@
++//! P1-1a: status_codes 用 DashMap<u16, AtomicUsize> 无锁计数。
++
++use std::sync::Arc;
++use wisp::crawl::SpiderStats;
++
++#[tokio::test]
++async fn status_codes_concurrent_increment_is_correct() {
++    let stats = Arc::new(SpiderStats::new());
++    // 并发对同一状态码累加，验证无死锁且计数正确
++    let handles: Vec<_> = (0..50)
++        .map(|_| {
++            let s = stats.clone();
++            tokio::spawn(async move {
++                for _ in 0..100 {
++                    wisp::crawl::record_status(&s, 200);
++                    wisp::crawl::record_status(&s, 404);
++                }
++            })
++        })
++        .collect();
++    for h in handles { h.await.unwrap(); }
++
++    let snap = stats.status_codes_snapshot();
++    assert_eq!(snap.get(&200).copied(), Some(5000), "200 计数应为 50*100");
++    assert_eq!(snap.get(&404).copied(), Some(5000), "404 计数应为 50*100");
++    assert_eq!(snap.len(), 2, "仅 2 个状态码");
++}
++
++#[tokio::test]
++async fn status_codes_snapshot_returns_empty_for_fresh_stats() {
++    let stats = SpiderStats::new();
++    assert!(stats.status_codes_snapshot().is_empty());
++}

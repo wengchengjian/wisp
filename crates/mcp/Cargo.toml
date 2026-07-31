@@ -1,0 +1,16 @@
+[package]
+name = "wisp-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wisp-core = { path = "../core" }
+wisp-crawl = { path = "../crawl" }
+wisp-storage = { path = "../storage" }
+wisp-parser = { path = "../parser" }
+wisp-http = { path = "../http" }
+wisp-browser = { path = "../browser" }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+wreq-util = "=3.0.0-rc.14"

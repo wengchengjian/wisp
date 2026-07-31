@@ -1,0 +1,2028 @@
+﻿=== git log --oneline ===
+d6fb90f docs: 补充 CLAUDE.md 说明 Spider 路由与终止策略 API
+9b7d117 test: 多 Spider 路由与 until 终止策略骨架测试
+fd71a81 fix: 补回 cron warning 和单 Spider checkpoint 恢复
+c9505ce refactor: 共享队列 + matches 路由 + until 终止策略
+371ee65 feat: SpiderBuilder/ClosureSpider 支持 patterns 与 until
+8e9e7a9 feat: Spider trait 加 patterns/matches/until 钩子
+1b31bcc fix: SpiderResponse 加 from_cache，修复缓存命中误统计 pages_crawled
+1aa2e75 test: StopCondition 原子与组合策略单元测试
+ac77cc3 feat: 新增 StopCondition trait 与原子/组合策略
+e6dcf83 feat: 新增 SpiderStats per-spider 统计结构
+
+=== git diff --stat ===
+ CLAUDE.md                    | 176 +++++++++++++++++
+ src/crawl/builder.rs         |  30 +++
+ src/crawl/engine.rs          | 196 +++++++++++--------
+ src/crawl/mod.rs             | 448 ++++++++++++++++++++++++-------------------
+ src/crawl/stats.rs           |  49 +++++
+ src/crawl/stop.rs            | 114 +++++++++++
+ tests/builder_api_test.rs    |   4 +
+ tests/multi_spider_test.rs   |  62 ++++++
+ tests/real_scrape_test.rs    |   2 +
+ tests/stop_condition_test.rs |  91 +++++++++
+ 10 files changed, 897 insertions(+), 275 deletions(-)
+
+=== git diff -U10 ===
+diff --git a/CLAUDE.md b/CLAUDE.md
+new file mode 100644
+index 0000000..ffd5e33
+--- /dev/null
++++ b/CLAUDE.md
+@@ -0,0 +1,176 @@
++# wisp
++
++Rust 爬虫框架。提供 Spider trait、SpiderBuilder 闭包式构建、多 Spider 共享队列引擎。
++
++## 核心概念
++
++### Spider trait (`src/crawl/mod.rs`)
++
++用户实现的核心 trait，定义爬虫行为：
++
++```rust
++#[async_trait]
++pub trait Spider: Send + Sync + 'static {
++    fn name(&self) -> &str;
++    fn start_urls(&self) -> Vec<String>;
++    async fn parse(&self, response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>);
++
++    // 可选钩子（带默认值）
++    fn allowed_domains(&self) -> HashSet<String> { HashSet::new() }
++    fn concurrent_requests(&self) -> u32 { 8 }
++    fn download_delay(&self) -> Duration { Duration::from_millis(0) }
++    fn obey_robots(&self) -> bool { true }
++    fn max_retries(&self) -> u32 { 3 }
++    fn fetcher_config(&self) -> http::Config { http::Config::default() }
++    async fn on_start(&self) {}
++    async fn on_close(&self) {}
++    async fn on_error(&self, _req: &SpiderRequest, _err: &str) {}
++    async fn on_item(&self, item: Value) -> Option<Value> { Some(item) }
++    fn is_blocked(&self, resp: &SpiderResponse) -> bool { /* 401/403/... */ }
++    fn configure_sessions(&self, _mgr: &mut session::SessionManager) {}
++    fn session_for(&self, _req: &SpiderRequest) -> &str { "default" }
++    fn fetch_mode(&self) -> FetchMode { FetchMode::Http }
++    fn auto_rules(&self) -> Vec<(String, FetchMode)> { Vec::new() }
++    fn auto_exclude(&self) -> HashSet<String> { HashSet::new() }
++    fn max_depth(&self) -> u32 { u32::MAX }
++    fn rotate_ua(&self) -> bool { false }
++    async fn on_before_request(&self, _req: &SpiderRequest) -> RequestAction { RequestAction::Proceed }
++    fn schedule(&self) -> Option<&str> { None } // Cron 表达式
++
++    // === 路由与终止（Task 1-9 新增） ===
++    fn patterns(&self) -> Vec<String> { Vec::new() }
++    fn matches(&self, url: &str) -> bool { /* 默认实现 */ }
++    fn until(&self) -> Arc<dyn StopCondition> { Arc::new(NeverStop) }
++}
++```
++
++### 路由与终止策略（Task 1-9 重构新增）
++
++#### `Spider::patterns(&self) -> Vec<String>`
++
++URL 路由匹配模式（正则字符串数组）。默认空 `Vec` 表示匹配所有 URL。
++多 Spider 共享队列时，引擎通过 `matches()` 判定 URL 应由哪个 Spider 处理。
++
++#### `Spider::matches(&self, url: &str) -> bool`
++
++默认实现：遍历 `patterns()`，任一正则匹配即返回 `true`；`patterns()` 为空时匹配所有 URL。
++用户一般无需重写，重写 `patterns()` 即可。
++
++#### `Spider::until(&self) -> Arc<dyn StopCondition>`
++
++per-spider 终止策略。默认 `NeverStop`（由引擎 `max_pages` 兜底）。
++返回 `Arc<dyn StopCondition>`，可组合使用 `and` / `or` / `not`。
++
++### SpiderBuilder (`src/crawl/builder.rs`)
++
++闭包式 Spider 构建，避免手写 trait impl：
++
++```rust
++use wisp::crawl::SpiderBuilder;
++use wisp::crawl::stop::{MaxPages, Timeout};
++use std::time::Duration;
++
++let spider = SpiderBuilder::new("quotes")
++    .start_urls(vec!["https://quotes.toscrape.com/"])
++    .concurrent(10)
++    .delay(Duration::from_millis(500))
++    .patterns(vec![r"^https://quotes\.toscrape\.com/"])  // URL 路由
++    .until(MaxPages(100).or(Timeout(Duration::from_secs(60))))  // 终止条件
++    .parse(|resp| {
++        let doc = resp.parse().unwrap();
++        let items = doc.select(".quote").iter().map(|q| {
++            serde_json::json!({ "text": q.select_one(".text").map(|n| n.text()) })
++        }).collect();
++        (items, vec![])
++    })
++    .build();
++```
++
++#### `SpiderBuilder::patterns(Vec<String>)`
++
++设置 URL 路由模式。等价于在 Spider impl 中重写 `patterns()`。
++
++#### `SpiderBuilder::until<C: StopCondition>(cond: C)`
++
++设置终止条件。等价于在 Spider impl 中重写 `until()`。
++
++### StopCondition (`src/crawl/stop.rs`)
++
++终止策略 trait，返回 `true` 表示该 Spider 停止派发新请求：
++
++```rust
++pub trait StopCondition: Send + Sync {
++    fn should_stop(&self, ctx: &StopContext) -> bool;
++    fn and<C: StopCondition + 'static>(self, other: C) -> Arc<dyn StopCondition>;
++    fn or<C: StopCondition + 'static>(self, other: C) -> Arc<dyn StopCondition>;
++    fn not(self) -> Arc<dyn StopCondition>;
++}
++```
++
++内置原子策略：
++- `MaxPages(usize)` — 已爬页数达到上限
++- `MaxItems(usize)` — 已产 item 数达到上限
++- `MaxErrors(usize)` — 错误数达到上限
++- `Timeout(Duration)` — 运行时长达到上限
++- `NeverStop` — 永不停止（默认）
++- `FnStopCondition(F)` — 闭包转 StopCondition
++
++### 多 Spider 共享队列引擎 (`src/crawl/mod.rs`)
++
++`Engine` 支持单/多 Spider，多 Spider 共享连接池/缓存/代理池：
++
++```rust
++use wisp::crawl::Engine;
++
++// 单 Spider 便捷构造
++let engine = Engine::new(spider);
++
++// 多 Spider 构造（共享队列路由）
++let engine = Engine::spiders(vec![
++    Box::new(list_spider),
++    Box::new(detail_spider),
++]);
++```
++
++#### `Engine::spiders(spiders: Vec<Box<dyn Spider>>) -> Self`
++
++多 Spider 构造。引擎根据每个 Spider 的 `matches()` 将 URL 路由到对应 Spider。
++每个 Spider 拥有独立的 `SpiderStats`、`ModeRuleEngine`、`until()` 终止策略。
++
++### SpiderResponse (`src/crawl/mod.rs`)
++
++爬取响应。Task 4 引入 `from_cache` 字段标记是否来自缓存（命中缓存不计入 `pages_crawled`）：
++
++```rust
++pub struct SpiderResponse {
++    pub url: String,
++    pub status: u16,
++    pub headers: HashMap<String, String>,
++    pub body: Vec<u8>,
++    pub request: SpiderRequest,
++    #[doc(hidden)] pub tracker: Option<Arc<Mutex<SelectorTracker>>>,
++    #[doc(hidden)] pub from_cache: bool,  // 是否命中请求缓存
++}
++```
++
++`from_cache` 和 `tracker` 虽标记为 `#[doc(hidden)]`，但属于 pub 字段，测试中构造时需显式写出：
++`tracker: None, from_cache: false`。
++
++## 测试
++
++```bash
++cargo test --lib                    # lib 单元测试
++cargo test --test stop_condition_test
++cargo test --test builder_api_test
++cargo test --test multi_spider_test
++```
++
++注意：`tests/real_scrape_test.rs`、`tests/cf_bypass_real_test.rs`、`tests/session_test.rs`
++存在预先的 GBK 编码问题（非 UTF-8），需单独修复编码后才能编译。
++
++## 构建
++
++```bash
++cargo build            # lib + bins
++cargo build --release
++```
+diff --git a/src/crawl/builder.rs b/src/crawl/builder.rs
+index 7d6118b..221be7c 100644
+--- a/src/crawl/builder.rs
++++ b/src/crawl/builder.rs
+@@ -15,20 +15,21 @@
+ //!         let doc = resp.parse().unwrap();
+ //!         let items = doc.select(".quote").iter().map(|q| {
+ //!             serde_json::json!({ "text": q.select_one(".text").map(|n| n.text()) })
+ //!         }).collect();
+ //!         (items, vec![])
+ //!     })
+ //!     .build();
+ //! ```
+ 
+ use std::collections::HashSet;
++use std::sync::Arc;
+ use std::time::Duration;
+ use async_trait::async_trait;
+ use serde_json::Value;
+ 
+ use super::{Spider, SpiderRequest, SpiderResponse};
+ use crate::http;
+ 
+ /// 瑙ｆ瀽闂寘绫诲瀷锛氭帴鏀?SpiderResponse锛岃繑鍥?(items, follow_requests)銆?
+ pub type ParseFn = Box<dyn Fn(SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) + Send + Sync + 'static>;
+ 
+@@ -46,40 +47,44 @@ pub struct SpiderBuilder {
+     delay: Duration,
+     obey_robots: bool,
+     max_retries: u32,
+     fetcher_config: http::Config,
+     fetch_mode: crate::fetcher::FetchMode,
+     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
+     auto_exclude: HashSet<String>,
+     parse_fn: Option<ParseFn>,
+     async_parse_fn: Option<AsyncParseFn>,
+     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
++    patterns: Vec<String>,
++    until_cond: Arc<dyn super::stop::StopCondition>,
+ }
+ 
+ impl SpiderBuilder {
+     /// 鍒涘缓鏂?SpiderBuilder锛坣ame 涓哄繀濉級銆?
+     pub fn new(name: &str) -> Self {
+         Self {
+             name: name.to_string(),
+             start_urls: Vec::new(),
+             allowed_domains: HashSet::new(),
+             concurrent: 8,
+             delay: Duration::ZERO,
+             obey_robots: true,
+             max_retries: 3,
+             fetcher_config: http::Config::default(),
+             fetch_mode: crate::fetcher::FetchMode::Http,
+             auto_rules: Vec::new(),
+             auto_exclude: HashSet::new(),
+             parse_fn: None,
+             async_parse_fn: None,
+             is_blocked_fn: None,
++            patterns: Vec::new(),
++            until_cond: Arc::new(super::NeverStop),
+         }
+     }
+ 
+     /// 璁剧疆璧峰 URL 鍒楄〃銆?
+     pub fn start_urls(mut self, urls: Vec<impl Into<String>>) -> Self {
+         self.start_urls = urls.into_iter().map(|u| u.into()).collect();
+         self
+     }
+ 
+     /// 璁剧疆鍏佽鐨勫煙鍚嶉泦鍚堛€?
+@@ -167,20 +172,32 @@ impl SpiderBuilder {
+ 
+     /// 鑷畾涔夐樆濉炴娴嬮€昏緫銆?
+     pub fn is_blocked<F>(mut self, f: F) -> Self
+     where
+         F: Fn(&SpiderResponse) -> bool + Send + Sync + 'static,
+     {
+         self.is_blocked_fn = Some(Box::new(f));
+         self
+     }
+ 
++    /// 设置 URL 匹配模式（正则字符串数组）。任一匹配即处理该 URL。
++    pub fn patterns(mut self, patterns: Vec<String>) -> Self {
++        self.patterns = patterns;
++        self
++    }
++
++    /// 设置终止条件策略。
++    pub fn until<C: super::stop::StopCondition + 'static>(mut self, cond: C) -> Self {
++        self.until_cond = Arc::new(cond);
++        self
++    }
++
+     /// 鏋勫缓 ClosureSpider 瀹炰緥銆?
+     ///
+     /// # Panics
+     /// 鑻ユ湭璁剧疆 parse 鎴?parse_async 闂寘鍒?panic銆?
+     pub fn build(self) -> ClosureSpider {
+         assert!(
+             self.parse_fn.is_some() || self.async_parse_fn.is_some(),
+             "SpiderBuilder: 蹇呴』璁剧疆 parse() 鎴?parse_async() 闂寘"
+         );
+         ClosureSpider {
+@@ -191,40 +208,44 @@ impl SpiderBuilder {
+             delay: self.delay,
+             obey_robots: self.obey_robots,
+             max_retries: self.max_retries,
+             fetcher_config: self.fetcher_config,
+             fetch_mode: self.fetch_mode,
+             auto_rules: self.auto_rules,
+             auto_exclude: self.auto_exclude,
+             parse_fn: self.parse_fn,
+             async_parse_fn: self.async_parse_fn,
+             is_blocked_fn: self.is_blocked_fn,
++            patterns: self.patterns,
++            until_cond: self.until_cond,
+         }
+     }
+ }
+ 
+ /// 鐢?SpiderBuilder 鏋勫缓鐨勯棴鍖呭紡 Spider銆?
+ pub struct ClosureSpider {
+     name: String,
+     start_urls: Vec<String>,
+     allowed_domains: HashSet<String>,
+     concurrent: u32,
+     delay: Duration,
+     obey_robots: bool,
+     max_retries: u32,
+     fetcher_config: http::Config,
+     fetch_mode: crate::fetcher::FetchMode,
+     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
+     auto_exclude: HashSet<String>,
+     parse_fn: Option<ParseFn>,
+     async_parse_fn: Option<AsyncParseFn>,
+     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
++    patterns: Vec<String>,
++    until_cond: Arc<dyn super::stop::StopCondition>,
+ }
+ 
+ #[async_trait]
+ impl Spider for ClosureSpider {
+     fn name(&self) -> &str { &self.name }
+     fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
+     fn allowed_domains(&self) -> HashSet<String> { self.allowed_domains.clone() }
+     fn concurrent_requests(&self) -> u32 { self.concurrent }
+     fn download_delay(&self) -> Duration { self.delay }
+     fn obey_robots(&self) -> bool { self.obey_robots }
+@@ -244,20 +265,26 @@ impl Spider for ClosureSpider {
+         }
+     }
+ 
+     fn is_blocked(&self, resp: &SpiderResponse) -> bool {
+         if let Some(ref f) = self.is_blocked_fn {
+             f(resp)
+         } else {
+             super::BLOCKED_STATUS_CODES.contains(&resp.status)
+         }
+     }
++
++    fn patterns(&self) -> Vec<String> { self.patterns.clone() }
++
++    fn until(&self) -> Arc<dyn super::stop::StopCondition> {
++        Arc::clone(&self.until_cond)
++    }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use serde_json::json;
+ 
+     #[test]
+     fn test_spider_builder_basic() {
+         let spider = SpiderBuilder::new("test")
+@@ -309,20 +336,21 @@ mod tests {
+             })
+             .build();
+ 
+         let resp = SpiderResponse {
+             url: "https://example.com/".into(),
+             status: 200,
+             headers: Default::default(),
+             body: b"<html><body><h1>Hello</h1></body></html>".to_vec(),
+             request: SpiderRequest::get("https://example.com/"),
+             tracker: None,
++            from_cache: false,
+         };
+ 
+         let (items, follows) = spider.parse(resp).await;
+         assert_eq!(items.len(), 1);
+         assert_eq!(items[0]["title"], "Hello");
+         assert!(follows.is_empty());
+     }
+ 
+     #[tokio::test]
+     async fn test_closure_spider_parse_async() {
+@@ -335,20 +363,21 @@ mod tests {
+             })
+             .build();
+ 
+         let resp = SpiderResponse {
+             url: "https://example.com/".into(),
+             status: 200,
+             headers: Default::default(),
+             body: b"<html><body><p>World</p></body></html>".to_vec(),
+             request: SpiderRequest::get("https://example.com/"),
+             tracker: None,
++            from_cache: false,
+         };
+ 
+         let (items, _) = spider.parse(resp).await;
+         assert_eq!(items[0]["text"], "World");
+     }
+ 
+     #[test]
+     fn test_closure_spider_custom_is_blocked() {
+         let spider = SpiderBuilder::new("test")
+             .start_urls(Vec::<String>::new())
+@@ -356,20 +385,21 @@ mod tests {
+             .is_blocked(|resp| resp.body.windows(7).any(|w| w == b"blocked"))
+             .build();
+ 
+         let resp = SpiderResponse {
+             url: "http://x.com".into(),
+             status: 200,
+             headers: Default::default(),
+             body: b"you are blocked".to_vec(),
+             request: SpiderRequest::get("http://x.com"),
+             tracker: None,
++            from_cache: false,
+         };
+         assert!(spider.is_blocked(&resp));
+ 
+         let ok_resp = SpiderResponse {
+             body: b"welcome".to_vec(),
+             ..resp
+         };
+         assert!(!spider.is_blocked(&ok_resp));
+     }
+ }
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index 9e316f1..af46300 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -14,111 +14,119 @@ use serde_json::Value;
+ use tokio::sync::Mutex;
+ 
+ use crate::error::Result;
+ use crate::http::{self, Client};
+ use crate::fetcher::FetchMode;
+ use super::{
+     Spider, SpiderRequest, SpiderResponse, Method,
+     CrawlStats, CrawlEvent, CrawlState,
+     auto, scheduler, robots,
+ };
++use super::stats::SpiderStats;
+ 
+ // === EngineContext: 打包所有共享状态 ===
+ 
+-/// Engine 运行时共享上下文（替代 20+ 个 Arc 变量在闭包间传递）。
++/// Engine 运行时共享上下文（所有 Spider 共用）。
++///
++/// 共享字段：client / sched / robots_cache / follow_tx / follow_rx / domain_sems /
++/// proxy_pool / cache_store / request_cache / abort_flag / start / tx / dev_mode。
++/// per-spider 字段以 Vec 数组持有，路由时按下标 `idx` 取值。
+ pub(crate) struct EngineContext {
+-    pub spider: Arc<dyn Spider>,
+     pub client: Arc<Client>,
+     pub sched: Arc<scheduler::Scheduler>,
+     pub robots_cache: Arc<Mutex<robots::RobotsCache>>,
+     pub follow_tx: tokio::sync::mpsc::UnboundedSender<SpiderRequest>,
+     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<SpiderRequest>>>,
+-    pub stats_items: Arc<AtomicUsize>,
+-    pub stats_pages: Arc<AtomicUsize>,
+-    pub stats_errors: Arc<AtomicUsize>,
+-    pub stats_blocked: Arc<AtomicUsize>,
+-    pub stats_retries: Arc<AtomicUsize>,
+-    pub stats_offsite: Arc<AtomicUsize>,
+-    pub stats_cache_hits: Arc<AtomicUsize>,
+-    pub stats_status_codes: Arc<Mutex<HashMap<u16, usize>>>,
+     pub domain_sems: Arc<Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>>,
+-    pub in_flight: Arc<AtomicUsize>,
+-    pub allowed: Arc<HashSet<String>>,
+     pub proxy_pool: Option<Arc<crate::proxy::ProxyPool>>,
+-    pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
+-    pub auto_exclude: HashSet<String>,
+     pub cache_store: Option<Arc<crate::storage::Store>>,
+-    pub fetcher_config: http::Config,
+-    pub fetch_mode: FetchMode,
+-    pub max_pages: usize,
+-    pub max_concurrent: usize,
+-    pub max_depth: u32,
+-    pub obey_robots: bool,
+-    pub dev_mode: bool,
+     pub request_cache: Option<super::request_cache::RequestCache>,
+     pub abort_flag: Arc<AtomicBool>,
+     pub start: std::time::Instant,
+     pub tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
++    pub dev_mode: bool,
++    // === per-spider 配置与统计（引擎持有多个，路由时选一个传入）===
++    pub spiders: Vec<Arc<dyn Spider>>,
++    pub stats: Vec<Arc<SpiderStats>>,
++    pub rule_engines: Vec<Arc<Mutex<auto::ModeRuleEngine>>>,
++    pub auto_excludes: Vec<HashSet<String>>,
++    pub allowed_list: Vec<Arc<HashSet<String>>>,
++    pub fetcher_configs: Vec<http::Config>,
++    pub fetch_modes: Vec<FetchMode>,
++    pub max_concurrents: Vec<usize>,
++    pub max_depths: Vec<u32>,
++    pub obey_robots_flags: Vec<bool>,
++    pub global_in_flight: Arc<AtomicUsize>,
++    pub engine_max_pages: usize,
+ }
+ 
+ // === 核心函数：处理单个请求 ===
+ 
+ /// 处理单个请求的完整流程：域名过滤 → 深度检查 → 缓存 → robots → 信号量 → 延迟 → 重试 → Auto 检查 → parse。
+-pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
++/// idx 为命中的 Spider 在 spiders/stats 数组中的下标。
++pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest, idx: usize) {
++    let spider = &ctx.spiders[idx];
++    let stats = &ctx.stats[idx];
++    let allowed = &ctx.allowed_list[idx];
++    let max_depth = ctx.max_depths[idx];
++    let max_concurrent = ctx.max_concurrents[idx];
++    let obey_robots = ctx.obey_robots_flags[idx];
++
+     // 1. 域名过滤
+-    if !ctx.allowed.is_empty() {
++    if !allowed.is_empty() {
+         if let Ok(parsed) = url::Url::parse(&req.url) {
+             if let Some(host) = parsed.host_str() {
+-                if !ctx.allowed.contains(host) {
+-                    ctx.stats_offsite.fetch_add(1, Ordering::SeqCst);
++                if !allowed.contains(host) {
++                    stats.offsite.fetch_add(1, Ordering::SeqCst);
+                     return;
+                 }
+             }
+         }
+     }
+ 
+     // 1.5. 深度检查
+-    if req.depth > ctx.max_depth {
++    if req.depth > max_depth {
+         return;
+     }
+ 
+     // 1.6. 全局控制函数检查
+     if super::control::is_cancelled(&req.url).await { return; }
+     if !super::control::wait_if_paused(&req.url).await { return; }
+     if super::control::is_shutdown() { return; }
+ 
+     // 1.7. 异步钩子检查
+-    match ctx.spider.on_before_request(&req).await {
++    match spider.on_before_request(&req).await {
+         super::RequestAction::Proceed => {},
+         super::RequestAction::Skip => { return; },
+         super::RequestAction::Delay(d) => { tokio::time::sleep(d).await; },
+         super::RequestAction::Abort => {
+             ctx.abort_flag.store(true, Ordering::SeqCst);
+             return;
+         }
+     }
+ 
+     // 2. 内存缓存检查 (RequestCache)
+     if let Some(ref rc) = ctx.request_cache {
+         if let Some(entry) = rc.get(&req.url).await {
+             let resp = SpiderResponse {
+                 url: req.url.clone(),
+                 status: entry.status,
+                 headers: entry.headers,
+                 body: entry.body,
+                 request: req.clone(),
+                 tracker: None,
++                from_cache: true,
+             };
+-            ctx.stats_cache_hits.fetch_add(1, Ordering::SeqCst);
+-            record_status(ctx, resp.status).await;
++            stats.cache_hits.fetch_add(1, Ordering::SeqCst);
++            record_status(stats, resp.status).await;
+             // 直接跳到处理结果阶段
+-            return process_response(ctx, resp, &req).await;
++            return process_response(ctx, resp, &req, idx).await;
+         }
+     }
+ 
+     // 3. 开发模式 SQLite 缓存检查
+     let method_str = match req.method {
+         Method::Get => "GET",
+         Method::Post => "POST",
+         Method::Put => "PUT",
+         Method::Delete => "DELETE",
+     };
+@@ -135,52 +143,53 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+ 
+     if let Some(cached) = cached_resp {
+         // 命中缓存
+         let resp = SpiderResponse {
+             url: req.url.clone(),
+             status: cached.status,
+             headers: cached.headers,
+             body: cached.body,
+             request: req.clone(),
+             tracker: None,
++            from_cache: true,
+         };
+-        ctx.stats_cache_hits.fetch_add(1, Ordering::SeqCst);
+-        record_status(ctx, resp.status).await;
++        stats.cache_hits.fetch_add(1, Ordering::SeqCst);
++        record_status(stats, resp.status).await;
+         final_resp = Some(resp);
+     } else {
+         // 3. Robots 检查
+-        if ctx.obey_robots {
++        if obey_robots {
+             let allowed_flag = {
+                 let mut rc = ctx.robots_cache.lock().await;
+                 rc.is_allowed(&ctx.client, &req.url).await
+             };
+             if !allowed_flag { return; }
+         }
+ 
+         // 4. 域名信号量
+         let domain = url::Url::parse(&req.url)
+             .ok()
+             .and_then(|u| u.host_str().map(|s| s.to_string()))
+             .unwrap_or_default();
+         let sem = {
+             let mut sems = ctx.domain_sems.lock().await;
+             sems.entry(domain)
+-                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(ctx.max_concurrent)))
++                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_concurrent)))
+                 .clone()
+         };
+         let _permit = sem.acquire_owned().await.unwrap();
+ 
+         // 5. 延迟
+-        apply_delay(ctx, &req.url).await;
++        apply_delay(ctx, &req.url, spider, obey_robots).await;
+ 
+         // 6. 带重试的抓取
+-        let (resp, err) = fetch_with_retry(ctx, &req).await;
++        let (resp, err) = fetch_with_retry(ctx, &req, idx).await;
+         final_resp = resp;
+         last_error = err;
+ 
+         // 7. 开发模式缓存保存
+         if ctx.dev_mode {
+             if let Some(ref store) = ctx.cache_store {
+                 if let Some(ref resp) = final_resp {
+                     let cached = crate::storage::CachedResponse {
+                         status: resp.status,
+                         headers: resp.headers.clone(),
+@@ -199,195 +208,216 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+                     status: resp.status,
+                     headers: resp.headers.clone(),
+                     body: resp.body.clone(),
+                 }).await;
+             }
+         }
+     }
+ 
+     // 8. 处理结果
+     if let Some(resp) = final_resp {
+-        process_response(ctx, resp, &req).await;
++        process_response(ctx, resp, &req, idx).await;
+     } else if let Some(err) = last_error {
+         if let Some(ref tx) = ctx.tx {
+             let _ = tx.send(CrawlEvent::Error { url: req.url.clone(), error: err }).await;
+         }
+     }
+ }
+ 
+ /// 处理已获取的响应：parse → Auto 升级 → items → events。
+-pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, req: &SpiderRequest) {
+-    ctx.stats_pages.fetch_add(1, Ordering::SeqCst);
++pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse, req: &SpiderRequest, idx: usize) {
++    let spider = &ctx.spiders[idx];
++    let stats = &ctx.stats[idx];
++
++    if !resp.from_cache {
++        stats.pages.fetch_add(1, Ordering::SeqCst);
++    }
+     let page_url = resp.url.clone();
+ 
+     let tracker_ref = resp.tracker.clone();
+-    let (mut items, mut follows) = ctx.spider.parse(resp).await;
++    let (mut items, mut follows) = spider.parse(resp).await;
+ 
+     // Auto 升级检查
+-    if ctx.fetch_mode == FetchMode::Auto {
+-        if let Some(result) = auto_upgrade_check(ctx, &tracker_ref, &page_url, req).await {
++    if ctx.fetch_modes[idx] == FetchMode::Auto {
++        if let Some(result) = auto_upgrade_check(ctx, &tracker_ref, &page_url, req, idx).await {
+             items = result.0;
+             follows = result.1;
+         }
+     }
+ 
+     // 发送 items
+     for item in items {
+-        if let Some(processed) = ctx.spider.on_item(item).await {
+-            ctx.stats_items.fetch_add(1, Ordering::SeqCst);
++        if let Some(processed) = spider.on_item(item).await {
++            stats.items.fetch_add(1, Ordering::SeqCst);
+             if let Some(ref tx) = ctx.tx {
+                 let _ = tx.send(CrawlEvent::Item(processed)).await;
+             }
+         }
+     }
+     for f in follows {
+         let _ = ctx.follow_tx.send(f);
+     }
+ 
+     // PageScraped 事件
+     if let Some(ref tx) = ctx.tx {
+-        let status_codes_snapshot = ctx.stats_status_codes.lock().await.clone();
++        let status_codes_snapshot = stats.status_codes.lock().await.clone();
+         let _ = tx.send(CrawlEvent::PageScraped {
+             url: page_url,
+-            stats: snapshot_stats(ctx, status_codes_snapshot),
++            stats: snapshot_stats_for(stats, status_codes_snapshot, ctx.start),
+         }).await;
+     }
+ }
+ 
+ // === 带重试的抓取 ===
+ 
+ /// 重试循环：fetch → blocked 检测 → 重试/成功/失败。
+-async fn fetch_with_retry(ctx: &EngineContext, req: &SpiderRequest) -> (Option<SpiderResponse>, Option<String>) {
+-    let max_retries = ctx.spider.max_retries();
++async fn fetch_with_retry(ctx: &EngineContext, req: &SpiderRequest, idx: usize) -> (Option<SpiderResponse>, Option<String>) {
++    let spider = &ctx.spiders[idx];
++    let stats = &ctx.stats[idx];
++    let fetch_mode = ctx.fetch_modes[idx];
++    let fetcher_config = &ctx.fetcher_configs[idx];
++    let rule_engine = &ctx.rule_engines[idx];
++    let max_retries = spider.max_retries();
+     let mut attempt: u32 = 0;
+ 
+     loop {
+         attempt += 1;
+         let proxy = ctx.proxy_pool.as_ref().and_then(|p| p.next());
+-        match fetch_page(&ctx.client, req, proxy.as_deref(), ctx.fetch_mode, &ctx.fetcher_config, &ctx.rule_engine).await {
++        match fetch_page(&ctx.client, req, proxy.as_deref(), fetch_mode, fetcher_config, rule_engine).await {
+             Ok(resp) => {
+-                record_status(ctx, resp.status).await;
+-                if ctx.spider.is_blocked(&resp) {
+-                    ctx.stats_blocked.fetch_add(1, Ordering::SeqCst);
++                record_status(stats, resp.status).await;
++                if spider.is_blocked(&resp) {
++                    stats.blocked.fetch_add(1, Ordering::SeqCst);
+                     if attempt <= max_retries {
+-                        ctx.stats_retries.fetch_add(1, Ordering::SeqCst);
+-                        let delay = ctx.spider.download_delay();
++                        stats.retries.fetch_add(1, Ordering::SeqCst);
++                        let delay = spider.download_delay();
+                         if delay > Duration::ZERO { tokio::time::sleep(delay).await; }
+                         tracing::warn!("blocked (status={}, attempt={}/{}), retrying: {}", resp.status, attempt, max_retries, req.url);
+                         continue;
+                     }
+-                    ctx.stats_errors.fetch_add(1, Ordering::SeqCst);
++                    stats.errors.fetch_add(1, Ordering::SeqCst);
+                     return (None, Some(format!("blocked after {} retries (status={})", max_retries, resp.status)));
+                 }
+                 return (Some(resp), None);
+             }
+             Err(e) => {
+                 if attempt <= max_retries {
+-                    ctx.stats_retries.fetch_add(1, Ordering::SeqCst);
+-                    let delay = ctx.spider.download_delay();
++                    stats.retries.fetch_add(1, Ordering::SeqCst);
++                    let delay = spider.download_delay();
+                     if delay > Duration::ZERO { tokio::time::sleep(delay).await; }
+                     tracing::warn!("fetch error (attempt={}/{}): {} - {}", attempt, max_retries, e, req.url);
+                     continue;
+                 }
+-                ctx.stats_errors.fetch_add(1, Ordering::SeqCst);
+-                ctx.spider.on_error(req, &e.to_string()).await;
++                stats.errors.fetch_add(1, Ordering::SeqCst);
++                spider.on_error(req, &e.to_string()).await;
+                 return (None, Some(e.to_string()));
+             }
+         }
+     }
+ }
+ 
+ // === Auto 升级检查 ===
+ 
+ /// Auto 模式：检查 tracker 中选择器是否有 0 匹配，若有则升级 Dynamic 重取。
+ /// 返回 Some((items, follows)) 表示已升级并重新 parse；None 表示无需升级。
+ async fn auto_upgrade_check(
+     ctx: &EngineContext,
+     tracker: &Option<Arc<std::sync::Mutex<auto::SelectorTracker>>>,
+     page_url: &str,
+     req: &SpiderRequest,
++    idx: usize,
+ ) -> Option<(Vec<Value>, Vec<SpiderRequest>)> {
++    let spider = &ctx.spiders[idx];
++    let fetcher_config = &ctx.fetcher_configs[idx];
++    let rule_engine = &ctx.rule_engines[idx];
++    let auto_exclude = &ctx.auto_excludes[idx];
+     let tracker = tracker.as_ref()?;
+-    let needs = tracker.lock().unwrap().needs_upgrade(&ctx.auto_exclude);
++    let needs = tracker.lock().unwrap().needs_upgrade(auto_exclude);
+ 
+     if needs {
+         {
+-            let mut engine = ctx.rule_engine.lock().await;
++            let mut engine = rule_engine.lock().await;
+             engine.learn(page_url, FetchMode::Dynamic);
+         }
+         tracing::info!("Auto: '{}' 选择器无内容，升级 Dynamic", page_url);
+         let proxy = ctx.proxy_pool.as_ref().and_then(|p| p.next());
+         let dynamic_resp = fetch_page_inner(
+-            &ctx.client, req, proxy.as_deref(), FetchMode::Dynamic, &ctx.fetcher_config,
++            &ctx.client, req, proxy.as_deref(), FetchMode::Dynamic, fetcher_config,
+         ).await;
+         if let Ok(new_resp) = dynamic_resp {
+-            let (items, follows) = ctx.spider.parse(new_resp).await;
++            let (items, follows) = spider.parse(new_resp).await;
+             return Some((items, follows));
+         }
+         None
+     } else {
+-        let mut engine = ctx.rule_engine.lock().await;
++        let mut engine = rule_engine.lock().await;
+         engine.learn(page_url, FetchMode::Http);
+         None
+     }
+ }
+ 
+ // === 辅助函数 ===
+ 
+-async fn record_status(ctx: &EngineContext, status: u16) {
+-    let mut codes = ctx.stats_status_codes.lock().await;
+-    *codes.entry(status).or_insert(0) += 1;
++async fn record_status(stats: &Arc<SpiderStats>, status: u16) {
++    let mut m = stats.status_codes.lock().await;
++    *m.entry(status).or_insert(0) += 1;
+ }
+ 
+-async fn apply_delay(ctx: &EngineContext, url: &str) {
+-    let mut delay = ctx.spider.download_delay();
+-    if ctx.obey_robots {
++async fn apply_delay(ctx: &EngineContext, url: &str, spider: &Arc<dyn Spider>, obey_robots: bool) {
++    let mut delay = spider.download_delay();
++    if obey_robots {
+         let robots_delay = {
+             let mut rc = ctx.robots_cache.lock().await;
+             rc.crawl_delay(&ctx.client, url).await
+         };
+         if let Some(secs) = robots_delay {
+             let robots_dur = Duration::from_secs_f64(secs);
+             if robots_dur > delay { delay = robots_dur; }
+         }
+     }
+     if delay > Duration::ZERO {
+         tokio::time::sleep(delay).await;
+     }
+ }
+ 
+-pub(crate) fn snapshot_stats(ctx: &EngineContext, status_codes: HashMap<u16, usize>) -> CrawlStats {
++/// 从单个 SpiderStats 构造 CrawlStats 快照。
++pub(crate) fn snapshot_stats_for(
++    stats: &Arc<SpiderStats>,
++    status_codes: HashMap<u16, usize>,
++    start: std::time::Instant,
++) -> CrawlStats {
+     CrawlStats {
+-        items_scraped: ctx.stats_items.load(Ordering::SeqCst),
+-        pages_crawled: ctx.stats_pages.load(Ordering::SeqCst),
+-        errors: ctx.stats_errors.load(Ordering::SeqCst),
+-        duration: ctx.start.elapsed(),
+-        blocked_requests: ctx.stats_blocked.load(Ordering::SeqCst),
+-        retry_count: ctx.stats_retries.load(Ordering::SeqCst),
++        items_scraped: stats.items.load(Ordering::SeqCst),
++        pages_crawled: stats.pages.load(Ordering::SeqCst),
++        errors: stats.errors.load(Ordering::SeqCst),
++        duration: start.elapsed(),
++        blocked_requests: stats.blocked.load(Ordering::SeqCst),
++        retry_count: stats.retries.load(Ordering::SeqCst),
+         status_code_counts: status_codes,
+-        offsite_requests_count: ctx.stats_offsite.load(Ordering::SeqCst),
+-        cache_hits: ctx.stats_cache_hits.load(Ordering::SeqCst),
++        offsite_requests_count: stats.offsite.load(Ordering::SeqCst),
++        cache_hits: stats.cache_hits.load(Ordering::SeqCst),
+         ..Default::default()
+     }
+ }
+ 
+-/// Checkpoint 保存。
++/// Checkpoint 保存（仅单 Spider 时调用）。
+ pub(crate) async fn save_checkpoint(
+     store: &crate::storage::Store,
+     spider_name: &str,
+     sched: &scheduler::Scheduler,
+-    ctx: &EngineContext,
++    stats: &Arc<SpiderStats>,
+ ) {
+     let pending = sched.pending_urls().await;
++    let snapshot = snapshot_stats_for(stats, HashMap::new(), stats.start);
+     let state = CrawlState::from_stats(
+         spider_name.to_string(),
+-        &snapshot_stats(ctx, HashMap::new()),
++        &snapshot,
+         pending,
+     );
+     match bincode::serialize(&state) {
+         Ok(blob) => {
+             if let Err(e) = store.save_checkpoint(spider_name, &blob, state.saved_at.timestamp()) {
+                 tracing::warn!("checkpoint 保存失败: {}", e);
+             }
+         }
+         Err(e) => {
+             tracing::warn!("checkpoint 序列化失败: {}", e);
+@@ -440,20 +470,21 @@ pub(crate) async fn fetch_page_inner(
+             builder = builder.proxy(proxy);
+         }
+         let resp = builder.get(&req.url).await?;
+         return Ok(SpiderResponse {
+             url: resp.url.clone(),
+             status: resp.status,
+             headers: resp.headers.clone(),
+             body: resp.body.clone(),
+             request: req.clone(),
+             tracker: None,
++            from_cache: false,
+         });
+     }
+ 
+     // Http 模式
+     let effective_client: Client;
+     let need_custom_client = proxy_url.is_some() || config.rotate_ua;
+     let use_client = if need_custom_client {
+         let mut builder = Client::builder()
+             .timeout(client.config_ref().timeout);
+         if let Some(proxy) = proxy_url {
+@@ -476,20 +507,21 @@ pub(crate) async fn fetch_page_inner(
+         Method::Delete => use_client.delete(&req.url).await?,
+     };
+ 
+     Ok(SpiderResponse {
+         url: resp.url.clone(),
+         status: resp.status,
+         headers: resp.headers.clone(),
+         body: resp.body.clone(),
+         request: req.clone(),
+         tracker: None,
++        from_cache: false,
+     })
+ }
+ 
+ // === InFlightGuard ===
+ 
+ pub(crate) struct InFlightGuard {
+     pub counter: Arc<AtomicUsize>,
+ }
+ 
+ impl Drop for InFlightGuard {
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index 7804152..8e27949 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -1,47 +1,51 @@
+ //! Spider-based crawling engine.
+ 
+ pub mod scheduler;
+ pub mod robots;
+ pub mod cache;
+ pub mod templates;
+ pub mod state;
++pub mod stats;
++pub mod stop;
+ pub mod items;
+ pub mod builder;
+ pub mod session;
+ pub mod auto;
+ pub mod engine;
+ pub mod request_cache;
+ pub mod control;
+ pub mod output;
+ pub mod cron;
+ pub use state::CrawlState;
+ pub use items::{Items, JsonlWriter};
+ pub use builder::{SpiderBuilder, ClosureSpider};
+ pub use session::{SessionManager, FetcherType};
+ pub use auto::{SelectorTracker, ModeRuleEngine};
+ pub use request_cache::RequestCache;
++pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
+ 
+ use std::collections::{HashMap, HashSet};
+ use std::time::Duration;
+-use std::sync::atomic::{AtomicUsize, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use async_trait::async_trait;
+ use serde::{Serialize, Deserialize};
+ use serde_json::Value;
+ use futures::stream::{self, StreamExt};
+ use tokio::sync::Mutex;
+ 
+ use crate::error::{WispError, Result};
+ use crate::http::{self, Client};
+ use crate::parser::{Node, NodeList};
+ use crate::fetcher::FetchMode;
++use self::stats::SpiderStats;
+ 
+ /// HTTP method for spider requests.
+ #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+ pub enum Method { Get, Post, Put, Delete }
+ 
+ /// 请求钩子的决策结果。
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum RequestAction {
+     /// 正常执行
+     Proceed,
+@@ -86,20 +90,23 @@ impl SpiderRequest {
+ #[derive(Debug, Clone)]
+ pub struct SpiderResponse {
+     pub url: String,
+     pub status: u16,
+     pub headers: HashMap<String, String>,
+     pub body: Vec<u8>,
+     pub request: SpiderRequest,
+     /// Auto 模式选择器追踪器
+     #[doc(hidden)]
+     pub tracker: Option<Arc<std::sync::Mutex<auto::SelectorTracker>>>,
++    /// 是否来自缓存（缓存命中不算 pages_crawled）。
++    #[doc(hidden)]
++    pub from_cache: bool,
+ }
+ 
+ impl SpiderResponse {
+     pub fn text(&self) -> Result<String> {
+         String::from_utf8(self.body.clone())
+             .map_err(|e| WispError::CdpError(format!("utf8 decode: {e}")))
+     }
+     pub fn parse(&self) -> Result<Node> {
+         let text = self.text()?;
+         Ok(Node::from_html(&text))
+@@ -180,20 +187,42 @@ pub trait Spider: Send + Sync + 'static {
+     /// 最大爬取深度。默认无限制。
+     fn max_depth(&self) -> u32 { u32::MAX }
+     /// 每次请求随机轮换 User-Agent。
+     fn rotate_ua(&self) -> bool { false }
+     /// 每个请求执行前的异步钩子。默认返回 Proceed。
+     async fn on_before_request(&self, _req: &SpiderRequest) -> RequestAction {
+         RequestAction::Proceed
+     }
+     /// Cron 表达式（标准 5 字段）。返回 None 表示立即执行一次（默认行为）。
+     fn schedule(&self) -> Option<&str> { None }
++
++    // === 路由与终止（新增） ===
++
++    /// URL 匹配模式（字符串数组，内部自动编译为正则）。默认空 Vec（匹配所有）。
++    fn patterns(&self) -> Vec<String> { Vec::new() }
++
++    /// URL 匹配判定。默认实现遍历 patterns()，任一正则匹配即返回 true。
++    /// patterns() 为空时匹配所有 URL。
++    fn matches(&self, url: &str) -> bool {
++        let patterns = self.patterns();
++        if patterns.is_empty() {
++            return true;
++        }
++        patterns.iter().any(|p| {
++            regex::Regex::new(p).map(|re| re.is_match(url)).unwrap_or(false)
++        })
++    }
++
++    /// 终止条件。默认永不停止（由引擎 max_pages 兜底）。
++    fn until(&self) -> Arc<dyn StopCondition> {
++        Arc::new(NeverStop)
++    }
+ }
+ 
+ /// 默认阻塞状态码：401/403/407/429/444/500/502/503/504
+ pub const BLOCKED_STATUS_CODES: &[u16] = &[401, 403, 407, 429, 444, 500, 502, 503, 504];
+ 
+ /// Crawling statistics.
+ #[derive(Debug, Clone, Default)]
+ pub struct CrawlStats {
+     pub items_scraped: usize,
+     pub pages_crawled: usize,
+@@ -367,243 +396,275 @@ impl Engine {
+                             Some(e) => Some((e, (driver, rx, true))),
+                             None => None,
+                         }
+                     }
+                 }
+             },
+         );
+         CrawlStream { inner: Box::pin(s) }
+     }
+ 
+-    /// 内部运行逻辑：对每个 Spider 启动独立 task，共享连接池/代理池。
++    /// 内部运行逻辑：共享队列 + Spider 路由。
+     async fn run_with_sender(self, tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>) -> Result<Vec<CrawlStats>> {
+-        // 构建共享 HTTP 客户端（用第一个 spider 的 fetcher_config，或默认）
++        if self.spiders.is_empty() {
++            return Ok(Vec::new());
++        }
++
++        // 构建共享 HTTP 客户端（用第一个 spider 的 fetcher_config）
+         let fetcher_config = self.spiders.first()
+             .map(|s| s.fetcher_config())
+             .unwrap_or_default();
+         let client = Arc::new(
+             Client::builder()
+                 .timeout(fetcher_config.timeout)
+                 .build()?
+         );
+ 
+-        let mut futures_list: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = Result<CrawlStats>>>>> = Vec::new();
+-        for spider in self.spiders {
+-            let client = client.clone();
+-            let proxy_pool = self.proxy_pool.clone();
+-            let cache_store = self.cache_store.clone();
+-            let checkpoint_store = self.checkpoint_store.clone();
+-            let tx = tx.clone();
+-            let max_pages = self.max_pages;
+-            let max_concurrent = self.max_concurrent.unwrap_or(spider.concurrent_requests() as usize);
+-            let max_depth = self.max_depth.unwrap_or(spider.max_depth());
+-            let checkpoint_interval = self.checkpoint_interval;
+-            let dev_mode = self.development_mode;
+-            let request_cache = self.request_cache.clone();
+-
+-            match spider.schedule() {
+-                None => {
+-                    // 立即执行一次
+-                    let spider: Arc<dyn Spider> = Arc::from(spider);
+-                    futures_list.push(Box::pin(async move {
+-                        run_spider_once(
+-                            spider, client, proxy_pool, cache_store, checkpoint_store,
+-                            tx, max_pages, max_concurrent, max_depth, checkpoint_interval, dev_mode,
+-                            request_cache,
+-                        ).await
+-                    }));
+-                }
+-                Some(expr) => {
+-                    // Cron 定时循环
+-                    let cron = cron::CronExpr::parse(expr)?;
+-                    let spider: Arc<dyn Spider> = Arc::from(spider);
+-                    futures_list.push(Box::pin(async move {
+-                        loop {
+-                            cron.wait_until_next().await;
+-                            if control::is_shutdown() { break; }
+-                            let _ = run_spider_once(
+-                                spider.clone(), client.clone(), proxy_pool.clone(),
+-                                cache_store.clone(), checkpoint_store.clone(),
+-                                tx.clone(), max_pages, max_concurrent, max_depth,
+-                                checkpoint_interval, dev_mode, request_cache.clone(),
+-                            ).await;
++        // 提取 Engine 级配置（部分移动）
++        let max_concurrent_opt = self.max_concurrent;
++        let max_depth_opt = self.max_depth;
++        let engine_max_pages = self.max_pages;
++        let checkpoint_store = self.checkpoint_store;
++        let checkpoint_interval = self.checkpoint_interval;
++        let cache_store = self.cache_store;
++        let dev_mode = self.development_mode;
++        let proxy_pool = self.proxy_pool;
++        let request_cache = self.request_cache;
++
++        // per-spider 配置数组
++        let spiders: Vec<Arc<dyn Spider>> = self.spiders.into_iter().map(|s| Arc::from(s)).collect();
++        let n_spiders = spiders.len();
++        let stats: Vec<Arc<SpiderStats>> = (0..n_spiders).map(|_| Arc::new(SpiderStats::new())).collect();
++        let rule_engines: Vec<Arc<Mutex<auto::ModeRuleEngine>>> = spiders.iter().map(|s| {
++            let mut re = auto::ModeRuleEngine::new();
++            for (pattern, mode) in s.auto_rules() {
++                let _ = re.add_user_rule(&pattern, mode);
++            }
++            Arc::new(Mutex::new(re))
++        }).collect();
++        let auto_excludes: Vec<HashSet<String>> = spiders.iter().map(|s| s.auto_exclude()).collect();
++        let allowed_list: Vec<Arc<HashSet<String>>> = spiders.iter().map(|s| Arc::new(s.allowed_domains())).collect();
++        let fetcher_configs: Vec<http::Config> = spiders.iter().map(|s| s.fetcher_config()).collect();
++        let fetch_modes: Vec<FetchMode> = spiders.iter().map(|s| s.fetch_mode()).collect();
++        let max_concurrents: Vec<usize> = spiders.iter().map(|s| {
++            max_concurrent_opt.unwrap_or(s.concurrent_requests() as usize)
++        }).collect();
++        let max_depths: Vec<u32> = spiders.iter().map(|s| {
++            max_depth_opt.unwrap_or(s.max_depth())
++        }).collect();
++        let obey_robots_flags: Vec<bool> = spiders.iter().map(|s| s.obey_robots()).collect();
++
++        // 共享调度器
++        let sched = Arc::new(scheduler::Scheduler::new());
++        let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
++        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
++
++        // Fix #1: 检查 cron 调度。共享队列架构暂不支持 cron 循环，显式 warning 避免静默回归。
++        // （完整 cron 循环是后续任务，这里只警告不实现。）
++        for spider in &spiders {
++            if let Some(cron_expr) = spider.schedule() {
++                tracing::warn!(
++                    "Spider '{}' 配置了 cron 调度 '{}'，当前共享队列架构暂不支持 cron 循环，将仅执行一次",
++                    spider.name(),
++                    cron_expr
++                );
++            }
++        }
++
++        // 单 Spider 名（用于 checkpoint load/save/delete）
++        let spider_name = if n_spiders == 1 { spiders[0].name().to_string() } else { "multi".to_string() };
++
++        // Fix #2: 单 Spider 时从 checkpoint 恢复 pending URLs（与旧 run_spider_once 行为一致）。
++        // 多 Spider 跳过恢复（plan:1563 要求 checkpoint 仅在单 Spider 时生效）。
++        // checkpoint 删除仍由尾部既有逻辑在运行结束后执行。
++        let mut restored_pending = false;
++        if n_spiders == 1 {
++            if let Some(ref store) = checkpoint_store {
++                if let Some(blob) = store.load_checkpoint(&spider_name)? {
++                    match bincode::deserialize::<CrawlState>(&blob) {
++                        Ok(state) => {
++                            if !state.pending_urls.is_empty() {
++                                let n = state.pending_urls.len();
++                                for req in state.pending_urls {
++                                    sched.push(req).await;
++                                }
++                                tracing::info!(
++                                    "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs",
++                                    spider_name,
++                                    n
++                                );
++                                restored_pending = true;
++                            }
+                         }
+-                        Ok(CrawlStats::default())
+-                    }));
++                        Err(e) => tracing::warn!("checkpoint 反序列化失败: {}", e),
++                    }
+                 }
+             }
+         }
+ 
+-        let results = futures::future::join_all(futures_list).await;
+-        Ok(results.into_iter().filter_map(|s| s.ok()).collect())
+-    }
+-}
+-
+-/// 运行单个 Spider 一轮爬取。
+-#[allow(clippy::too_many_arguments)]
+-async fn run_spider_once(
+-    spider: Arc<dyn Spider>,
+-    client: Arc<Client>,
+-    proxy_pool: Option<Arc<crate::proxy::ProxyPool>>,
+-    cache_store: Option<Arc<crate::storage::Store>>,
+-    checkpoint_store: Option<Arc<crate::storage::Store>>,
+-    tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
+-    max_pages: usize,
+-    max_concurrent: usize,
+-    max_depth: u32,
+-    checkpoint_interval: usize,
+-    dev_mode: bool,
+-    request_cache: Option<RequestCache>,
+-) -> Result<CrawlStats> {
+-    let start = std::time::Instant::now();
+-    let spider_name = spider.name().to_string();
+-    let fetcher_config = spider.fetcher_config();
+-
+-    // 构建 per-spider rule engine
+-    let mut rule_engine = auto::ModeRuleEngine::new();
+-    for (pattern, mode) in spider.auto_rules() {
+-        let _ = rule_engine.add_user_rule(&pattern, mode);
+-    }
+-    let auto_exclude = spider.auto_exclude();
+-
+-    // checkpoint 恢复
+-    let mut restored_state: Option<CrawlState> = None;
+-    if let Some(ref store) = checkpoint_store {
+-        if let Some(blob) = store.load_checkpoint(&spider_name)? {
+-            match bincode::deserialize::<CrawlState>(&blob) {
+-                Ok(state) => { restored_state = Some(state); }
+-                Err(e) => { tracing::warn!("checkpoint 反序列化失败: {}", e); }
++        // 把所有 spider 的 start_urls 推入共享队列（仅在未恢复 checkpoint 时）
++        if !restored_pending {
++            for spider in &spiders {
++                for url in spider.start_urls() {
++                    sched.push(SpiderRequest::get(&url)).await;
++                }
+             }
+         }
+-    }
+ 
+-    let start_urls = spider.start_urls();
+-    let allowed = spider.allowed_domains();
+-    let obey_robots = spider.obey_robots();
+-    let fetch_mode = spider.fetch_mode();
+-    spider.on_start().await;
+-
+-    let sched = Arc::new(scheduler::Scheduler::new());
+-    let robots_cache = Arc::new(Mutex::new(robots::RobotsCache::new()));
+-
+-    if let Some(ref state) = restored_state {
+-        for req in &state.pending_urls { sched.push(req.clone()).await; }
+-    } else {
+-        for url in start_urls { sched.push(SpiderRequest::get(&url)).await; }
+-    }
+-
+-    let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<SpiderRequest>();
+-
+-    let ctx = Arc::new(engine::EngineContext {
+-        spider: spider.clone(),
+-        client,
+-        sched: sched.clone(),
+-        robots_cache,
+-        follow_tx: follow_tx.clone(),
+-        follow_rx: Arc::new(Mutex::new(follow_rx)),
+-        stats_items: Arc::new(AtomicUsize::new(0)),
+-        stats_pages: Arc::new(AtomicUsize::new(0)),
+-        stats_errors: Arc::new(AtomicUsize::new(0)),
+-        stats_blocked: Arc::new(AtomicUsize::new(0)),
+-        stats_retries: Arc::new(AtomicUsize::new(0)),
+-        stats_offsite: Arc::new(AtomicUsize::new(0)),
+-        stats_cache_hits: Arc::new(AtomicUsize::new(0)),
+-        stats_status_codes: Arc::new(Mutex::new(HashMap::new())),
+-        domain_sems: Arc::new(Mutex::new(HashMap::new())),
+-        in_flight: Arc::new(AtomicUsize::new(0)),
+-        allowed: Arc::new(allowed),
+-        proxy_pool,
+-        rule_engine: Arc::new(Mutex::new(rule_engine)),
+-        auto_exclude,
+-        cache_store,
+-        fetcher_config,
+-        fetch_mode,
+-        max_pages,
+-        max_concurrent,
+-        max_depth,
+-        obey_robots,
+-        dev_mode,
+-        request_cache,
+-        abort_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+-        start,
+-        tx,
+-    });
+-
+-    // 构建并发流
+-    let stream = {
+-        let ctx = ctx.clone();
+-        stream::unfold((), move |_| {
+-            let ctx = ctx.clone();
+-            async move {
+-                loop {
+-                    // 全局停止检查
+-                    if control::is_shutdown() || ctx.abort_flag.load(Ordering::SeqCst) {
+-                        return None;
+-                    }
++        // 唤醒所有 spider
++        for spider in &spiders {
++            spider.on_start().await;
++        }
+ 
+-                    let mut rx_guard = ctx.follow_rx.lock().await;
+-                    while let Ok(req) = rx_guard.try_recv() {
+-                        ctx.sched.push(req).await;
+-                    }
+-                    drop(rx_guard);
++        let ctx = Arc::new(engine::EngineContext {
++            client,
++            sched: sched.clone(),
++            robots_cache,
++            follow_tx: follow_tx.clone(),
++            follow_rx: Arc::new(Mutex::new(follow_rx)),
++            domain_sems: Arc::new(Mutex::new(HashMap::new())),
++            proxy_pool,
++            cache_store,
++            request_cache,
++            abort_flag: Arc::new(AtomicBool::new(false)),
++            start: std::time::Instant::now(),
++            tx,
++            dev_mode,
++            spiders: spiders.clone(),
++            stats: stats.clone(),
++            rule_engines,
++            auto_excludes,
++            allowed_list,
++            fetcher_configs,
++            fetch_modes,
++            max_concurrents,
++            max_depths,
++            obey_robots_flags,
++            global_in_flight: Arc::new(AtomicUsize::new(0)),
++            engine_max_pages,
++        });
+ 
+-                    if ctx.stats_pages.load(Ordering::SeqCst) + ctx.in_flight.load(Ordering::SeqCst) >= max_pages {
+-                        if ctx.in_flight.load(Ordering::SeqCst) == 0 { return None; }
+-                        tokio::task::yield_now().await;
+-                        continue;
+-                    }
++        // 构建并发流：共享队列 + 路由
++        let max_total_concurrent: usize = ctx.max_concurrents.iter().copied().max().unwrap_or(8);
++        let stream = {
++            let ctx = ctx.clone();
++            stream::unfold((), move |_| {
++                let ctx = ctx.clone();
++                async move {
++                    loop {
++                        if control::is_shutdown() || ctx.abort_flag.load(Ordering::SeqCst) {
++                            return None;
++                        }
++
++                        // drain follow channel
++                        let mut rx_guard = ctx.follow_rx.lock().await;
++                        while let Ok(req) = rx_guard.try_recv() {
++                            ctx.sched.push(req).await;
++                        }
++                        drop(rx_guard);
+ 
+-                    let req = match ctx.sched.pop().await {
+-                        Some(req) => req,
+-                        None => {
+-                            if ctx.in_flight.load(Ordering::SeqCst) == 0 { return None; }
++                        // 引擎级 max_pages 兜底
++                        let total_pages: usize = ctx.stats.iter().map(|s| s.pages.load(Ordering::SeqCst)).sum();
++                        if total_pages + ctx.global_in_flight.load(Ordering::SeqCst) >= ctx.engine_max_pages {
++                            if ctx.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
+                             tokio::task::yield_now().await;
+                             continue;
+                         }
+-                    };
+-
+-                    ctx.in_flight.fetch_add(1, Ordering::SeqCst);
+-                    let ctx_c = ctx.clone();
+-                    let fut = async move {
+-                        let _guard = engine::InFlightGuard { counter: ctx_c.in_flight.clone() };
+-                        engine::process_request(&ctx_c, req).await;
+-                    };
+-                    return Some((fut, ()));
++
++                        let req = match ctx.sched.pop().await {
++                            Some(req) => req,
++                            None => {
++                                if ctx.global_in_flight.load(Ordering::SeqCst) == 0 { return None; }
++                                tokio::task::yield_now().await;
++                                continue;
++                            }
++                        };
++
++                        // 路由：找 matches(url) 的 Spider
++                        let mut chosen_idx: Option<usize> = None;
++                        for (i, spider) in ctx.spiders.iter().enumerate() {
++                            if !spider.matches(&req.url) { continue; }
++                            // 检查 until
++                            let stop_ctx = stop::StopContext {
++                                pages: ctx.stats[i].pages.load(Ordering::SeqCst),
++                                items: ctx.stats[i].items.load(Ordering::SeqCst),
++                                errors: ctx.stats[i].errors.load(Ordering::SeqCst),
++                                in_flight: ctx.stats[i].in_flight.load(Ordering::SeqCst),
++                                elapsed: ctx.stats[i].start.elapsed(),
++                                queue_size: 0,
++                            };
++                            if spider.until().should_stop(&stop_ctx) {
++                                continue;  // 该 Spider 停止消费，找下一个
++                            }
++                            chosen_idx = Some(i);
++                            break;
++                        }
++
++                        let idx = match chosen_idx {
++                            Some(i) => i,
++                            None => {
++                                // 无匹配或所有匹配的 Spider 都已停 → 丢弃
++                                tracing::debug!("无 Spider 处理 URL（或均已停止）: {}", req.url);
++                                continue;
++                            }
++                        };
++
++                        ctx.global_in_flight.fetch_add(1, Ordering::SeqCst);
++                        ctx.stats[idx].in_flight.fetch_add(1, Ordering::SeqCst);
++                        let ctx_c = ctx.clone();
++                        let fut = async move {
++                            let _g1 = engine::InFlightGuard { counter: ctx_c.global_in_flight.clone() };
++                            let _g2 = engine::InFlightGuard { counter: ctx_c.stats[idx].in_flight.clone() };
++                            engine::process_request(&ctx_c, req, idx).await;
++                        };
++                        return Some((fut, ()));
++                    }
+                 }
++            })
++            .buffer_unordered(max_total_concurrent)
++        };
++
++        // 驱动流 + 定期 checkpoint
++        tokio::pin!(stream);
++        let mut pages_since_checkpoint = 0usize;
++        while stream.next().await.is_some() {
++            pages_since_checkpoint += 1;
++            if pages_since_checkpoint >= checkpoint_interval {
++                if let Some(ref store) = checkpoint_store {
++                    if n_spiders == 1 {
++                        engine::save_checkpoint(store, &spider_name, &sched, &ctx.stats[0]).await;
++                    }
++                }
++                pages_since_checkpoint = 0;
+             }
+-        })
+-        .buffer_unordered(max_concurrent)
+-    };
+-
+-    // 驱动流 + 定期 checkpoint
+-    tokio::pin!(stream);
+-    let mut pages_since_checkpoint = 0usize;
+-    while stream.next().await.is_some() {
+-        pages_since_checkpoint += 1;
+-        if pages_since_checkpoint >= checkpoint_interval {
+-            if let Some(ref store) = checkpoint_store {
+-                engine::save_checkpoint(store, &spider_name, &sched, &ctx).await;
+-            }
+-            pages_since_checkpoint = 0;
+         }
+-    }
+ 
+-    spider.on_close().await;
++        for spider in &spiders {
++            spider.on_close().await;
++        }
+ 
+-    if let Some(ref store) = checkpoint_store {
+-        if let Err(e) = store.delete_checkpoint(&spider_name) {
+-            tracing::warn!("删除 checkpoint 失败: {}", e);
++        if let Some(ref store) = checkpoint_store {
++            if n_spiders == 1 {
++                if let Err(e) = store.delete_checkpoint(&spider_name) {
++                    tracing::warn!("删除 checkpoint 失败: {}", e);
++                }
++            }
+         }
+-    }
+ 
+-    let final_status_codes = ctx.stats_status_codes.lock().await.clone();
+-    Ok(engine::snapshot_stats(&ctx, final_status_codes))
++        // 汇总每个 Spider 的统计
++        let mut results = Vec::new();
++        for stats in &ctx.stats {
++            let status_codes = stats.status_codes.lock().await.clone();
++            results.push(engine::snapshot_stats_for(stats, status_codes, ctx.start));
++        }
++        Ok(results)
++    }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use std::collections::HashMap;
+ 
+     #[test]
+     fn test_blocked_status_codes_contains_common_codes() {
+         assert!(BLOCKED_STATUS_CODES.contains(&401));
+@@ -630,20 +691,21 @@ mod tests {
+             async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) { (vec![], vec![]) }
+         }
+         let spider = DummySpider;
+         let blocked_resp = SpiderResponse {
+             url: "http://example.com".into(),
+             status: 403,
+             headers: HashMap::new(),
+             body: vec![],
+             request: SpiderRequest::get("http://example.com"),
+             tracker: None,
++            from_cache: false,
+         };
+         assert!(spider.is_blocked(&blocked_resp));
+         let ok_resp = SpiderResponse { status: 200, ..blocked_resp };
+         assert!(!spider.is_blocked(&ok_resp));
+     }
+ 
+     async fn spawn_html_server(html: &'static str) -> String {
+         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+         use tokio::net::TcpListener;
+         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+diff --git a/src/crawl/stats.rs b/src/crawl/stats.rs
+new file mode 100644
+index 0000000..33532f1
+--- /dev/null
++++ b/src/crawl/stats.rs
+@@ -0,0 +1,49 @@
++//! Per-spider 统计计数器。
++
++use std::collections::HashMap;
++use std::sync::atomic::{AtomicUsize, Ordering};
++use std::sync::Arc;
++use std::time::{Duration, Instant};
++use tokio::sync::Mutex;
++
++/// 单个 Spider 的运行时统计。引擎为每个 Spider 持有一个实例。
++pub struct SpiderStats {
++    pub pages: AtomicUsize,
++    pub items: AtomicUsize,
++    pub errors: AtomicUsize,
++    pub blocked: AtomicUsize,
++    pub retries: AtomicUsize,
++    pub offsite: AtomicUsize,
++    pub cache_hits: AtomicUsize,
++    /// 在飞请求数。使用 Arc 以便 InFlightGuard 克隆。
++    pub in_flight: Arc<AtomicUsize>,
++    pub status_codes: Mutex<HashMap<u16, usize>>,
++    pub start: Instant,
++}
++
++impl SpiderStats {
++    pub fn new() -> Self {
++        Self {
++            pages: AtomicUsize::new(0),
++            items: AtomicUsize::new(0),
++            errors: AtomicUsize::new(0),
++            blocked: AtomicUsize::new(0),
++            retries: AtomicUsize::new(0),
++            offsite: AtomicUsize::new(0),
++            cache_hits: AtomicUsize::new(0),
++            in_flight: Arc::new(AtomicUsize::new(0)),
++            status_codes: Mutex::new(HashMap::new()),
++            start: Instant::now(),
++        }
++    }
++
++    pub fn pages(&self) -> usize { self.pages.load(Ordering::SeqCst) }
++    pub fn items(&self) -> usize { self.items.load(Ordering::SeqCst) }
++    pub fn errors(&self) -> usize { self.errors.load(Ordering::SeqCst) }
++    pub fn in_flight(&self) -> usize { self.in_flight.load(Ordering::SeqCst) }
++    pub fn elapsed(&self) -> Duration { self.start.elapsed() }
++}
++
++impl Default for SpiderStats {
++    fn default() -> Self { Self::new() }
++}
+diff --git a/src/crawl/stop.rs b/src/crawl/stop.rs
+new file mode 100644
+index 0000000..c83105d
+--- /dev/null
++++ b/src/crawl/stop.rs
+@@ -0,0 +1,114 @@
++//! 终止条件策略：Spider 的停止判定由可组合的策略对象实现。
++
++use std::sync::Arc;
++use std::time::Duration;
++
++/// 终止上下文：派发请求前由引擎构造的只读快照。
++#[derive(Debug, Clone)]
++pub struct StopContext {
++    /// 该 Spider 已爬页数
++    pub pages: usize,
++    /// 该 Spider 已产 item 数
++    pub items: usize,
++    /// 该 Spider 错误数
++    pub errors: usize,
++    /// 该 Spider 在飞请求数
++    pub in_flight: usize,
++    /// 该 Spider 已运行时长
++    pub elapsed: Duration,
++    /// 共享队列剩余请求数
++    pub queue_size: usize,
++}
++
++/// 终止策略 trait。返回 true 表示该 Spider 停止派发新请求。
++pub trait StopCondition: Send + Sync {
++    fn should_stop(&self, ctx: &StopContext) -> bool;
++
++    fn and<C: StopCondition + 'static>(self, other: C) -> Arc<dyn StopCondition>
++    where
++        Self: Sized + 'static,
++    {
++        Arc::new(And { a: Arc::new(self), b: Arc::new(other) })
++    }
++    fn or<C: StopCondition + 'static>(self, other: C) -> Arc<dyn StopCondition>
++    where
++        Self: Sized + 'static,
++    {
++        Arc::new(Or { a: Arc::new(self), b: Arc::new(other) })
++    }
++    fn not(self) -> Arc<dyn StopCondition>
++    where
++        Self: Sized + 'static,
++    {
++        Arc::new(Not { inner: Arc::new(self) })
++    }
++}
++
++// === 原子策略 ===
++
++/// 已爬页数达到上限。
++pub struct MaxPages(pub usize);
++impl StopCondition for MaxPages {
++    fn should_stop(&self, ctx: &StopContext) -> bool {
++        ctx.pages >= self.0
++    }
++}
++
++/// 已产 item 数达到上限。
++pub struct MaxItems(pub usize);
++impl StopCondition for MaxItems {
++    fn should_stop(&self, ctx: &StopContext) -> bool {
++        ctx.items >= self.0
++    }
++}
++
++/// 错误数达到上限。
++pub struct MaxErrors(pub usize);
++impl StopCondition for MaxErrors {
++    fn should_stop(&self, ctx: &StopContext) -> bool {
++        ctx.errors >= self.0
++    }
++}
++
++/// 运行时长达到上限。
++pub struct Timeout(pub Duration);
++impl StopCondition for Timeout {
++    fn should_stop(&self, ctx: &StopContext) -> bool {
++        ctx.elapsed >= self.0
++    }
++}
++
++/// 永不停止（默认）。
++pub struct NeverStop;
++impl StopCondition for NeverStop {
++    fn should_stop(&self, _ctx: &StopContext) -> bool { false }
++}
++
++/// 闭包转 StopCondition。
++pub struct FnStopCondition<F: Fn(&StopContext) -> bool + Send + Sync>(pub F);
++impl<F: Fn(&StopContext) -> bool + Send + Sync> StopCondition for FnStopCondition<F> {
++    fn should_stop(&self, ctx: &StopContext) -> bool { (self.0)(ctx) }
++}
++
++// === 组合策略 ===
++
++struct And { a: Arc<dyn StopCondition>, b: Arc<dyn StopCondition> }
++impl StopCondition for And {
++    fn should_stop(&self, ctx: &StopContext) -> bool {
++        self.a.should_stop(ctx) && self.b.should_stop(ctx)
++    }
++}
++
++struct Or { a: Arc<dyn StopCondition>, b: Arc<dyn StopCondition> }
++impl StopCondition for Or {
++    fn should_stop(&self, ctx: &StopContext) -> bool {
++        self.a.should_stop(ctx) || self.b.should_stop(ctx)
++    }
++}
++
++struct Not { inner: Arc<dyn StopCondition> }
++impl StopCondition for Not {
++    fn should_stop(&self, ctx: &StopContext) -> bool {
++        !self.inner.should_stop(ctx)
++    }
++}
+diff --git a/tests/builder_api_test.rs b/tests/builder_api_test.rs
+index 833e49f..8c40af8 100644
+--- a/tests/builder_api_test.rs
++++ b/tests/builder_api_test.rs
+@@ -64,67 +64,71 @@ async fn test_spider_builder_parse_with_follow() {
+         })
+         .build();
+ 
+     let resp = SpiderResponse {
+         url: "https://example.com/".into(),
+         status: 200,
+         headers: Default::default(),
+         body: b"<html><body><h1>Home</h1></body></html>".to_vec(),
+         request: SpiderRequest::get("https://example.com/"),
+         tracker: None,
++        from_cache: false,
+     };
+ 
+     let (items, follows) = spider.parse(resp).await;
+     assert_eq!(items.len(), 1);
+     assert_eq!(items[0]["title"], "Home");
+     assert_eq!(follows.len(), 1);
+ }
+ 
+ // === SpiderResponse.follow() tests ===
+ 
+ #[test]
+ fn test_response_follow_absolute_url() {
+     let resp = SpiderResponse {
+         url: "https://example.com/page1".into(),
+         status: 200,
+         headers: Default::default(),
+         body: vec![],
+         request: SpiderRequest::get("https://example.com/page1"),
+         tracker: None,
++        from_cache: false,
+     };
+     let req = resp.follow("https://other.com/page2").unwrap();
+     assert_eq!(req.url, "https://other.com/page2");
+ }
+ 
+ #[test]
+ fn test_response_follow_relative_path() {
+     let resp = SpiderResponse {
+         url: "https://example.com/dir/page1".into(),
+         status: 200,
+         headers: Default::default(),
+         body: vec![],
+         request: SpiderRequest::get("https://example.com/dir/page1"),
+         tracker: None,
++        from_cache: false,
+     };
+     let req = resp.follow("/page2").unwrap();
+     assert_eq!(req.url, "https://example.com/page2");
+ }
+ 
+ #[test]
+ fn test_response_follow_with_callback() {
+     let resp = SpiderResponse {
+         url: "https://example.com/".into(),
+         status: 200,
+         headers: Default::default(),
+         body: vec![],
+         request: SpiderRequest::get("https://example.com/"),
+         tracker: None,
++        from_cache: false,
+     };
+     let req = resp.follow_with("/detail", "parse_detail").unwrap();
+     assert_eq!(req.url, "https://example.com/detail");
+     assert_eq!(req.callback, Some("parse_detail".to_string()));
+ }
+ 
+ // === Engine::builder() test ===
+ 
+ #[tokio::test]
+ async fn test_engine_builder_local_server() {
+diff --git a/tests/multi_spider_test.rs b/tests/multi_spider_test.rs
+new file mode 100644
+index 0000000..937efe5
+--- /dev/null
++++ b/tests/multi_spider_test.rs
+@@ -0,0 +1,62 @@
++//! 多 Spider 共享队列 + 路由 + until 终止策略 E2E 测试。
++//!
++//! 场景：ListSpider 爬取列表页 50 页停，DetailSpider 消费详情 URL。
++
++use std::time::Duration;
++use async_trait::async_trait;
++use serde_json::{json, Value};
++use wisp::crawl::{Spider, SpiderRequest, SpiderResponse, StopCondition};
++use wisp::crawl::{MaxPages, NeverStop, StopContext};
++use std::sync::Arc;
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++/// 列表页 Spider：从 list/1 开始，产出 list/N+1 和 detail/X
++struct ListSpider {
++    max_page: usize,
++    list_counter: Arc<AtomicUsize>,
++}
++
++#[async_trait]
++impl Spider for ListSpider {
++    fn name(&self) -> &str { "list" }
++    fn start_urls(&self) -> Vec<String> { vec!["http://test.example/list/1".into()] }
++    fn patterns(&self) -> Vec<String> { vec![r"test\.example/list/\d+".into()] }
++    fn until(&self) -> Arc<dyn wisp::crawl::StopCondition> {
++        Arc::new(MaxPages(self.max_page))
++    }
++    async fn parse(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
++        let n = self.list_counter.fetch_add(1, Ordering::SeqCst) + 1;
++        let items = vec![json!({ "list_page": n })];
++        // follow 下一页列表 + 一个详情
++        let next = resp.follow(&format!("/list/{}", n + 1)).unwrap();
++        let detail = resp.follow(&format!("/detail/{}", n)).unwrap();
++        (items, vec![next, detail])
++    }
++}
++
++/// 详情页 Spider：消费 detail URL
++struct DetailSpider {
++    detail_counter: Arc<AtomicUsize>,
++}
++
++#[async_trait]
++impl Spider for DetailSpider {
++    fn name(&self) -> &str { "detail" }
++    fn start_urls(&self) -> Vec<String> { vec![] }
++    fn patterns(&self) -> Vec<String> { vec![r"test\.example/detail/\d+".into()] }
++    fn until(&self) -> Arc<dyn wisp::crawl::StopCondition> {
++        Arc::new(NeverStop)  // 受限于上游 ListSpider
++    }
++    async fn parse(&self, _resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
++        let n = self.detail_counter.fetch_add(1, Ordering::SeqCst) + 1;
++        (vec![json!({ "detail_page": n })], vec![])
++    }
++}
++
++#[test]
++fn test_max_pages_condition() {
++    // 不实际跑爬虫，只验证 StopCondition 逻辑
++    let cond = MaxPages(50);
++    let ctx = StopContext { pages: 50, items: 0, errors: 0, in_flight: 0, elapsed: Duration::ZERO, queue_size: 0 };
++    assert!(cond.should_stop(&ctx));
++}
+diff --git a/tests/real_scrape_test.rs b/tests/real_scrape_test.rs
+index be5bc62..cdf94a0 100644
+--- a/tests/real_scrape_test.rs
++++ b/tests/real_scrape_test.rs
+@@ -227,20 +227,22 @@ async fn test_response_follow_pagination() {
+     let fetch_resp = resp.unwrap();
+     let doc = fetch_resp.parse().unwrap();
+ 
+     // 鏋勯€?SpiderResponse 鏉ユ祴璇?follow()
+     let spider_resp = SpiderResponse {
+         url: "https://quotes.toscrape.com/".into(),
+         status: 200,
+         headers: Default::default(),
+         body: fetch_resp.body.clone(),
+         request: SpiderRequest::get("https://quotes.toscrape.com/"),
++        tracker: None,
++        from_cache: false,
+     };
+ 
+     // 鑾峰彇涓嬩竴椤甸摼鎺?
+     let next_href = doc.select_one(".next a")
+         .and_then(|a| a.attr("href"));
+ 
+     if let Some(href) = next_href {
+         let follow_req = spider_resp.follow(&href);
+         assert!(follow_req.is_some(), "follow() 搴旇繑鍥?Some");
+         let req = follow_req.unwrap();
+diff --git a/tests/stop_condition_test.rs b/tests/stop_condition_test.rs
+new file mode 100644
+index 0000000..baf3d91
+--- /dev/null
++++ b/tests/stop_condition_test.rs
+@@ -0,0 +1,91 @@
++use std::sync::Arc;
++use std::time::Duration;
++use wisp::crawl::{StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition, StopCondition};
++
++fn ctx(pages: usize, items: usize, errors: usize, elapsed_secs: u64) -> StopContext {
++    StopContext {
++        pages,
++        items,
++        errors,
++        in_flight: 0,
++        elapsed: Duration::from_secs(elapsed_secs),
++        queue_size: 10,
++    }
++}
++
++#[test]
++fn test_max_pages_triggered() {
++    let cond = MaxPages(50);
++    assert!(!cond.should_stop(&ctx(49, 0, 0, 0)));
++    assert!(cond.should_stop(&ctx(50, 0, 0, 0)));
++    assert!(cond.should_stop(&ctx(51, 0, 0, 0)));
++}
++
++#[test]
++fn test_max_items_triggered() {
++    let cond = MaxItems(10);
++    assert!(!cond.should_stop(&ctx(0, 9, 0, 0)));
++    assert!(cond.should_stop(&ctx(0, 10, 0, 0)));
++}
++
++#[test]
++fn test_max_errors_triggered() {
++    let cond = MaxErrors(5);
++    assert!(!cond.should_stop(&ctx(0, 0, 4, 0)));
++    assert!(cond.should_stop(&ctx(0, 0, 5, 0)));
++}
++
++#[test]
++fn test_timeout_triggered() {
++    let cond = Timeout(Duration::from_secs(60));
++    assert!(!cond.should_stop(&ctx(0, 0, 0, 59)));
++    assert!(cond.should_stop(&ctx(0, 0, 0, 60)));
++}
++
++#[test]
++fn test_never_stop() {
++    let cond = NeverStop;
++    assert!(!cond.should_stop(&ctx(1000, 1000, 1000, 3600)));
++}
++
++#[test]
++fn test_fn_stop_condition() {
++    let cond = FnStopCondition(|c: &StopContext| c.pages > 3);
++    assert!(!cond.should_stop(&ctx(3, 0, 0, 0)));
++    assert!(cond.should_stop(&ctx(4, 0, 0, 0)));
++}
++
++#[test]
++fn test_and_combinator() {
++    // pages >= 10 AND items >= 5
++    let cond: Arc<dyn StopCondition> = MaxPages(10).and(MaxItems(5));
++    assert!(!cond.should_stop(&ctx(9, 5, 0, 0)));   // pages 不够
++    assert!(!cond.should_stop(&ctx(10, 4, 0, 0)));  // items 不够
++    assert!(cond.should_stop(&ctx(10, 5, 0, 0)));   // 都满足
++}
++
++#[test]
++fn test_or_combinator() {
++    // pages >= 10 OR items >= 5
++    let cond: Arc<dyn StopCondition> = MaxPages(10).or(MaxItems(5));
++    assert!(!cond.should_stop(&ctx(9, 4, 0, 0)));
++    assert!(cond.should_stop(&ctx(10, 4, 0, 0)));   // pages 满足
++    assert!(cond.should_stop(&ctx(9, 5, 0, 0)));    // items 满足
++}
++
++#[test]
++fn test_not_combinator() {
++    // NOT pages >= 10 → pages < 10 时停
++    let cond: Arc<dyn StopCondition> = MaxPages(10).not();
++    assert!(cond.should_stop(&ctx(9, 0, 0, 0)));
++    assert!(!cond.should_stop(&ctx(10, 0, 0, 0)));
++}
++
++#[test]
++fn test_complex_combination() {
++    // pages >= 50 AND timeout（elapsed >= 3600s）
++    let cond: Arc<dyn StopCondition> = MaxPages(50).and(Timeout(Duration::from_secs(3600)));
++    assert!(!cond.should_stop(&ctx(49, 0, 0, 3600)));
++    assert!(!cond.should_stop(&ctx(50, 0, 0, 3599)));
++    assert!(cond.should_stop(&ctx(50, 0, 0, 3600)));
++}

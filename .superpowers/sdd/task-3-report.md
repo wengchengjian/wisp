@@ -1,133 +1,136 @@
-# Task 3 Report: Response 添加 enqueue_links helper
+# Task 3 报告 — P1-1b proxy_clients 改用 DashMap
 
-## 实现内容
+## 步骤执行（按 brief 1-10 顺序）
 
-### 1. `Response::enqueue_links` 与 `Response::enqueue_links_with`
-
-在 `src/fetcher/response.rs` 的 `meta_u64` 之后追加两个方法（直接采用 plan Step 7 最终签名，跳过 Step 6/7 中间形态）：
-
-- `enqueue_links(&self, selectors: &[&str], callback: &str) -> Vec<Request>`：批量提取链接的便捷方法，内部委托给 `enqueue_links_with`，传入常量闭包 `|_, _| Some(Value::Null)`。
-- `enqueue_links_with<F>(&self, selectors: &[&str], callback: &str, meta_fn: F) -> Vec<Request> where F: Fn(&crate::parser::Node, usize) -> Option<Value>`：
-  - 单次 `self.parse()`（避免触发单次解析断言）
-  - 多选择器回退：`for sel in selectors` + `break`，匹配到第一个非空 selector 即停止
-  - 空值过滤：跳过 `href` 为空或 `text().trim().is_empty()` 的 `<a>`
-  - 闭包注入：`meta_fn(a, idx)` 返回 `None` 跳过；返回 `Some(Value::Null)` 走 `req`（不覆盖默认 meta）；返回 `Some(非 Null)` 走 `req.with_meta(meta)`
-  - callback 自动设置：内部调用 `follow_with(&href, callback)`
-  - `usize` 索引参数支持 `chapter_index` 场景
-
-### 2. 默认 handler 重构（`examples/novel_crawler.rs`）
-
-- **default handler**：从 52 行手写循环压缩到 20 行，调用 `resp.enqueue_links_with(..., |a, _idx| { ... })`
-- **detail handler**：保留显式 `resp.parse()` + 手写循环模式（按 brief Step 8 结论）。原因：detail handler 需同时从 `.txt ul:nth-child(1)` 提作者 + 从 `.list ul li .name a` 提章节列表，调用 `enqueue_links_with` 会触发第二次 `parse()` 而 panic。这是 brief 文档化的诚实权衡。
-- 同时把原 `resp.follow_meta(&href, json!({...})).map(|r| r.with_callback("detail"))` 模式替换为 `enqueue_links_with` 内部的 `follow_with + with_meta` 等价路径。
-
-### 3. Task 2 的 2 个 Minor 文档错字修复
-
-在 `src/fetcher/response.rs` 同一文件中：
-- L458 `meta_str` 文档：`.meta 非 Object` → `meta 非 Object`（去掉多余的 `.`）
-- L469 `meta_u64` 文档：`缺失/类型不符时返回 0` → `缺失/类型不符/meta 非 Object 时返回 0`（与 `meta_str` 对称）
-
-## TDD 证据
-
-### RED（实现前）
-
-命令：`cargo test --package wisp --lib fetcher::response::tests::test_enqueue_links`
-
-输出片段（编译错误）：
+### Step 1: 写失败测试
+新建 `tests/p1_proxy_clients_test.rs`，内容依据 brief。注意：brief 原始测试代码 import 了
+`std::sync::atomic::{AtomicUsize, Ordering}` 与 `wisp::crawl::Method`，但测试体未使用。
+依据任务验证要求 "check unused-import warnings — fix any"，在写测试阶段即移除这两行未用 import，
+避免引入新警告。最终 import 块为：
+```rust
+use std::sync::Arc;
+use wisp::crawl::engine::fetch_page_inner;
+use wisp::crawl::SpiderRequest;
+use wisp::fetcher::FetchMode;
+use wisp::http::{Client, Config};
 ```
-error[E0599]: no method named `enqueue_links` found for struct `response::Response` in the current scope
-   --> src/fetcher/response.rs:723:28
+
+### Step 2: 验证测试失败
+```
+error[E0603]: function `fetch_page_inner` is private
+   --> tests/p1_proxy_clients_test.rs:5:26
     |
-211 | pub struct Response {
-    | ------------------- method `enqueue_links` not found for this struct
-...
-723 |         let follows = resp.enqueue_links(
-    |                       -----^^^^^^^^^^^^^ method not found in `response::Response`
+  5 | use wisp::crawl::engine::fetch_page_inner;
+    |                          ^^^^^^^^^^^^^^^^ private function
+```
+编译失败，符合预期（`fetch_page_inner` 为 `pub(crate)`，`proxy_clients` 类型为 `Mutex`）。
 
-error[E0599]: no method named `enqueue_links_with` found for struct `response::Response` in the current scope
-   --> src/fetcher/response.rs:809:28
+### Step 3: engine.rs proxy_clients 字段类型
+`src/crawl/engine.rs:66`：
+```rust
+pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
+```
+→
+```rust
+pub proxy_clients: Arc<dashmap::DashMap<String, Arc<Client>>>,
+```
+采用全限定 `dashmap::DashMap`，与同结构体 `domain_sems` 字段（line 64 `Arc<DashMap<...>>`，
+该处用顶部 `use dashmap::DashMap;`）风格略有差异，但与 brief 要求一致且更明确。
+
+### Step 4: fetch_page / fetch_page_inner 签名
+两个函数末参 `proxy_clients: &Mutex<HashMap<String, Arc<Client>>>` →
+`proxy_clients: &dashmap::DashMap<String, Arc<Client>>`；
+`pub(crate) async fn` → `pub async fn`。
+
+### Step 5: fetch_page_inner 内部锁逻辑
+将原 `proxy_clients.lock().await` + `contains_key` + `insert` + `get().unwrap().clone()`
+替换为 brief 指定的 DashMap 双路径：
+- 快路径 `proxy_clients.get(proxy)` 返回 `Some(c)` 时 `c.clone()` 释放 Ref
+- 慢路径 `Client::builder()...build()?` 失败向上传播；成功后 `entry(proxy.to_string()).or_insert(arc).clone()`
+
+借用法：`get` 的 Ref 在 `if let Some(c) = ...` 分支内通过 `c.clone()` 立即释放，进入 else 分支时
+不再持有该 Ref，`entry()` 调用安全。
+
+### Step 6: runner.rs 构造
+`src/crawl/runner.rs:225`（原行号）`Arc::new(Mutex::new(HashMap::new()))` →
+`Arc::new(dashmap::DashMap::new())`。
+同时移除文件顶部 `use std::collections::HashMap;`（runner.rs 中 HashMap 仅此一处使用，
+保留会触发 unused-import 警告）。
+
+### Step 7: engine.rs make_ctx 测试辅助
+`src/crawl/engine.rs:800`（原行号）同样替换为 `Arc::new(dashmap::DashMap::new())`。
+
+### Step 8: mod.rs re-export
+找到 Task 2 添加的 `pub use engine::record_status;`（mod.rs:34），替换为合并形式：
+```rust
+pub use engine::{record_status, fetch_page, fetch_page_inner};
+```
+未重复添加。
+
+### Step 9: 验证通过
+所有验证命令输出如下（关键行）：
+
+**`cargo test --test p1_proxy_clients_test`：**
+```
+running 1 test
+test proxy_clients_caches_client_per_proxy_url ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+（对 127.0.0.1:1 的 fetch 必然连接失败，但 Client 已被缓存，断言 `len() == 1` 与
+`contains_key` 通过，PASS 符合预期。）
+
+**`cargo build`：**
+```
+warning: `wisp` (lib) generated 6 warnings (run `cargo fix --lib -p wisp` to apply 5 suggestions)
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.28s
+```
+退出码 0，无错误。6 条警告全部为 pre-existing 基线（`src/crawl/mod.rs:38,43,43,44,47`
+与 `src/crawl/middleware/builtin.rs:9`），通过 `git stash` + `cargo build` 对比 HEAD=`324b2a9`
+确认本任务未引入新警告。
+
+**`cargo test --lib`：**
+```
+test result: ok. 207 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
 ```
 
-### GREEN（实现后）
-
-命令：`cargo test --package wisp --lib fetcher::response::tests::test_enqueue_links`
-
-输出：
+**`cargo clippy --lib 2>&1 | grep "generated.*warnings"`：**
 ```
-running 7 tests
-test fetcher::response::tests::test_enqueue_links_returns_empty_when_no_selector_matches ... ok
-test fetcher::response::tests::test_enqueue_links_falls_back_to_next_selector_when_first_empty ... ok
-test fetcher::response::tests::test_enqueue_links_with_skips_when_closure_returns_none ... ok
-test fetcher::response::tests::test_enqueue_links_returns_follows_for_first_matching_selector ... ok
-test fetcher::response::tests::test_enqueue_links_with_injects_meta_from_closure ... ok
-test fetcher::response::tests::test_enqueue_links_skips_empty_href_and_empty_text ... ok
-test fetcher::response::tests::test_enqueue_links_panics_if_parse_already_called - should panic ... ok
-
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 284 filtered out; finished in 0.03s
+warning: `wisp` (lib) generated 27 warnings
 ```
+≤27 基线，无新增。
 
-### 修复 brief 测试用例 HTML bug
-
-实现后第一次跑 GREEN 时，`test_enqueue_links_falls_back_to_next_selector_when_first_empty` 失败（left=0, right=1）。原因：brief 测试用例 HTML 写的是 `<ul class="list2">`，但 selector 是 `.list2 ul li .name a`（要求 `.list2` 是 div 容器内嵌 `<ul>`）。selector 来自 `examples/novel_crawler.rs` 的真实选择器列表（保留不变更合理），故修正 HTML 为 `<div class="list2"><ul>...</ul></div>` 以匹配 selector 语义。修正后该测试通过。
-
-## 文件变更
-
-### `src/fetcher/response.rs`
-- L458: `meta_str` 文档错字修复
-- L469: `meta_u64` 文档错字修复
-- L478-564: 新增 `enqueue_links` 和 `enqueue_links_with` 实现
-- L708-865: 新增 7 个测试用例
-
-### `examples/novel_crawler.rs`
-- L55-78: default handler 重构为 `enqueue_links_with`（52 行 → 20 行）
-- L79-120: detail handler 重构，使用显式 `resp.parse()` + 手写循环 + `follow_with` + `with_meta`，并补注释说明为何不使用 `enqueue_links_with`
-
-## Self-Review
-
-### 完整性
-- ✅ 7 个测试全部通过
-- ✅ `enqueue_links` 和 `enqueue_links_with` 都用最终 Step 7 签名 `Fn(&Node, usize) -> Option<Value>`
-- ✅ default handler 重构使用 `enqueue_links_with`（闭包 `|a, _idx|`）
-- ✅ detail handler 使用显式 `parse()` + 手写循环（不使用 `enqueue_links_with`）
-- ✅ Task 2 的 2 个文档错字已修复
-
-### 质量
-- ✅ `enqueue_links_with` 内单次 `self.parse()` 调用
-- ✅ 多选择器回退：`for sel in selectors { if !links.is_empty() { ...; break; } }`
-- ✅ 空 href 和空/空白 text 均被过滤
-- ✅ `Value::Null` meta 走 `req`（不调用 `with_meta`）
-- ✅ 文档注释全部中文
-
-### 纪律
-- ✅ 未添加 `enqueue_links_filtered`/`enqueue_links_strict` 等未要求的方法
-- ✅ 未修改 `Node::select`/`Node::attr` 等现有方法
-- ✅ 未碰 `tests/*.rs` 集成测试
-
-### 测试
-- ✅ RED：实现前编译错误
-- ✅ GREEN：实现后 7 测试通过
-- ✅ `cargo build --example novel_crawler` 通过
-- ✅ `cargo test --workspace --lib --bins` 通过（291 passed; 0 failed）
-
-## 最终测试命令与结果
-
+### Step 10: 提交
 ```
-$ cargo build --example novel_crawler
-   Compiling wisp v0.1.0 (/home/weng/wisp)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.61s
-
-$ cargo test --workspace --lib --bins
-   ...
-test result: ok. 291 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+git add src/crawl/engine.rs src/crawl/runner.rs src/crawl/mod.rs tests/p1_proxy_clients_test.rs
+git commit -m "perf: proxy_clients 改用 DashMap 消除全局锁 (P1-1b)"
 ```
+单提交，4 文件，+46/-13：
+- src/crawl/engine.rs            | 23 +++++++++++++----------
+- src/crawl/mod.rs               |  2 +-
+- src/crawl/runner.rs            |  3 +--
+- tests/p1_proxy_clients_test.rs | 31 +++++++++++++++++++++++++++++++
 
-## 提交
+## 警告与处理
+- 测试文件初始按 brief 原文含 `AtomicUsize`, `Ordering`, `Method` 三个未用 import，
+  会在 `cargo build` / `cargo test` 触发 unused-import 警告。依据任务验证要求 "fix any"，
+  在 Step 1 即移除这些 import，最终测试文件无任何警告。
+- lib 层 6 条 unused-import 警告为 pre-existing 基线（HEAD=324b2a9 既有），
+  非 Task 3 引入，未在本任务范围内修改。
 
-```
-575473d response: 新增 enqueue_links/enqueue_links_with 批量链接提取助手
-```
+## 最终 commit SHA
+`82b19bd9b5bfb85ff659869c03e27ec8cb17bb8c`
 
-## 关切点
-
-1. **brief 测试用例 HTML bug 修复**：`test_enqueue_links_falls_back_to_next_selector_when_first_empty` 原始 HTML 与 selector 语义不一致，已修正 HTML（让 `.list2` 作为 div 容器内嵌 `<ul>`），保留 selector 不变（因其来自示例 novel_crawler.rs 的真实选择器列表）。
-2. **detail handler 不使用 `enqueue_links_with`**：按 brief Step 8 "结论" 文档化的设计权衡，detail handler 保留显式循环。原因：detail handler 需要从两处不同 selector 提取（作者 + 章节列表），调用 `enqueue_links_with` 会触发第二次 `parse()` 而 panic。`enqueue_links_with` 的适用边界是「单 selector 查询 + meta 注入」场景。
+## Self-review
+- ✅ proxy_clients 字段类型：`Arc<dashmap::DashMap<String, Arc<Client>>>`，与 brief 一致。
+- ✅ fetch_page / fetch_page_inner 签名末参为 `&dashmap::DashMap<String, Arc<Client>>`，可见性 `pub`。
+- ✅ 内部逻辑：快路径 `get` → `clone()` 释放 Ref；慢路径 `entry().or_insert(arc).clone()`；
+  `build()?` 错误向上传播；并发安全（多 task 同时 miss 时 `or_insert` 保证仅一个 Client 生效）。
+- ✅ runner.rs / engine.rs make_ctx 两处构造同步更新为 `Arc::new(dashmap::DashMap::new())`。
+- ✅ runner.rs 移除未用 `use std::collections::HashMap;` 避免新警告。
+- ✅ mod.rs：合并为 `pub use engine::{record_status, fetch_page, fetch_page_inner};`，无重复行。
+- ✅ 仅 stage brief 指定的 4 个文件，未用 `git add -A`/`git add .`。
+- ✅ 一行 commit message 与 brief 完全一致。
+- ✅ master 直推，未建分支/worktree。
+- ✅ 未创建文档文件。
+- ✅ 验证全绿：新测试 1 passed；lib 207 passed；build 无错；clippy 27 ≤ 基线。

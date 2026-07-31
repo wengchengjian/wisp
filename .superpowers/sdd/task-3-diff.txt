@@ -1,0 +1,779 @@
+﻿=== COMMITS ===
+d0de503 refactor(builder): 删除 parse_fn/async_parse_fn，统一到 on() API
+
+=== STAT ===
+ src/crawl/builder.rs           | 101 +++++++++++++----------------------------
+ tests/auto_mode_test.rs        |   4 +-
+ tests/builder_api_test.rs      |  13 +++---
+ tests/callback_routing_test.rs |  14 +++---
+ tests/cf_bypass_real_test.rs   |   2 +-
+ tests/real_scrape_test.rs      |   4 +-
+ 6 files changed, 49 insertions(+), 89 deletions(-)
+
+=== DIFF ===
+diff --git a/src/crawl/builder.rs b/src/crawl/builder.rs
+index 587cb6e..66fd737 100644
+--- a/src/crawl/builder.rs
++++ b/src/crawl/builder.rs
+@@ -1,25 +1,25 @@
+ //! SpiderBuilder: 闭包式 Spider 定义，无需手写实现 trait。
+ //!
+ //! # 示例
+ //!
+-//! ## 简单爬虫（单 parse 闭包）
++//! ## 简单爬虫（单 default handler）
+ //!
+ //! ```rust,no_run
+ //! use wisp::crawl::SpiderBuilder;
+ //! use std::time::Duration;
+ //!
+ //! let spider = SpiderBuilder::new("quotes")
+ //!     .start_urls(vec!["https://quotes.toscrape.com/"])
+ //!     .delay(Duration::from_millis(500))
+ //!     .obey_robots(false)
+-//!     .parse(|resp| {
++//!     .on("default", |resp| async move {
+ //!         let doc = resp.parse().unwrap();
+ //!         let items = doc.select(".quote").iter().map(|q| {
+ //!             serde_json::json!({ "text": q.select_one(".text").map(|n| n.text()) })
+ //!         }).collect();
+ //!         (items, vec![])
+ //!     })
+ //!     .build();
+ //! ```
+ //!
+ //! ## 多 callback 路由（列表 → 详情 → 内容）
+@@ -56,26 +56,20 @@ use std::collections::{HashMap, HashSet};
+ use std::future::Future;
+ use std::sync::Arc;
+ use std::time::Duration;
+ use async_trait::async_trait;
+ use futures::future::BoxFuture;
+ use serde_json::Value;
+ 
+ use super::{Spider, SpiderRequest, SpiderResponse};
+ use crate::http;
+ 
+-/// 解析闭包类型：接收 SpiderResponse，返回 (items, follow_requests)。
+-pub type ParseFn = Box<dyn Fn(SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) + Send + Sync + 'static>;
+-
+-/// 异步解析闭包类型。
+-pub type AsyncParseFn = Box<dyn Fn(SpiderResponse) -> std::pin::Pin<Box<dyn std::future::Future<Output = (Vec<Value>, Vec<SpiderRequest>)> + Send>> + Send + Sync + 'static>;
+-
+ /// 异步 handler 签名：接收 SpiderResponse，返回 (items, follows)。
+ ///
+ /// 用 `Arc<dyn Fn(...) -> BoxFuture>` 让闭包可 Clone + 异步 + Send + Sync。
+ /// 每个 handler 捕获不同状态都满足同一签名。
+ pub type Handler = Arc<
+     dyn Fn(SpiderResponse) -> BoxFuture<'static, (Vec<Value>, Vec<SpiderRequest>)>
+         + Send + Sync
+ >;
+ 
+ /// 闭包式 Spider 构建器。
+@@ -86,43 +80,39 @@ pub struct SpiderBuilder {
+     start_urls: Vec<String>,
+     handlers: HashMap<String, Handler>,
+     allowed_domains: HashSet<String>,
+     delay: Duration,
+     obey_robots: bool,
+     max_retries: u32,
+     fetcher_config: http::Config,
+     fetch_mode: crate::fetcher::FetchMode,
+     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
+     auto_exclude: HashSet<String>,
+-    parse_fn: Option<ParseFn>,
+-    async_parse_fn: Option<AsyncParseFn>,
+     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
+     until_cond: Arc<dyn super::stop::StopCondition>,
+ }
+ 
+ impl SpiderBuilder {
+     /// 创建新 SpiderBuilder（name 为必填）。
+     pub fn new(name: &str) -> Self {
+         Self {
+             name: name.to_string(),
+             start_urls: Vec::new(),
+             handlers: HashMap::new(),
+             allowed_domains: HashSet::new(),
+             delay: Duration::ZERO,
+             obey_robots: true,
+             max_retries: 3,
+             fetcher_config: http::Config::default(),
+             fetch_mode: crate::fetcher::FetchMode::Http,
+             auto_rules: Vec::new(),
+             auto_exclude: HashSet::new(),
+-            parse_fn: None,
+-            async_parse_fn: None,
+             is_blocked_fn: None,
+             until_cond: Arc::new(super::NeverStop),
+         }
+     }
+ 
+     /// 设置起始 URL 列表。
+     pub fn start_urls(mut self, urls: Vec<impl Into<String>>) -> Self {
+         self.start_urls = urls.into_iter().map(|u| u.into()).collect();
+         self
+     }
+@@ -178,55 +168,36 @@ impl SpiderBuilder {
+     }
+ 
+     /// Auto 模式：可选选择器（返回 0 节点不触发升级）。
+     pub fn auto_exclude(mut self, selectors: Vec<&str>) -> Self {
+         for s in selectors {
+             self.auto_exclude.insert(s.to_string());
+         }
+         self
+     }
+ 
+-    /// 设置同步解析闭包。
+-    pub fn parse<F>(mut self, f: F) -> Self
+-    where
+-        F: Fn(SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) + Send + Sync + 'static,
+-    {
+-        self.parse_fn = Some(Box::new(f));
+-        self
+-    }
+-
+-    /// 设置异步解析闭包。
+-    pub fn parse_async<F, Fut>(mut self, f: F) -> Self
+-    where
+-        F: Fn(SpiderResponse) -> Fut + Send + Sync + 'static,
+-        Fut: std::future::Future<Output = (Vec<Value>, Vec<SpiderRequest>)> + Send + 'static,
+-    {
+-        self.async_parse_fn = Some(Box::new(move |resp| Box::pin(f(resp))));
+-        self
+-    }
+-
+     /// 自定义阻塞检测逻辑。
+     pub fn is_blocked<F>(mut self, f: F) -> Self
+     where
+         F: Fn(&SpiderResponse) -> bool + Send + Sync + 'static,
+     {
+         self.is_blocked_fn = Some(Box::new(f));
+         self
+     }
+ 
+     /// 注册 handler。label 为 `"default"` 表示入口（无 callback 时调用）。
+     ///
+     /// 多 callback 路由：`resp.follow_with(url, "detail")` 产生的请求会被
+     /// `on("detail", handler)` 注册的 handler 处理。
+     ///
+-    /// 与 `parse()` / `parse_async()` 互斥：若已注册 handler，则 `parse()`
+-    /// 仅作为直接调用时的兜底，`handle()` 路由优先使用 handler。
++    /// 这是定义 Spider 解析逻辑的唯一 API：至少注册一个 handler（通常为
++    /// `"default"`）才能 `build()`。
+     pub fn on<F, Fut>(mut self, label: &str, handler: F) -> Self
+     where
+         F: Fn(SpiderResponse) -> Fut + Send + Sync + 'static,
+         Fut: Future<Output = (Vec<Value>, Vec<SpiderRequest>)> + Send + 'static,
+     {
+         let boxed: Handler = Arc::new(move |resp| Box::pin(handler(resp)));
+         self.handlers.insert(label.to_string(), boxed);
+         self
+     }
+ 
+@@ -264,110 +235,101 @@ impl SpiderBuilder {
+ 
+     /// 设置终止条件策略。
+     pub fn until<C: super::stop::StopCondition + 'static>(mut self, cond: C) -> Self {
+         self.until_cond = Arc::new(cond);
+         self
+     }
+ 
+     /// 构建 ClosureSpider 实例。
+     ///
+     /// # Panics
+-    /// 若未设置任何 handler（`parse()` / `parse_async()` / `on()` 均未调用）则 panic。
++    /// 若未注册任何 handler（`on()` 未调用）则 panic。
+     pub fn build(self) -> ClosureSpider {
+         assert!(
+-            self.parse_fn.is_some() || self.async_parse_fn.is_some() || !self.handlers.is_empty(),
+-            "SpiderBuilder: 必须设置 parse() / parse_async() / on() 之一"
++            !self.handlers.is_empty(),
++            "SpiderBuilder: 必须至少注册一个 handler（通过 on()）"
+         );
+         ClosureSpider {
+             name: self.name,
+             start_urls: self.start_urls,
+             handlers: self.handlers,
+             allowed_domains: self.allowed_domains,
+             delay: self.delay,
+             obey_robots: self.obey_robots,
+             max_retries: self.max_retries,
+             fetcher_config: self.fetcher_config,
+             fetch_mode: self.fetch_mode,
+             auto_rules: self.auto_rules,
+             auto_exclude: self.auto_exclude,
+-            parse_fn: self.parse_fn,
+-            async_parse_fn: self.async_parse_fn,
+             is_blocked_fn: self.is_blocked_fn,
+             until_cond: self.until_cond,
+         }
+     }
+ }
+ 
+ /// 由 SpiderBuilder 构建的闭包式 Spider。
+ pub struct ClosureSpider {
+     name: String,
+     start_urls: Vec<String>,
+     handlers: HashMap<String, Handler>,
+     allowed_domains: HashSet<String>,
+     delay: Duration,
+     obey_robots: bool,
+     max_retries: u32,
+     fetcher_config: http::Config,
+     fetch_mode: crate::fetcher::FetchMode,
+     auto_rules: Vec<(String, crate::fetcher::FetchMode)>,
+     auto_exclude: HashSet<String>,
+-    parse_fn: Option<ParseFn>,
+-    async_parse_fn: Option<AsyncParseFn>,
+     is_blocked_fn: Option<Box<dyn Fn(&SpiderResponse) -> bool + Send + Sync + 'static>>,
+     until_cond: Arc<dyn super::stop::StopCondition>,
+ }
+ 
+ #[async_trait]
+ impl Spider for ClosureSpider {
+     fn name(&self) -> &str { &self.name }
+     fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
+     fn allowed_domains(&self) -> HashSet<String> { self.allowed_domains.clone() }
+     fn download_delay(&self) -> Duration { self.delay }
+     fn obey_robots(&self) -> bool { self.obey_robots }
+     fn max_retries(&self) -> u32 { self.max_retries }
+     fn fetcher_config(&self) -> http::Config { self.fetcher_config.clone() }
+     fn fetch_mode(&self) -> crate::fetcher::FetchMode { self.fetch_mode }
+     fn auto_rules(&self) -> Vec<(String, crate::fetcher::FetchMode)> { self.auto_rules.clone() }
+     fn auto_exclude(&self) -> HashSet<String> { self.auto_exclude.clone() }
+ 
+     /// callback 路由：根据 `resp.request.callback` 查表分发。
+     ///
+     /// 路由顺序：
+-    /// 1. callback 为 `None` 或 `"default"` → "default" handler（若有），否则 parse 闭包
++    /// 1. callback 为 `None` 或 `"default"` → "default" handler（若有）
+     /// 2. callback 为其他 label → 对应 handler（若有）
+-    /// 3. label 无匹配 → 回退到 "default" handler，再回退到 parse 闭包
++    /// 3. label 无匹配 → 回退到 "default" handler
+     /// 4. 都无 → 返回空
+     async fn handle(&self, resp: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+         let label = resp.request.callback.as_deref().unwrap_or("default");
+         match self.handlers.get(label) {
+             Some(h) => h(resp).await,
+             None => {
+                 // label 不匹配，回退到 "default" handler
+                 if let Some(default_h) = self.handlers.get("default") {
+                     default_h(resp).await
+                 } else {
+-                    // 无 default handler，回退到 parse 闭包
+-                    self.parse(resp).await
++                    // 无 default handler，返回空
++                    (vec![], vec![])
+                 }
+             }
+         }
+     }
+ 
+-    /// parse 兜底：用户未注册任何 handler 时用，或 handle() 回退时调用。
+-    async fn parse(&self, response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+-        if let Some(ref f) = self.async_parse_fn {
+-            f(response).await
+-        } else if let Some(ref f) = self.parse_fn {
+-            f(response)
+-        } else {
+-            (vec![], vec![])
+-        }
++    /// parse 兜底：ClosureSpider 不再使用 parse 闭包，统一走 `handle()` 路由。
++    /// 此实现仅满足 Spider trait 默认契约，返回空结果。
++    async fn parse(&self, _response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
++        (vec![], vec![])
+     }
+ 
+     fn is_blocked(&self, resp: &SpiderResponse) -> bool {
+         if let Some(ref f) = self.is_blocked_fn {
+             f(resp)
+         } else {
+             super::BLOCKED_STATUS_CODES.contains(&resp.status)
+         }
+     }
+ 
+@@ -380,109 +342,108 @@ impl Spider for ClosureSpider {
+ mod tests {
+     use super::*;
+     use serde_json::json;
+ 
+     #[test]
+     fn test_spider_builder_basic() {
+         let spider = SpiderBuilder::new("test")
+             .start_urls(vec!["https://example.com/"])
+             .delay_ms(100)
+             .obey_robots(false)
+-            .parse(|resp| {
+-                let _ = resp;
++            .on("default", |_resp| async move {
+                 (vec![json!({"ok": true})], vec![])
+             })
+             .build();
+ 
+         assert_eq!(spider.name(), "test");
+         assert_eq!(spider.start_urls(), vec!["https://example.com/"]);
+         assert_eq!(spider.download_delay(), Duration::from_millis(100));
+         assert!(!spider.obey_robots());
+     }
+ 
+     #[test]
+     fn test_spider_builder_allowed_domains() {
+         let spider = SpiderBuilder::new("test")
+             .start_urls(vec!["https://example.com/"])
+             .allowed_domains(vec!["example.com"])
+-            .parse(|_| (vec![], vec![]))
++            .on("default", |_| async move { (vec![], vec![]) })
+             .build();
+ 
+         let domains = spider.allowed_domains();
+         assert!(domains.contains("example.com"));
+     }
+ 
+     #[test]
+-    #[should_panic(expected = "必须设置 parse()")]
+-    fn test_spider_builder_no_parse_panics() {
++    #[should_panic(expected = "必须至少注册一个 handler")]
++    fn test_spider_builder_no_handler_panics() {
+         let _spider = SpiderBuilder::new("test")
+             .start_urls(vec!["https://example.com/"])
+             .build();
+     }
+ 
+     #[tokio::test]
+-    async fn test_closure_spider_parse() {
++    async fn test_closure_spider_default_handler() {
+         let spider = SpiderBuilder::new("test")
+             .start_urls(vec!["https://example.com/"])
+-            .parse(|resp| {
++            .on("default", |resp| async move {
+                 let doc = resp.parse().unwrap();
+                 let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
+                 (vec![json!({"title": title})], vec![])
+             })
+             .build();
+ 
+         let resp = SpiderResponse {
+             url: "https://example.com/".into(),
+             status: 200,
+             headers: Default::default(),
+             body: b"<html><body><h1>Hello</h1></body></html>".to_vec(),
+             request: SpiderRequest::get("https://example.com/"),
+             tracker: None,
+             from_cache: false,
+         };
+ 
+-        let (items, follows) = spider.parse(resp).await;
++        let (items, follows) = spider.handle(resp).await;
+         assert_eq!(items.len(), 1);
+         assert_eq!(items[0]["title"], "Hello");
+         assert!(follows.is_empty());
+     }
+ 
+     #[tokio::test]
+-    async fn test_closure_spider_parse_async() {
++    async fn test_closure_spider_async_handler() {
+         let spider = SpiderBuilder::new("async-test")
+             .start_urls(vec!["https://example.com/"])
+-            .parse_async(|resp| async move {
++            .on("default", |resp| async move {
+                 let doc = resp.parse().unwrap();
+                 let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
+                 (vec![json!({"text": text})], vec![])
+             })
+             .build();
+ 
+         let resp = SpiderResponse {
+             url: "https://example.com/".into(),
+             status: 200,
+             headers: Default::default(),
+             body: b"<html><body><p>World</p></body></html>".to_vec(),
+             request: SpiderRequest::get("https://example.com/"),
+             tracker: None,
+             from_cache: false,
+         };
+ 
+-        let (items, _) = spider.parse(resp).await;
++        let (items, _) = spider.handle(resp).await;
+         assert_eq!(items[0]["text"], "World");
+     }
+ 
+     #[test]
+     fn test_closure_spider_custom_is_blocked() {
+         let spider = SpiderBuilder::new("test")
+             .start_urls(Vec::<String>::new())
+-            .parse(|_| (vec![], vec![]))
++            .on("default", |_| async move { (vec![], vec![]) })
+             .is_blocked(|resp| resp.body.windows(7).any(|w| w == b"blocked"))
+             .build();
+ 
+         let resp = SpiderResponse {
+             url: "http://x.com".into(),
+             status: 200,
+             headers: Default::default(),
+             body: b"you are blocked".to_vec(),
+             request: SpiderRequest::get("http://x.com"),
+             tracker: None,
+@@ -562,32 +523,32 @@ mod tests {
+             body: b"<html></html>".to_vec(),
+             request: SpiderRequest::get("https://example.com/unknown").with_callback("unknown"),
+             tracker: None,
+             from_cache: false,
+         };
+         let (items, _) = spider.handle(resp_unknown).await;
+         assert_eq!(items[0]["handler"], "default");
+     }
+ 
+     #[tokio::test]
+-    async fn test_closure_spider_handle_fallback_to_parse() {
+-        // 无 handler 时，handle() 回退到 parse 闭包
++    async fn test_closure_spider_handle_default_handler() {
++        // 无 callback 时，handle() 路由到 "default" handler
+         let spider = SpiderBuilder::new("fallback")
+             .start_urls(vec!["https://example.com/"])
+-            .parse(|_resp| {
+-                (vec![json!({"via": "parse"})], vec![])
++            .on("default", |_resp| async move {
++                (vec![json!({"via": "default"})], vec![])
+             })
+             .build();
+ 
+         let resp = SpiderResponse {
+             url: "https://example.com/".into(),
+             status: 200,
+             headers: Default::default(),
+             body: b"<html></html>".to_vec(),
+             request: SpiderRequest::get("https://example.com/"),
+             tracker: None,
+             from_cache: false,
+         };
+         let (items, _) = spider.handle(resp).await;
+-        assert_eq!(items[0]["via"], "parse");
++        assert_eq!(items[0]["via"], "default");
+     }
+ }
+diff --git a/tests/auto_mode_test.rs b/tests/auto_mode_test.rs
+index b8c63c5..e5a8c9f 100644
+--- a/tests/auto_mode_test.rs
++++ b/tests/auto_mode_test.rs
+@@ -192,21 +192,21 @@ async fn test_auto_mode_with_local_server() {
+         }
+     });
+ 
+     let base_url = format!("http://{}/products/1", addr);
+ 
+     // 浣跨敤 Auto 妯″紡 + css() 杩借釜
+     let spider = SpiderBuilder::new("auto-test")
+         .start_urls(vec![base_url.clone()])
+         .mode(FetchMode::Auto)
+         .obey_robots(false)
+-        .parse(|resp| {
++        .on("default", |resp| async move {
+             // 浣跨敤 resp.css() 瑙﹀彂杩借釜
+             let products = resp.css(".product");
+             let items: Vec<Value> = products.iter().map(|p| {
+                 serde_json::json!({ "text": p.text() })
+             }).collect();
+             (items, vec![])
+         })
+         .build();
+ 
+     // Auto 妯″紡浼氭娴嬪埌 .product 杩斿洖 0 鑺傜偣
+@@ -248,21 +248,21 @@ async fn test_auto_mode_static_page_no_upgrade() {
+             });
+         }
+     });
+ 
+     let base_url = format!("http://{}/products/1", addr);
+ 
+     let spider = SpiderBuilder::new("auto-static")
+         .start_urls(vec![base_url])
+         .mode(FetchMode::Auto)
+         .obey_robots(false)
+-        .parse(|resp| {
++        .on("default", |resp| async move {
+             let products = resp.css(".product");
+             let items: Vec<Value> = products.iter().map(|p| {
+                 serde_json::json!({ "text": p.text() })
+             }).collect();
+             (items, vec![])
+         })
+         .build();
+ 
+     let engine = Engine::infra()
+         .max_pages(1)
+diff --git a/tests/builder_api_test.rs b/tests/builder_api_test.rs
+index 349381a..428d3ac 100644
+--- a/tests/builder_api_test.rs
++++ b/tests/builder_api_test.rs
+@@ -16,68 +16,67 @@ use futures::StreamExt;
+ // === SpiderBuilder tests ===
+ 
+ #[test]
+ fn test_spider_builder_full_config() {
+     let spider = SpiderBuilder::new("full-test")
+         .start_urls(vec!["https://a.com/", "https://b.com/"])
+         .allowed_domains(vec!["a.com", "b.com"])
+         .delay(Duration::from_millis(500))
+         .obey_robots(false)
+         .max_retries(5)
+-        .parse(|resp| {
+-            let _ = resp;
++        .on("default", |_resp| async move {
+             (vec![json!({"ok": true})], vec![])
+         })
+         .build();
+ 
+     assert_eq!(spider.name(), "full-test");
+     assert_eq!(spider.start_urls().len(), 2);
+     assert_eq!(spider.download_delay(), Duration::from_millis(500));
+     assert!(!spider.obey_robots());
+     assert_eq!(spider.max_retries(), 5);
+ }
+ 
+ #[test]
+ fn test_spider_builder_delay_ms() {
+     let spider = SpiderBuilder::new("delay-test")
+         .start_urls(vec!["https://x.com/"])
+         .delay_ms(250)
+-        .parse(|_| (vec![], vec![]))
++        .on("default", |_| async move { (vec![], vec![]) })
+         .build();
+     assert_eq!(spider.download_delay(), Duration::from_millis(250));
+ }
+ 
+ #[tokio::test]
+ async fn test_spider_builder_parse_with_follow() {
+     let spider = SpiderBuilder::new("follow-test")
+         .start_urls(vec!["https://example.com/"])
+-        .parse(|resp| {
++        .on("default", |resp| async move {
+             let doc = resp.parse().unwrap();
+             let items: Vec<Value> = doc.select("h1").text().into_iter()
+                 .map(|t| json!({"title": t}))
+                 .collect();
+             let follows = vec![SpiderRequest::get("https://example.com/page2")];
+             (items, follows)
+         })
+         .build();
+ 
+     let resp = SpiderResponse {
+         url: "https://example.com/".into(),
+         status: 200,
+         headers: Default::default(),
+         body: b"<html><body><h1>Home</h1></body></html>".to_vec(),
+         request: SpiderRequest::get("https://example.com/"),
+         tracker: None,
+         from_cache: false,
+     };
+ 
+-    let (items, follows) = spider.parse(resp).await;
++    let (items, follows) = spider.handle(resp).await;
+     assert_eq!(items.len(), 1);
+     assert_eq!(items[0]["title"], "Home");
+     assert_eq!(follows.len(), 1);
+ }
+ 
+ // === SpiderResponse.follow() tests ===
+ 
+ #[test]
+ fn test_response_follow_absolute_url() {
+     let resp = SpiderResponse {
+@@ -148,21 +147,21 @@ async fn test_engine_builder_local_server() {
+                 let _ = socket.write_all(resp.as_bytes()).await;
+             });
+         }
+     });
+ 
+     let base_url = format!("http://{}", addr);
+ 
+     let spider = SpiderBuilder::new("builder-test")
+         .start_urls(vec![base_url])
+         .obey_robots(false)
+-        .parse(|resp| {
++        .on("default", |resp| async move {
+             let doc = resp.parse().unwrap();
+             let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
+             (vec![json!({"title": title})], vec![])
+         })
+         .build();
+ 
+     let engine = Engine::infra()
+         .max_pages(1)
+         .max_concurrent(2)
+         .build()
+@@ -229,21 +228,21 @@ async fn test_stream_with_builder() {
+                 let _ = socket.write_all(resp.as_bytes()).await;
+             });
+         }
+     });
+ 
+     let base_url = format!("http://{}", addr);
+ 
+     let spider = SpiderBuilder::new("stream-builder")
+         .start_urls(vec![base_url])
+         .obey_robots(false)
+-        .parse(|resp| {
++        .on("default", |resp| async move {
+             let doc = resp.parse().unwrap();
+             let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
+             (vec![json!({"text": text})], vec![])
+         })
+         .build();
+ 
+     let engine = Engine::infra().max_pages(1).build().unwrap();
+     let mut stream = engine.run_stream(spider).events();
+ 
+     let mut items = 0;
+diff --git a/tests/callback_routing_test.rs b/tests/callback_routing_test.rs
+index 04a1f07..8fcefed 100644
+--- a/tests/callback_routing_test.rs
++++ b/tests/callback_routing_test.rs
+@@ -111,32 +111,32 @@ async fn test_callback_default_label_explicit_string() {
+             (vec![json!({"hit": "default"})], vec![])
+         })
+         .build();
+ 
+     let resp = make_resp("https://example.com/", "<html></html>", Some("default"));
+     let (items, _) = spider.handle(resp).await;
+     assert_eq!(items[0]["hit"], "default");
+ }
+ 
+ #[tokio::test]
+-async fn test_callback_no_handler_falls_back_to_parse() {
+-    // 无 on() 注册，只用 parse() → handle() 回退到 parse 闭包
++async fn test_callback_default_handler_serves_no_callback() {
++    // 只注册 "default" handler，无 callback 时走 default handler
+     let spider = SpiderBuilder::new("fallback")
+         .start_urls(vec!["https://example.com/"])
+-        .parse(|_resp| {
+-            (vec![json!({"via": "parse"})], vec![])
++        .on("default", |_resp| async move {
++            (vec![json!({"via": "default"})], vec![])
+         })
+         .build();
+ 
+     let resp = make_resp("https://example.com/", "<html></html>", None);
+     let (items, _) = spider.handle(resp).await;
+-    assert_eq!(items[0]["via"], "parse");
++    assert_eq!(items[0]["via"], "default");
+ }
+ 
+ #[tokio::test]
+ async fn test_callback_pipeline_produces_follows() {
+     // 验证 default handler 产出带 callback label 的 follow 请求
+     let spider = SpiderBuilder::new("pipeline")
+         .start_urls(vec!["https://example.com/list"])
+         .on("default", |resp| async move {
+             // 列表页：follow 到 "detail"
+             let follows: Vec<_> = resp.css("a").iter()
+@@ -198,29 +198,29 @@ async fn test_spider_trait_default_handle_calls_parse() {
+ 
+     let spider = PlainSpider;
+     let resp = make_resp("https://example.com/", "<html></html>", None);
+     // 默认 handle() 应调用 parse()
+     let (items, _) = spider.handle(resp).await;
+     assert_eq!(items[0]["default_handle"], true);
+ }
+ 
+ #[tokio::test]
+ async fn test_callback_empty_handler_returns_empty() {
+-    // 只注册 on()，无 parse()，无 default handler 匹配时返回空
++    // 只注册 on()，无 "default" handler，无 callback 匹配时返回空
+     let spider = SpiderBuilder::new("empty")
+         .start_urls(vec!["https://example.com/"])
+         .on("only", |_resp| async move {
+             (vec![json!({"hit": "only"})], vec![])
+         })
+         .build();
+ 
+-    // callback=None，无 "default" handler，无 parse 闭包 → 返回空
++    // callback=None，无 "default" handler → 返回空
+     let resp = make_resp("https://example.com/", "<html></html>", None);
+     let (items, follows) = spider.handle(resp).await;
+     assert!(items.is_empty());
+     assert!(follows.is_empty());
+ 
+     // callback="only" → 命中 handler
+     let resp2 = make_resp("https://example.com/", "<html></html>", Some("only"));
+     let (items, _) = spider.handle(resp2).await;
+     assert_eq!(items[0]["hit"], "only");
+ }
+diff --git a/tests/cf_bypass_real_test.rs b/tests/cf_bypass_real_test.rs
+index 6f76d44..c073812 100644
+--- a/tests/cf_bypass_real_test.rs
++++ b/tests/cf_bypass_real_test.rs
+@@ -188,21 +188,21 @@ async fn test_stealth_cf_js_challenge() {
+ async fn test_engine_with_proxy_pool() {
+     if !proxy_available().await {
+         eprintln!("SKIP: 代理 {} 不可用", PROXY);
+         return;
+     }
+ 
+     let spider = SpiderBuilder::new("proxy-crawl")
+         .start_urls(vec!["https://quotes.toscrape.com/"])
+         .concurrent(2)
+         .obey_robots(false)
+-        .parse(|resp| {
++        .on("default", |resp| async move {
+             let doc = resp.parse().unwrap();
+             let items: Vec<serde_json::Value> = doc.select(".quote").iter().map(|q| {
+                 serde_json::json!({
+                     "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
+                     "author": q.select_one(".author").map(|n| n.text()).unwrap_or_default(),
+                 })
+             }).collect();
+             (items, vec![])
+         })
+         .build();
+diff --git a/tests/real_scrape_test.rs b/tests/real_scrape_test.rs
+index 907b17b..6152151 100644
+--- a/tests/real_scrape_test.rs
++++ b/tests/real_scrape_test.rs
+@@ -49,21 +49,21 @@ async fn test_quotes_full_crawl_10_pages() {
+     if resp.is_err() {
+         eprintln!("SKIP: quotes.toscrape.com 不可达");
+         return;
+     }
+ 
+     let spider = SpiderBuilder::new("quotes-full")
+         .start_urls(vec!["https://quotes.toscrape.com/"])
+         .concurrent(4)
+         .delay_ms(200)
+         .obey_robots(false)
+-        .parse(|resp| {
++        .on("default", |resp| async move {
+             let doc = resp.parse().unwrap();
+             let items: Vec<Value> = doc.select(".quote").iter().map(|q| {
+                 serde_json::json!({
+                     "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
+                     "author": q.select_one(".author").map(|n| n.text()).unwrap_or_default(),
+                     "tags": q.select(".tag").text(),
+                 })
+             }).collect();
+ 
+             // 跟踪分页
+@@ -284,21 +284,21 @@ async fn test_spider_builder_engine_integration() {
+         eprintln!("SKIP: books.toscrape.com 不可达");
+         return;
+     }
+ 
+     let spider = SpiderBuilder::new("books")
+         .start_urls(vec!["https://books.toscrape.com/"])
+         .concurrent(2)
+         .delay_ms(300)
+         .obey_robots(false)
+         .max_retries(2)
+-        .parse(|resp| {
++        .on("default", |resp| async move {
+             let doc = resp.parse().unwrap();
+             let items: Vec<Value> = doc.select("article.product_pod").iter().map(|book| {
+                 serde_json::json!({
+                     "title": book.select_one("h3 a").and_then(|a| a.attr("title")).unwrap_or_default(),
+                     "price": book.select_one(".price_color").map(|n| n.text()).unwrap_or_default(),
+                 })
+             }).collect();
+ 
+             // 跟踪下一页
+             let follows: Vec<SpiderRequest> = doc.select_one("li.next a")

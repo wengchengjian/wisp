@@ -18,9 +18,7 @@ async fn status_codes_concurrent_increment_is_correct() {
             })
         })
         .collect();
-    for h in handles {
-        h.await.unwrap();
-    }
+    for h in handles { h.await.unwrap(); }
 
     let snap = stats.status_codes_snapshot();
     assert_eq!(snap.get(&200).copied(), Some(5000), "200 计数应为 50*100");
@@ -33,10 +31,7 @@ async fn status_codes_snapshot_reflects_recorded_status() {
     // 加强断言：snapshot 不仅要返回非空，还要精确反映记录的状态码计数。
     // 防止 status_codes_snapshot 退化为永远返回空 HashMap。
     let stats = Arc::new(SpiderStats::new());
-    assert!(
-        stats.status_codes_snapshot().is_empty(),
-        "fresh stats snapshot 应为空"
-    );
+    assert!(stats.status_codes_snapshot().is_empty(), "fresh stats snapshot 应为空");
 
     wisp::crawl::record_status(&stats, 200);
     wisp::crawl::record_status(&stats, 200);

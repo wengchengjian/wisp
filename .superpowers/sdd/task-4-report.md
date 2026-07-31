@@ -1,106 +1,71 @@
-# Task 4 报告：BrowserCookieJar 实现（通过 CDP）
+# Task 4 Report — P1-2 Scheduler seen/heap 锁分离
 
-## 实施摘要
+## Steps Taken
 
-按 plan 5 个步骤 TDD 实施 BrowserCookieJar：
+1. **Step 1 — 写失败测试**：新建 `tests/p1_scheduler_test.rs`，逐字从 brief 复制两个测试（`scheduler_concurrent_push_pop_dedup_correct` 与 `scheduler_fingerprint_strategy_seen_split_works`）。
+2. **Step 2 — 基线测试**：`cargo test --test p1_scheduler_test` → 2 passed（原 Mutex 实现也通过，记录基线 0.00s）。
+3. **Step 3 — 重构 imports + struct 定义**：
+   - imports 增加 `use dashmap::DashSet;`
+   - 删除 `SchedulerInner`，新增 `HeapInner { heap, seq }`
+   - `Scheduler` 改为 `heap: Arc<Mutex<HeapInner>>` + `seen_exact: Arc<DashSet<String>>` + `seen_fp: Arc<DashSet<u64>>` + `strategy: DedupStrategy`
+4. **Step 4 — `with_strategy`**：替换为分别构造 `HeapInner` 与两个 `DashSet` 的版本。
+5. **Step 5 — `push`**：先 DashSet insert 查重，命中才锁 heap 入队。
+6. **Step 6 — `pop`**：锁改为 `self.heap`。
+7. **Step 7 — `pending_urls`**：锁改为 `self.heap`。
+8. **Step 8 — `seen_urls`**：直接对 DashSet iter 收集，不锁 heap。
+9. **Step 9 — `len`/`is_empty`**：锁改为 `self.heap`。
+10. **Step 10 — `restore`**：清 seen DashSet → 锁 heap 清空 → 重建 seen（Fingerprint 模式 `parse::<u64>()` 回填）→ 锁 heap 重排队 pending。
+11. **Step 11 — 全量验证**：见下。
+12. **Step 12 — 提交**：`git add src/crawl/scheduling/scheduler.rs tests/p1_scheduler_test.rs && git commit -m "perf: Scheduler seen/heap 锁分离 (P1-2)"`，仅暂存这 2 个文件。
 
-- **Step 1**：创建 `/home/weng/wisp/src/cookie/browser.rs`，包含完整实现 + 3 个单元测试 + 2 个 ignored 集成测试。
-- **Step 2**：运行 `cargo test --lib cookie::browser::tests`，确认 0 tests（模块未声明，文件未被编译）—— 与 plan 预期失败模式一致。
-- **Step 3**：修改 `/home/weng/wisp/src/cookie/mod.rs`，在 `pub mod cf;` 之前添加 `pub mod browser;`，并在 re-export 区添加 `pub use browser::BrowserCookieJar;`。
-- **Step 4**：运行测试，3 个单元测试全绿，2 个集成测试 ignored（需 Chrome 环境）。
-- **Step 5**：提交 `decdb60`。
-
-## 文件变更
-
-| 文件 | 类型 | 行数 |
-| --- | --- | --- |
-| `src/cookie/browser.rs` | 新建 | 282 行 |
-| `src/cookie/mod.rs` | 修改 | +2 行（`pub mod browser;` + `pub use browser::BrowserCookieJar;`） |
-
-## 实现要点
-
-- `BrowserCookieJar` 持有 `Arc<CdpSession>` + `Option<String>` session_id
-- 两个构造函数：`new_browser_level`（无 session_id，browser 范围）/ `new_for_target`（绑定 page session）
-- `CookieJar` trait 实现：
-  - `get(url)` → `Network.getCookies`，错误降级为空 Vec + warn 日志
-  - `set(cookie)` → `Network.setCookie`，expires 可选注入，错误降级为 warn 日志
-  - `clear(url)` → `Network.clearBrowserCookies`（清除所有 cookie，无 url 过滤）
-- `value_to_cookie` 静态方法：从 CDP JSON 解析为 `Cookie`，缺失字段使用合理默认值（path=`/`、secure=false、http_only=false），缺失 name 返回 None
-
-## 测试结果
-
-### 单元测试（无 Chrome 依赖）
+## Verification Commands & Output
 
 ```
+$ cargo test --test p1_scheduler_test
+running 2 tests
+test scheduler_fingerprint_strategy_seen_split_works ... ok
+test scheduler_concurrent_push_pop_dedup_correct ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --lib crawl::scheduling
 running 5 tests
-test cookie::browser::tests::browser_clear_removes_cookies ... ignored
-test cookie::browser::tests::browser_set_and_get_cookie_roundtrip ... ignored
-test cookie::browser::tests::value_to_cookie_uses_default_domain_when_missing ... ok
-test cookie::browser::tests::value_to_cookie_extracts_fields ... ok
-test cookie::browser::tests::value_to_cookie_returns_none_for_missing_name ... ok
+test crawl::scheduling::cron::tests::test_parse_every_30_min ... ok
+test crawl::scheduling::cron::tests::test_parse_valid_cron ... ok
+test crawl::scheduling::scheduler::tests::fingerprint_seen_roundtrip_preserves_hashes ... ok
+test crawl::scheduling::cron::tests::test_next_run_is_in_future_or_none ... ok
+test crawl::scheduling::cron::tests::test_parse_invalid_cron ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 202 filtered out; finished in 0.00s
 
-test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured
+$ cargo test --lib
+test result: ok. 207 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+$ cargo build
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.65s
+
+$ cargo clippy --lib 2>&1 | grep "generated.*warnings"
+warning: `wisp` (lib) generated 27 warnings (run `cargo clippy --fix --lib -p wisp -- ` to apply 15 suggestions)
 ```
 
-### cookie 模块整体（无回归）
+所有命令均退出码 0。clippy 27 warnings = 基线，未引入新警告。
 
-```
-running 25 tests
-test result: ok. 23 passed; 0 failed; 2 ignored
-```
+## Warnings Encountered & Resolution
 
-### 全 lib 测试（无回归）
+无新增 clippy 警告。`src/crawl/mod.rs` 既有 6 个 unused import 警告为既有基线（`Client` / `StreamExt` / `Mutex` 等），与本次改动无关，未触碰。`HashSet` 仍被 `seen_urls()` 返回类型与 `restore()` 参数类型使用，未变为未用。`fingerprint()` 函数仍被 `push` 与 `restore` 使用。无偏离 brief 之处。
 
-```
-test result: ok. 308 passed; 0 failed; 10 ignored
-```
+## Final Commit
 
-### Clippy
+- **SHA**: `2524f3add7f197c0482b3a178b3a82543ade7538`
+- **Branch**: `master`
+- **Message**: `perf: Scheduler seen/heap 锁分离 (P1-2)`
+- **Staged files**（仅 2 个，符合 brief）:
+  - `src/crawl/scheduling/scheduler.rs`（82 行变更：39 删 43 增）
+  - `tests/p1_scheduler_test.rs`（新增 44 行）
 
-```
-cargo clippy --lib  → Finished, 无 warning/error
-```
+## Self-Review Note
 
-## Commit
-
-- Hash：`decdb60`
-- Message：`feat: 添加 BrowserCookieJar（通过 CDP Network 域）`
-- Parent：`54aeb4c`（Task 1-3 合并 commit）
-
-## 自审发现
-
-### 1. 偏离 plan 的两处主动调整
-
-**调整 1：精简 imports**
-
-plan 原文：
-```rust
-use crate::error::{BrowserError, Result, WispError};
-```
-
-实际写入：
-```rust
-use crate::error::Result;
-```
-
-理由：`BrowserError` 和 `WispError` 在实现代码中均未被直接引用（仅通过 `execute_with_session` 返回的 `Result<Value>` 间接出现）。保留它们会触发 `unused_imports` 警告，与现有 `cf.rs` / `http.rs` 的简洁风格不符。按"精准修改 / 简洁优先"原则裁剪。
-
-**调整 2：测试中 `unwrap` → `expect`**
-
-plan 中两处 `Url::parse("http://localhost/").unwrap()` 改为 `.expect("合法 URL")`。理由：任务"项目约定"明确要求"用 expect 替代 unwrap"。
-
-### 2. 集成测试可访问性验证
-
-集成测试中使用了 `page.session` 和 `page.session_id`（均为 `pub(crate)` 字段）。由于 `src/cookie/browser.rs` 与 `src/browser/page.rs` 同属一个 crate，可正常访问，编译通过。
-
-### 3. 集成测试未在本环境执行
-
-两个 `#[ignore]` 集成测试需要 Chrome 浏览器环境，本环境无 Chrome，未运行 `--ignored`。代码已通过编译检查，逻辑待 Chrome 环境验证。
-
-### 4. 与 plan Step 2 预期差异
-
-plan 预期 Step 2 报错"cannot find `BrowserCookieJar`"，实际表现为"0 tests filtered out"。原因：Rust 不会自动编译未在 mod.rs 声明的 orphan 文件，因此 `browser.rs` 中的测试根本未被收集。失败语义等价（测试无法通过），但表现形式不同。
-
-## 状态
-
-✅ **完成**：3 个单元测试全绿，2 个集成测试 ignored（按设计），无回归，clippy 干净，已提交 `decdb60`。
+- 严格按 brief 12 步执行，所有代码块逐字采用，无自由发挥。
+- `SchedulerInner` 完全移除；剩余 `g.heap` / `g.seq` 引用均作用于 `HeapInner`（合法）。`self.inner`、`g.strategy`、`g.seen_exact`、`g.seen_fp`、`SchedulerInner` 在文件中已 0 处残留（grep 确认）。
+- `DedupStrategy` 因 `Copy` 直接作为字段（非 `Arc`），与 brief 指引一致。
+- `#[derive(Clone)]` 仍合法：`Arc<Mutex<HeapInner>>`、`Arc<DashSet<_>>`、`DedupStrategy`（Copy）均 Clone。
+- `restore` 在 Fingerprint 模式下使用 `url.parse::<u64>()` 回填 `seen_fp`，未对已指纹字符串再次 `fingerprint()`，符合 brief 关键提示。既有单测 `fingerprint_seen_roundtrip_preserves_hashes` 仍通过。
+- 范围未越界：仅改 `scheduler.rs` + 新建 `tests/p1_scheduler_test.rs`，未改动 Engine / Spider / 其他模块。

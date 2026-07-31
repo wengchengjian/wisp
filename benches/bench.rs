@@ -1,28 +1,39 @@
 //! Criterion benchmarks for wisp parser + crawl concurrency performance.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use serde_json::json;
 use tokio::runtime::Runtime;
 use tracing_subscriber::prelude::*;
+use wisp::crawl::middleware::UaRotationMiddleware;
+use wisp::crawl::stop::MaxPages;
+use wisp::crawl::{ClosureSpider, SpiderBuilder};
+use wisp::fetcher::FetchMode;
 use wisp::parser::Node;
+use wisp::storage::{MemoryStore, Store};
 
 mod timing_layer;
 use timing_layer::TimingLayer;
 
-static TIMING: OnceLock<TimingLayer> = OnceLock::new();
+static TIMING: OnceLock<Option<TimingLayer>> = OnceLock::new();
 
 /// 获取全局 TimingLayer（注册 global subscriber，只设一次）。
 /// process_request 通过 tokio::spawn 在 worker 线程执行，
 /// thread-local subscriber 抓不到，必须用 global。
-fn timing() -> &'static TimingLayer {
+/// 仅在设置 `WISP_TIMING=1` 时启用，避免观测层本身污染基准数据。
+fn timing() -> Option<&'static TimingLayer> {
     TIMING.get_or_init(|| {
+        if std::env::var_os("WISP_TIMING").is_none() {
+            return None;
+        }
         let layer = TimingLayer::new();
         let _ = tracing::subscriber::set_global_default(
             tracing_subscriber::registry().with(layer.clone()),
         );
-        layer
+        Some(layer)
     })
+    .as_ref()
 }
 
 // ============================ parser benchmarks ============================
@@ -191,12 +202,14 @@ fn bench_engine_concurrent_fetch(c: &mut Criterion) {
             .obey_robots(false)
             .build()
             .unwrap();
-        timing.reset();
         group.bench_with_input(
             BenchmarkId::from_parameter(concurrent),
             &concurrent,
             |b, _| {
                 b.iter(|| {
+                    if let Some(t) = timing {
+                        t.reset();
+                    }
                     rt.block_on(async {
                         let spider = BenchSpider { urls: urls.clone() };
                         engine.run(spider).await.unwrap()
@@ -204,8 +217,10 @@ fn bench_engine_concurrent_fetch(c: &mut Criterion) {
                 })
             },
         );
-        println!("engine_concurrent_fetch/{} - Stage Timing:", concurrent);
-        timing.print_summary();
+        if let Some(t) = timing {
+            println!("engine_concurrent_fetch/{} - Stage Timing:", concurrent);
+            t.print_summary();
+        }
     }
     group.finish();
 }
@@ -252,6 +267,236 @@ fn bench_scheduler_concurrent_push(c: &mut Criterion) {
     });
 }
 
+// ============================ novel flow benchmarks ============================
+
+/// 本地小说站：首页列出 books 本书，详情页列出 chapters 章，章节页返回正文。
+/// 保持 keep-alive，模拟真实小说的页面结构与声明式 Spider 流程。
+async fn spawn_novel_server(books: usize, chapters: usize, chapter_kb: usize) -> String {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let home: String = {
+        let links: String = (1..=books)
+            .map(|i| {
+                format!(
+                    r#"<div class="bookbox"><a class="s2" href="/book/{i}">Book {i}</a></div>"#
+                )
+            })
+            .collect();
+        format!("<html><head><title>Novel Home</title></head><body>{links}</body></html>")
+    };
+    let mut pages: HashMap<String, Vec<u8>> = HashMap::new();
+    pages.insert("/".to_string(), home.into_bytes());
+    for book in 1..=books {
+        let links: String = (1..=chapters)
+            .map(|c| {
+                format!(
+                    r#"<li class="name"><a class="name" href="/chapter/{book}/{c}">第{c}章</a></li>"#
+                )
+            })
+            .collect();
+        let body = format!(
+            "<html><body><div class=\"list\"><ul>{links}</ul></div></body></html>"
+        );
+        pages.insert(format!("/book/{book}"), body.into_bytes());
+    }
+    let paragraph = "这是用于性能基准测试的章节正文。每一段都包含足够多的中文文本，用于衡量 HTML 解析、文本提取与内容清洗的开销。";
+    for book in 1..=books {
+        for c in 1..=chapters {
+            let mut content = String::with_capacity(chapter_kb * 1024);
+            while content.len() < chapter_kb * 1024 {
+                content.push_str(paragraph);
+                content.push('\n');
+            }
+            let body = format!(
+                "<html><body><div id=\"content\">{}</div></body></html>",
+                content
+            );
+            pages.insert(format!("/chapter/{book}/{c}"), body.into_bytes());
+        }
+    }
+    let pages: HashMap<String, Arc<Vec<u8>>> = pages
+        .into_iter()
+        .map(|(k, v)| (k, Arc::new(v)))
+        .collect();
+    let pages = Arc::new(pages);
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            let pages = Arc::clone(&pages);
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(socket);
+                let mut line = Vec::with_capacity(512);
+                loop {
+                    line.clear();
+                    loop {
+                        let Ok(n) = reader.read_until(b'\n', &mut line).await else {
+                            return;
+                        };
+                        if n == 0 || line.len() > 65536 {
+                            return;
+                        }
+                        if line.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&line);
+                    let path = request
+                        .lines()
+                        .next()
+                        .unwrap_or("GET / HTTP/1.1")
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("/");
+                    let body = pages.get(path).cloned().unwrap_or_default();
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                        body.len()
+                    );
+                    if reader.get_mut().write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if reader.get_mut().write_all(&body).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    format!("http://{}", addr)
+}
+
+fn clean_content(text: String) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn novel_spiders(base: &str, book_limit: usize) -> Vec<ClosureSpider> {
+    vec![
+        SpiderBuilder::new("home")
+            .start_urls(vec![format!("{base}/")])
+            .on_links("default", &["a.s2"], "detail", |_page, _idx, a| {
+                json!({ "title": a.text().trim() })
+            })
+            .build(),
+        SpiderBuilder::new("detail")
+            .on_links("detail", &["a.name"], "chapter", |page, idx, a| {
+                json!({
+                    "title": page.meta_str("title"),
+                    "author": page.select_one(".txt ul:nth-child(1)")
+                        .map(|n| n.text().trim().to_string())
+                        .unwrap_or_default(),
+                    "chapter_title": a.text().trim(),
+                    "chapter_index": idx,
+                })
+            })
+            .until(MaxPages(book_limit))
+            .build(),
+        SpiderBuilder::new("chapter")
+            .on_content("chapter", &["#content"], clean_content)
+            .build(),
+    ]
+}
+
+/// 运行一轮小说流程，返回 item 数。`transport=true` 时带上 UA/headers/cookie 中间件。
+async fn run_novel_once(
+    base: &str,
+    mode: FetchMode,
+    cache: Option<Arc<dyn Store>>,
+    transport: bool,
+) -> usize {
+    let spiders = novel_spiders(base, 10);
+    let mut engine = Engine::infra()
+        .fetch_mode(mode)
+        .max_concurrent(4)
+        .max_pages(500)
+        .obey_robots(false);
+    if transport {
+        engine = engine
+            .ua_rotation(UaRotationMiddleware::desktop())
+            .headers(vec![("Accept".into(), "text/html".into())])
+            .cookie_challenge(true);
+    }
+    if let Some(store) = cache {
+        engine = engine.cache_store(store);
+    }
+    let (_, items) = engine.build().unwrap().run_many(spiders).await.unwrap();
+    items.len()
+}
+
+/// 小说爬虫三段式流程吞吐：首页 → 详情 → 章节，覆盖声明式 handler + 多 Spider 路由。
+fn bench_novel_flow(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let base = rt.block_on(spawn_novel_server(10, 30, 8));
+    let timing = timing();
+    let mut group = c.benchmark_group("novel_flow");
+    group.sample_size(10);
+    group.bench_function("multi_spider_10books", |b| {
+        b.iter(|| {
+            if let Some(t) = timing {
+                t.reset();
+            }
+            rt.block_on(async {
+                black_box(run_novel_once(&base, FetchMode::Auto, None, true).await);
+            });
+            if let Some(t) = timing {
+                println!("novel_flow Stage Timing:");
+                t.print_summary();
+            }
+        })
+    });
+    group.finish();
+}
+
+/// 配置对照：Auto / Http / 最小传输链 / 缓存回放，量化中间件与缓存开销。
+fn bench_novel_flow_variants(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let base = rt.block_on(spawn_novel_server(10, 30, 8));
+    let mut group = c.benchmark_group("novel_flow_variants");
+    group.sample_size(10);
+
+    group.bench_function("auto_default", |b| {
+        b.iter(|| rt.block_on(run_novel_once(&base, FetchMode::Auto, None, true)))
+    });
+    group.bench_function("http_with_transport", |b| {
+        b.iter(|| rt.block_on(run_novel_once(&base, FetchMode::Http, None, true)))
+    });
+    group.bench_function("http_minimal", |b| {
+        b.iter(|| rt.block_on(run_novel_once(&base, FetchMode::Http, None, false)))
+    });
+
+    // 缓存回放：同一 Engine 复用 MemoryStore，衡量稳定态缓存命中吞吐。
+    let cache_engine = Engine::infra()
+        .fetch_mode(FetchMode::Http)
+        .cache_store(Arc::new(MemoryStore::default()))
+        .max_concurrent(4)
+        .max_pages(500)
+        .obey_robots(false)
+        .build()
+        .unwrap();
+    group.bench_function("http_cached_replay", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                let spiders = novel_spiders(&base, 10);
+                let (_, items) = cache_engine.run_many(spiders).await.unwrap();
+                black_box(items.len());
+            })
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default();
@@ -263,5 +508,7 @@ criterion_group!(
         bench_engine_concurrent_fetch,
         bench_scheduler_push,
         bench_scheduler_concurrent_push,
+        bench_novel_flow,
+        bench_novel_flow_variants,
 );
 criterion_main!(benches);

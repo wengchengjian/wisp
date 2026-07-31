@@ -1,0 +1,243 @@
+﻿=== COMMITS ===
+49a729b chore: 清理 dead_code warnings
+
+=== STAT ===
+ src/browser/mod.rs        |  1 -
+ src/browser/page.rs       |  3 +--
+ src/crawl/engine.rs       |  2 +-
+ src/fetcher/mod.rs        |  3 +--
+ src/fetcher/session.rs    |  2 +-
+ src/stealth/challenge.rs  | 46 ----------------------------------------------
+ tests/builder_api_test.rs |  6 +-----
+ 7 files changed, 5 insertions(+), 58 deletions(-)
+
+=== DIFF ===
+diff --git a/src/browser/mod.rs b/src/browser/mod.rs
+index b1e4275..87cddc0 100644
+--- a/src/browser/mod.rs
++++ b/src/browser/mod.rs
+@@ -52,17 +52,16 @@ impl Browser {
+         cmd.args(&chrome_args)
+             .stdin(Stdio::null())
+             .stdout(Stdio::null())
+             .stderr(Stdio::null());
+ 
+         // On Windows: control window visibility via creation flags
+         #[cfg(windows)]
+         {
+-            use std::os::windows::process::CommandExt;
+             if options.headless {
+                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+             } else {
+                 cmd.creation_flags(0x00000000); // Explicitly clear to prevent auto CREATE_NO_WINDOW
+             }
+         }
+ 
+         let child = cmd.spawn()
+diff --git a/src/browser/page.rs b/src/browser/page.rs
+index 5dcc87e..eabf846 100644
+--- a/src/browser/page.rs
++++ b/src/browser/page.rs
+@@ -7,17 +7,16 @@ use serde_json::{json, Value};
+ use crate::browser::cdp::CdpSession;
+ use crate::error::{WispError, Result};
+ use base64::Engine;
+ 
+ pub struct Page {
+     pub(crate) session: Arc<CdpSession>,
+     pub(crate) session_id: String,
+     pub(crate) frame_id: String,
+-    pub(crate) headless: bool,
+ }
+ 
+ impl Page {
+     /// Execute a raw CDP command on this page's target session.
+     pub async fn cmd(&self, method: &str, params: Value) -> Result<Value> {
+         self.session.execute_with_session(method, params, Some(&self.session_id)).await
+     }
+ 
+@@ -38,17 +37,17 @@ impl Page {
+         // NEVER send Runtime.enable or Console.enable!
+         session.execute_with_session("Page.enable", json!({}), Some(&session_id)).await?;
+         let frame_tree = session.execute_with_session("Page.getFrameTree", json!({}), Some(&session_id)).await?;
+         let frame_id = frame_tree.get("frameTree").and_then(|ft| ft.get("frame")).and_then(|f| f.get("id")).and_then(|id| id.as_str())
+             .ok_or_else(|| WispError::CdpError("no frame id".into()))?.to_string();
+         let _ = session.execute_with_session("Log.enable", json!({}), Some(&session_id)).await;
+         session.execute_with_session("Page.setLifecycleEventsEnabled", json!({"enabled": true}), Some(&session_id)).await?;
+ 
+-        let page = Self { session, session_id, frame_id, headless };
++        let page = Self { session, session_id, frame_id };
+ 
+         // Inject stealth scripts (conditional on headless/headed)
+         let stealth_script = if headless {
+             crate::browser::patches::HEADLESS_STEALTH_SCRIPT
+         } else {
+             crate::browser::patches::HEADED_STEALTH_SCRIPT
+         };
+         page.cmd("Page.addScriptToEvaluateOnNewDocument", json!({"source": stealth_script})).await?;
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index a0c016e..d148b5b 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -140,17 +140,17 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+     let cached_resp: Option<crate::storage::CachedResponse> = if ctx.dev_mode {
+         ctx.cache_store.as_ref().and_then(|s| {
+             s.load_cached_response(&req.url, method_str).ok().flatten()
+         })
+     } else {
+         None
+     };
+ 
+-    let mut final_resp: Option<SpiderResponse> = None;
++    let final_resp: Option<SpiderResponse>;
+     let mut last_error: Option<String> = None;
+ 
+     if let Some(cached) = cached_resp {
+         // 命中缓存
+         let resp = SpiderResponse {
+             url: req.url.clone(),
+             status: cached.status,
+             headers: cached.headers,
+diff --git a/src/fetcher/mod.rs b/src/fetcher/mod.rs
+index 511bb77..5454cbf 100644
+--- a/src/fetcher/mod.rs
++++ b/src/fetcher/mod.rs
+@@ -28,20 +28,19 @@
+ pub mod response;
+ pub mod session;
+ 
+ pub use response::{Response, Request, Method};
+ pub use session::Session;
+ 
+ use std::collections::HashMap;
+ use std::time::Duration;
+-use serde_json::Value;
+ use wreq_util::Profile;
+ 
+-use crate::error::{WispError, Result};
++use crate::error::Result;
+ use crate::http::block::DomainBlocker;
+ 
+ /// 鎶撳彇妯″紡銆?
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum FetchMode {
+     /// 蹇€?HTTP锛圱LS 鎸囩汗妯℃嫙锛屾棤娴忚鍣級銆傛垚鏈渶浣庯紝姣绾с€?
+     Http,
+     /// 娴忚鍣ㄦ覆鏌擄紙JS 鎵ц锛屾棤 CF 缁曡繃锛夈€備腑绛夋垚鏈紝绉掔骇銆?
+diff --git a/src/fetcher/session.rs b/src/fetcher/session.rs
+index 3229c48..bb7ef74 100644
+--- a/src/fetcher/session.rs
++++ b/src/fetcher/session.rs
+@@ -73,17 +73,17 @@ impl Session {
+         let mut resp = self.fetcher.post(url, body).await?;
+         self.store_cookies_from_response(url, &resp).await;
+         resp.cookies = self.cookie_strings_for(url).await;
+         Ok(resp)
+     }
+ 
+     /// 发送自定义请求。
+     pub async fn fetch(&self, req: Request) -> Result<Response> {
+-        let mut resp = self.fetcher.fetch(req).await?;
++        let resp = self.fetcher.fetch(req).await?;
+         self.store_cookies_from_response(&resp.url.clone(), &resp).await;
+         Ok(resp)
+     }
+ 
+     /// 手动设置 cookie。
+     pub async fn set_cookie(&self, domain: &str, name: &str, value: &str) {
+         let mut cookies = self.cookies.lock().await;
+         cookies
+diff --git a/src/stealth/challenge.rs b/src/stealth/challenge.rs
+index 97364f9..47a3f9f 100644
+--- a/src/stealth/challenge.rs
++++ b/src/stealth/challenge.rs
+@@ -115,62 +115,16 @@ impl<'a> ChallengeSolver<'a> {
+                 }
+                 ChallengeType::ManagedChallenge => {
+                     // Managed: wait, may transition to Turnstile
+                     tokio::time::sleep(Duration::from_secs(2)).await;
+                 }
+             }
+         }
+     }
+-
+-    /// Wait for a JS challenge (5-second shield) to complete.
+-    /// The page will automatically reload once the challenge passes.
+-    async fn wait_js_challenge(&self, timeout: Duration) -> Result<()> {
+-        let deadline = tokio::time::Instant::now() + timeout;
+-
+-        loop {
+-            if tokio::time::Instant::now() > deadline {
+-                return Err(WispError::Timeout("JS challenge did not resolve in time".into()));
+-            }
+-
+-            // Check if challenge is gone
+-            let check = self.detect().await?;
+-            if check == ChallengeType::None {
+-                return Ok(());
+-            }
+-
+-            // Wait a bit before checking again
+-            tokio::time::sleep(Duration::from_millis(1000)).await;
+-        }
+-    }
+-
+-    /// Wait for a managed challenge to resolve.
+-    /// May involve JS execution + possible Turnstile appearance.
+-    async fn wait_managed(&self, timeout: Duration) -> Result<()> {
+-        let deadline = tokio::time::Instant::now() + timeout;
+-
+-        loop {
+-            if tokio::time::Instant::now() > deadline {
+-                return Err(WispError::Timeout("Managed challenge did not resolve in time".into()));
+-            }
+-
+-            let check = self.detect().await?;
+-            match check {
+-                ChallengeType::None => return Ok(()),
+-                ChallengeType::Turnstile => {
+-                    // Managed challenge escalated to Turnstile
+-                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+-                    return turnstile::solve_turnstile(self.page, remaining).await;
+-                }
+-                _ => {
+-                    tokio::time::sleep(Duration::from_millis(1000)).await;
+-                }
+-            }
+-        }
+-    }
+ }
+ 
+ /// Check if a response/page comes from Cloudflare (by checking headers or page content).
+ pub async fn is_cloudflare_page(page: &Page) -> Result<bool> {
+     let js = r#"(() => {
+         // Check for CF-specific elements or headers
+         const body = document.body ? document.body.innerHTML : '';
+         return body.includes('cloudflare') ||
+diff --git a/tests/builder_api_test.rs b/tests/builder_api_test.rs
+index 428d3ac..a2cedd7 100644
+--- a/tests/builder_api_test.rs
++++ b/tests/builder_api_test.rs
+@@ -1,21 +1,17 @@
+ //! Builder pattern API tests (no network required).
+ 
+ use std::time::Duration;
+-use std::collections::HashSet;
+-use async_trait::async_trait;
+ use serde_json::{json, Value};
+ use wisp::crawl::{
+-    Spider, SpiderBuilder, ClosureSpider, Engine, SpiderRequest, SpiderResponse,
++    Spider, SpiderBuilder, Engine, SpiderRequest, SpiderResponse,
+ };
+ use wisp::crawl::CrawlEvent;
+-use wisp::http;
+ use wisp::parser::Node;
+-use wisp::FetchMode;
+ use futures::StreamExt;
+ 
+ // === SpiderBuilder tests ===
+ 
+ #[test]
+ fn test_spider_builder_full_config() {
+     let spider = SpiderBuilder::new("full-test")
+         .start_urls(vec!["https://a.com/", "https://b.com/"])

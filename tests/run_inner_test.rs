@@ -17,9 +17,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use wisp::crawl::{CrawlEvent, Request, Response, Spider};
+use wisp::crawl::{
+    CrawlEvent, MaxPagesByCallback, Request, Response, Spider, SpiderBuilder,
+};
 use wisp::fetcher::FetchMode;
-use wisp::storage::MemoryStore;
+use wisp::storage::{MemoryStore, Store};
 use wisp::Engine;
 
 /// 最小 Spider：handle 返回空，不产出 items/follows。
@@ -174,6 +176,47 @@ async fn run_stops_at_max_pages() {
     );
 }
 
+/// callback 维度停止条件：爬满 2 个 detail 页后停止，不再派发第 3 个。
+#[tokio::test]
+async fn run_stops_at_max_pages_by_callback() {
+    let url = spawn_html_server(
+        r#"<html><body>
+            <a href="/1">Book 1</a>
+            <a href="/2">Book 2</a>
+            <a href="/3">Book 3</a>
+        </body></html>"#,
+    )
+    .await;
+
+    let spider = SpiderBuilder::new("callback-stop")
+        .start_urls(vec![url])
+        .on_page("default", |mut page| {
+            page.follow_links(&["a"], "detail", |_page, _idx, a| {
+                serde_json::json!({ "title": a.text().trim() })
+            });
+            page
+        })
+        .on_page("detail", |page| page)
+        .until(MaxPagesByCallback::new("detail", 2))
+        .build();
+
+    let engine = Engine::infra()
+        .max_concurrent(1)
+        .max_pages(100)
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
+        .build()
+        .unwrap();
+
+    let (stats, _) = engine.run(spider).await.unwrap();
+    assert_eq!(
+        stats.pages_crawled, 3,
+        "应爬 1 个首页 + 2 个 detail，实际: {}",
+        stats.pages_crawled
+    );
+}
+
 // === checkpoint 恢复测试 ===
 
 /// checkpoint 在爬取成功完成后应被清理（避免下次 run 误恢复已完成状态）。
@@ -200,9 +243,7 @@ async fn run_clears_checkpoint_on_successful_completion() {
     assert_eq!(items.len(), 1, "应产出 1 个 item");
 
     // 爬取成功完成后 checkpoint 应被清理
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-clear-test")
-        .await
-        .unwrap();
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-clear-test").unwrap();
     assert!(
         ckpt.is_none(),
         "爬取成功完成后 checkpoint 应被清理，但仍然存在"
@@ -244,9 +285,7 @@ async fn run_clears_checkpoint_on_shutdown_interrupt() {
     let _ = engine.run(spider).await;
 
     // run 结束（shutdown 中断）后 checkpoint 也被清理
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-shutdown-test")
-        .await
-        .unwrap();
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-shutdown-test").unwrap();
     assert!(
         ckpt.is_none(),
         "run_inner 结束时总是清理 checkpoint（当前设计），实际: {:?}",

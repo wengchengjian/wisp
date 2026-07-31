@@ -1,0 +1,221 @@
+# Review package: 52b6d9a..083f493
+
+## Commits
+083f493 fix(crawl): checkpoint 恢复时恢复 seen 去重集合
+
+## Files changed
+ src/crawl/engine.rs            | 50 +++++++++++++++++++++++++++++++++++++-----
+ src/crawl/mod.rs               | 11 ++++++++--
+ src/crawl/runner.rs            | 11 +++++-----
+ tests/crawl_checkpoint_test.rs | 26 ++++++++++++++++++++++
+ 4 files changed, 86 insertions(+), 12 deletions(-)
+
+## Diff
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index ffe57ce..2f629e4 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -520,22 +520,30 @@ pub(crate) fn snapshot_stats_for(
+ /// Checkpoint 保存。
+ pub(crate) async fn save_checkpoint(
+     store: &crate::storage::Store,
+     spider_name: &str,
+     sched: &scheduler::Scheduler,
+     stats: &Arc<SpiderStats>,
+ ) {
+     let pending = sched.pending_urls().await;
++    let seen = sched.seen_urls().await; // 持久化 seen 去重集合
+     let snapshot = snapshot_stats_for(stats, HashMap::new(), stats.start);
+-    let state = CrawlState::from_stats(
+-        spider_name.to_string(),
+-        &snapshot,
+-        pending,
+-    );
++    // 手动构造 CrawlState 填入 seen_urls；
++    // `CrawlState::from_stats` 硬编码 seen_urls 为空，不能直接用。
++    let state = CrawlState {
++        spider_name: spider_name.to_string(),
++        pending_urls: pending,
++        seen_urls: seen,
++        items_scraped: snapshot.items_scraped,
++        pages_crawled: snapshot.pages_crawled,
++        errors: snapshot.errors,
++        duration_ms: snapshot.duration.as_millis(),
++        saved_at: chrono::Utc::now(),
++    };
+     match bincode::serialize(&state) {
+         Ok(blob) => {
+             if let Err(e) = store.save_checkpoint(spider_name, &blob, state.saved_at.timestamp()) {
+                 tracing::warn!("checkpoint 保存失败: {}", e);
+             }
+         }
+         Err(e) => {
+             tracing::warn!("checkpoint 序列化失败: {}", e);
+@@ -764,9 +772,41 @@ mod tests {
+         let resp = make_resp(false);
+         process_response(&ctx, resp, &req).await;
+         assert_eq!(
+             stats.pages.load(Ordering::SeqCst),
+             1,
+             "非缓存响应 pages 应递增到 1"
+         );
+     }
++
++    /// Task 3：验证 save_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
++    ///
++    /// RED：当前 save_checkpoint 用 `CrawlState::from_stats`，其 seen_urls 硬编码为空，
++    /// 故反序列化后的 state.seen_urls 必为空，断言失败。
++    #[tokio::test]
++    async fn save_checkpoint_persists_seen_urls() {
++        let store = crate::storage::Store::open_in_memory().expect("open in-memory store");
++        let sched = scheduler::Scheduler::new();
++        // push 两个 URL：进入 heap 与 seen 集合
++        sched.push(SpiderRequest::get("https://example.com/a")).await;
++        sched.push(SpiderRequest::get("https://example.com/b")).await;
++
++        let stats = Arc::new(SpiderStats::new());
++        save_checkpoint(&store, "seen_persist_spider", &sched, &stats).await;
++
++        let blob = store
++            .load_checkpoint("seen_persist_spider")
++            .expect("load checkpoint ok")
++            .expect("checkpoint should exist");
++        let state: CrawlState = bincode::deserialize(&blob).expect("deserialize state");
++        assert!(
++            state.seen_urls.contains("https://example.com/a"),
++            "seen_urls 必须包含已爬 URL a，当前 seen = {:?}",
++            state.seen_urls
++        );
++        assert!(
++            state.seen_urls.contains("https://example.com/b"),
++            "seen_urls 必须包含已爬 URL b，当前 seen = {:?}",
++            state.seen_urls
++        );
++    }
+ }
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index 90b9509..0074d7e 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -1,9 +1,9 @@
+-﻿//! Spider-based crawling engine.
++//! Spider-based crawling engine.
+ 
+ pub mod middleware;
+ pub mod observability;
+ pub mod scheduling;
+ pub mod runtime;
+ pub mod engine;
+ pub mod runner;
+ pub mod builder;
+@@ -67,17 +67,24 @@ pub enum RequestAction {
+ 
+ /// A request to be processed by the spider.
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct SpiderRequest {
+     pub url: String,
+     pub method: Method,
+     pub headers: HashMap<String, String>,
+     pub body: Option<String>,
+-    #[serde(default)]
++    // Task 3：必须用 `#[serde(skip)]` 而非 `#[serde(default)]`。
++    // `serde_json::Value` 的 Deserialize 依赖 `deserialize_any`，bincode 1.x 不支持；
++    // 用 `#[serde(default)]` 会让 `bincode::deserialize::<CrawlState>`（含 SpiderRequest）
++    // 在 checkpoint 恢复路径抛 `DeserializeAnyNotSupported`，导致 seen/pending 全部丢失。
++    // `#[serde(skip)]` 在序列化与反序列化两端都跳过 meta（用 Value::Null 默认值），
++    // 与 Task 9 的既定行为一致（meta 当前不从 checkpoint 读回）。
++    // 83cb940 误改为 `#[serde(default)]` 引入回归，此处恢复。
++    #[serde(skip)]
+     pub meta: Value,
+     pub callback: Option<String>,
+     pub priority: i32,
+     /// 深度：起始 URL 为 0，每 follow 一次 +1。
+     #[serde(default)]
+     pub depth: u32,
+     /// 代理 URL（由 ProxyInjectionMiddleware 设置，引擎读取并应用）。
+     #[serde(skip)]
+diff --git a/src/crawl/runner.rs b/src/crawl/runner.rs
+index 23f01fd..4b76f88 100644
+--- a/src/crawl/runner.rs
++++ b/src/crawl/runner.rs
+@@ -169,22 +169,23 @@ impl Engine {
+         let spider_name = spider.name().to_string();
+         let mut restored_pending = false;
+         if let Some(ref store) = self.checkpoint_store {
+             if let Some(blob) = store.load_checkpoint(&spider_name)? {
+                 match bincode::deserialize::<CrawlState>(&blob) {
+                     Ok(state) => {
+                         if !state.pending_urls.is_empty() {
+                             let n = state.pending_urls.len();
+-                            for req in state.pending_urls {
+-                                sched.push(req).await;
+-                            }
++                            // 用 restore 一次性恢复 pending + seen 去重集合，
++                            // 避免逐个 push 时已爬 URL 因 seen 丢失被重新入队。
++                            let seen = state.seen_urls.clone();
++                            sched.restore(state.pending_urls, seen).await;
+                             tracing::info!(
+-                                "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs",
+-                                spider_name, n
++                                "Spider '{}' 从 checkpoint 恢复 {} 个 pending URLs (含 {} seen)",
++                                spider_name, n, sched.seen_urls().await.len()
+                             );
+                             restored_pending = true;
+                         }
+                     }
+                     Err(e) => tracing::warn!("checkpoint 反序列化失败: {}", e),
+                 }
+             }
+         }
+diff --git a/tests/crawl_checkpoint_test.rs b/tests/crawl_checkpoint_test.rs
+index 4f34bf3..7444de9 100644
+--- a/tests/crawl_checkpoint_test.rs
++++ b/tests/crawl_checkpoint_test.rs
+@@ -1,12 +1,13 @@
+ //! Verify checkpoint save/load round-trip.
+ 
+ use wisp::crawl::{CrawlState, SpiderRequest, CrawlStats};
+ use wisp::storage::Store;
++use std::collections::HashSet;
+ 
+ #[test]
+ fn test_checkpoint_save_load_roundtrip() {
+     let store = Store::open_in_memory().unwrap();
+ 
+     let stats = CrawlStats {
+         items_scraped: 100,
+         pages_crawled: 42,
+@@ -61,8 +62,33 @@ fn test_crawl_state_new_defaults() {
+     assert_eq!(state.spider_name, "fresh");
+     assert_eq!(state.pages_crawled, 0);
+     assert_eq!(state.items_scraped, 0);
+     assert_eq!(state.errors, 0);
+     assert_eq!(state.duration_ms, 0);
+     assert!(state.pending_urls.is_empty());
+     assert!(state.seen_urls.is_empty());
+ }
++
++/// Task 3：验证 CrawlState 序列化层 seen_urls 往返。
++///
++/// 此测试模拟 save_checkpoint 写入：手动构造含 seen_urls 的 CrawlState，
++/// 经 bincode 序列化 → Store 持久化 → 加载 → 反序列化，确认 seen_urls 不丢失。
++/// 注意：此处只验证序列化层契约；save_checkpoint 真正写入 seen_urls 的行为
++/// 由 engine.rs 内部 lib 测试 `save_checkpoint_persists_seen_urls` 覆盖。
++#[tokio::test]
++async fn checkpoint_restore_preserves_seen_urls() {
++    let store = Store::open_in_memory().unwrap();
++    // 模拟 save_checkpoint 写入：构造含 seen_urls 的 CrawlState
++    let mut state = CrawlState::new("test_spider".into());
++    state.pending_urls = vec![SpiderRequest::get("https://example.com/pending")];
++    state.seen_urls = HashSet::from([
++        "https://example.com/already-crawled".to_string(),
++    ]);
++    let blob = bincode::serialize(&state).unwrap();
++    store.save_checkpoint("test_spider", &blob, 0).unwrap();
++
++    // 加载并验证 seen_urls 被持久化
++    let loaded = store.load_checkpoint("test_spider").unwrap().unwrap();
++    let restored: CrawlState = bincode::deserialize(&loaded).unwrap();
++    assert!(restored.seen_urls.contains("https://example.com/already-crawled"),
++        "seen_urls 必须被持久化与恢复");
++}

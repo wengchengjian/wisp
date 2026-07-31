@@ -1,0 +1,125 @@
+# Review package: 2524f3a..64ecb8f
+
+## Commits
+64ecb8f feat: SpiderRequest.meta 跨 checkpoint 持久化 (P1-7)
+
+## Files changed
+ src/crawl/mod.rs                  | 29 +++++++++++++++++++++--------
+ tests/p1_meta_persistence_test.rs | 33 +++++++++++++++++++++++++++++++++
+ 2 files changed, 54 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index 7afa4ba..31a601b 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -42,20 +42,37 @@ use serde::{Serialize, Deserialize};
+ use serde_json::Value;
+ use futures::stream::{self, StreamExt};
+ use tokio::sync::Mutex;
+ 
+ use crate::error::{WispError, Result};
+ use crate::http::{self, Client};
+ use crate::parser::{Node, NodeList};
+ use crate::fetcher::FetchMode;
+ pub use self::stats::SpiderStats;
+ 
++/// 自定义 serde：把 `serde_json::Value` 编码为 `Vec<u8>` JSON 字节，
++/// 绕过 bincode 1.x 不支持 `deserialize_any` 的限制，使 meta 随 checkpoint 往返。
++mod meta_serde {
++    use serde::{Deserialize, Deserializer, Serialize, Serializer};
++    use serde_json::Value;
++
++    pub fn serialize<S: Serializer>(v: &Value, s: S) -> Result<S::Ok, S::Error> {
++        let bytes = serde_json::to_vec(v).map_err(serde::ser::Error::custom)?;
++        bytes.serialize(s)
++    }
++
++    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Value, D::Error> {
++        let bytes = Vec::<u8>::deserialize(d)?;
++        serde_json::from_slice(&bytes).map_err(serde::de::Error::custom)
++    }
++}
++
+ /// HTTP method for spider requests.
+ #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+ pub enum Method { Get, Post, Put, Delete }
+ 
+ impl Method {
+     /// 返回标准 HTTP 动词字符串（大写）。
+     pub fn as_str(&self) -> &'static str {
+         match self {
+             Method::Get => "GET",
+             Method::Post => "POST",
+@@ -78,28 +95,24 @@ pub enum RequestAction {
+     Abort,
+ }
+ 
+ /// A request to be processed by the spider.
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct SpiderRequest {
+     pub url: String,
+     pub method: Method,
+     pub headers: HashMap<String, String>,
+     pub body: Option<String>,
+-    // Task 3：必须用 `#[serde(skip)]` 而非 `#[serde(default)]`。
+-    // `serde_json::Value` 的 Deserialize 依赖 `deserialize_any`，bincode 1.x 不支持；
+-    // 用 `#[serde(default)]` 会让 `bincode::deserialize::<CrawlState>`（含 SpiderRequest）
+-    // 在 checkpoint 恢复路径抛 `DeserializeAnyNotSupported`，导致 seen/pending 全部丢失。
+-    // `#[serde(skip)]` 在序列化与反序列化两端都跳过 meta（用 Value::Null 默认值），
+-    // 与 Task 9 的既定行为一致（meta 当前不从 checkpoint 读回）。
+-    // 83cb940 误改为 `#[serde(default)]` 引入回归，此处恢复。
+-    #[serde(skip)]
++    // P1-7：用 `#[serde(with = "meta_serde")]` 使 meta 随 bincode checkpoint 往返。
++    // bincode 1.x 不支持 `serde_json::Value` 的 `deserialize_any`，
++    // 故通过 `meta_serde` 把 Value 编码为 `Vec<u8>` JSON 字节，bincode 可处理。
++    #[serde(with = "meta_serde")]
+     pub meta: Value,
+     pub callback: Option<String>,
+     pub priority: i32,
+     /// 深度：起始 URL 为 0，每 follow 一次 +1。
+     #[serde(default)]
+     pub depth: u32,
+     /// 代理 URL（由 ProxyInjectionMiddleware 设置，引擎读取并应用）。
+     #[serde(skip)]
+     pub proxy: Option<String>,
+     /// 抓取模式覆盖（由 StealthUpgradeMiddleware 等设置，引擎优先使用此模式）。
+diff --git a/tests/p1_meta_persistence_test.rs b/tests/p1_meta_persistence_test.rs
+new file mode 100644
+index 0000000..bf8b412
+--- /dev/null
++++ b/tests/p1_meta_persistence_test.rs
+@@ -0,0 +1,33 @@
++//! P1-7: SpiderRequest.meta 随 bincode checkpoint 持久化。
++
++use wisp::crawl::SpiderRequest;
++use serde_json::json;
++
++#[test]
++fn meta_survives_bincode_roundtrip() {
++    let req = SpiderRequest::get("https://example.com/page")
++        .with_meta(json!({
++            "source_page": "https://example.com/list",
++            "page_index": 42,
++            "tags": ["a", "b"],
++            "nested": { "x": 1.5, "y": null }
++        }));
++
++    let bytes = bincode::serialize(&req).expect("serialize");
++    let restored: SpiderRequest = bincode::deserialize(&bytes).expect("deserialize");
++
++    assert_eq!(restored.url, "https://example.com/page");
++    assert_eq!(restored.meta, req.meta, "meta 必须往返保持一致");
++    // 抽查嵌套字段
++    assert_eq!(restored.meta["page_index"], 42);
++    assert_eq!(restored.meta["tags"][1], "b");
++    assert_eq!(restored.meta["nested"]["y"], serde_json::Value::Null);
++}
++
++#[test]
++fn meta_default_null_when_absent() {
++    let req = SpiderRequest::get("https://example.com/x");
++    let bytes = bincode::serialize(&req).expect("serialize");
++    let restored: SpiderRequest = bincode::deserialize(&bytes).expect("deserialize");
++    assert_eq!(restored.meta, serde_json::Value::Null);
++}

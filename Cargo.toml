@@ -1,3 +1,7 @@
+[workspace]
+members = ["crates/core", "crates/storage", "crates/parser", "crates/proxy", "crates/http", "crates/browser", "crates/stealth", "crates/fetcher", "crates/crawl", "crates/mcp"]
+resolver = "2"
+
 [package]
 name = "wisp"
 version = "0.1.0"
@@ -6,78 +10,52 @@ description = "Lightweight undetected browser automation for Rust - built for sc
 license = "Apache-2.0"
 
 [features]
-default = ["http"]
-
+default = ["http", "browser", "stealth", "mcp"]
 # HTTP 模式（默认启用）：HTTP fetcher + parser + storage + crawl 基础
 http = []
-
 # 浏览器模式（Dynamic）：启用 browser 模块 + DynamicStrategy
-browser = ["dep:tokio-tungstenite", "dep:tungstenite", "dep:zip"]
-
+browser = ["wisp-fetcher/browser"]
 # Stealth 模式：启用 stealth 模块 + StealthStrategy（依赖 browser）
-stealth = ["browser"]
-
-# MCP 服务：启用 mcp 模块（依赖 crawl）
+stealth = ["wisp-fetcher/stealth"]
+# MCP 服务：启用 mcp 模块
 mcp = []
-
-# SQLite 存储后端
-sqlite = ["dep:turso"]
+# 启用 SQLite 存储后端（默认禁用，使用 FileStore）
+sqlite = ["wisp-storage/sqlite"]
 
 [dependencies]
+wisp-core = { path = "crates/core" }
+wisp-storage = { path = "crates/storage" }
+wisp-parser = { path = "crates/parser" }
+wisp-proxy = { path = "crates/proxy" }
+wisp-http = { path = "crates/http" }
+wisp-browser = { path = "crates/browser" }
+wisp-stealth = { path = "crates/stealth" }
+wisp-fetcher = { path = "crates/fetcher" }
+wisp-crawl = { path = "crates/crawl" }
+wisp-mcp = { path = "crates/mcp" }
 tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-futures = "0.3"
-which = "7"
-base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"], optional = true }
-tungstenite = { version = "0.30", optional = true }
-rand = "0.10"
-# Scraping / parsing（启用 atomic feature 使 Html: Send，支持 tokio::spawn）
-scraper = { version = "0.27", features = ["atomic"] }
-ego-tree = "0.11"
-encoding_rs = "0.8"
-url = "2"
-async-trait = "0.1"
-# wreq 精确锁定 RC 版本：该版本提供 TLS 指纹模拟（emulation）和 cookie_store 支持，
-# API 尚不稳定，升级前需验证 emulation/Proxy/headers 接口兼容性。
-# 跟踪 wreq 正式版发布后及时迁移。
-wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wreq-util = "=3.0.0-rc.14"
-toml = "1"
-regex = "1"
-aho-corasick = "1"
-# SQLite 存储后端（可选，启用 sqlite feature）
-# turso: 原生 async SQLite，内置连接池，无需 spawn_blocking
-turso = { version = "=0.7.0-pre.18", optional = true }
-# checkpoint blob 序列化（bincode 3.0.0 停维，2.x 不兼容 serde_json::Value，锁定 1.3.3 稳定版）
-bincode = "1.3.3"
-# 流式输出（阶段 1 内部用，阶段 3 对外暴露）
-tokio-stream = "0.1"
-# 时间戳（CrawlState 用）
-chrono = { version = "0.4", features = ["serde"] }
-# 内存级请求缓存
-moka = { version = "0.12", features = ["future", "sync"] }
-# HTML -> Markdown 转换
-htmd = "0.5"
-# Cron 表达式解析
-croner = "3"
-# 高并发无锁 map（替代 domain_sems 的全局 Mutex<HashMap>）
-dashmap = "6"
-# 无 poison 的 Mutex（替代 std::sync::Mutex，避免 panic 传染）
-parking_lot = "0.12"
-# 临时目录自动清理（替代 Drop 中 thread::spawn + remove_dir_all）
-tempfile = "3"
-# Chrome for Testing 安装器：解压下载的 zip 包
-zip = { version = "2", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 criterion = { version = "0.5", features = ["html_reports"] }
+async-trait = "0.1"
+futures = "0.3"
+bincode = "1.3.3"
+moka = { version = "0.12", features = ["future", "sync"] }
+tokio-stream = "0.1"
+parking_lot = "0.12"
+tempfile = "3"
+regex = "1"
+rand = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
 
 [[bench]]
 name = "bench"
@@ -86,9 +64,6 @@ harness = false
 [[bin]]
 name = "wisp"
 path = "src/bin/wisp.rs"
-# bin/wisp.rs 包含 Browser/Mcp 命令，需要全部 feature 才能编译
-# HTTP-only 模式下用 `cargo build --lib --no-default-features --features http`
-required-features = ["browser", "stealth", "mcp"]
 
 # ND-001-DEP：release profile 优化（性能敏感的爬虫框架）
 # 注意：未启用 panic = "abort"，因为部分 Drop 实现依赖 catch_unwind 语义
@@ -98,3 +73,9 @@ lto = "thin"      # 跨 crate 内联优化，约 5-10% 性能提升
 codegen-units = 1 # 单 codegen unit，最佳优化（牺牲编译时间）
 strip = true      # 移除调试符号，减小二进制体积
 opt-level = 3     # 默认值，显式声明
+
+# profiling 专用：保留 debug 符号，供 ETW/samply/flamegraph 做函数级分析。
+[profile.profiling]
+inherits = "release"
+debug = 2
+strip = false

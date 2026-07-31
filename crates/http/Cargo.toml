@@ -1,0 +1,17 @@
+[package]
+name = "wisp-http"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wisp-core = { path = "../core" }
+serde_json = "1"
+url = "2"
+futures = "0.3"
+tracing = "0.1"
+rand = "0.10"
+wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
+wreq-util = "=3.0.0-rc.14"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

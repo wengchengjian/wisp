@@ -1,0 +1,257 @@
+﻿=== COMMITS ===
+343f337 feat(builder): SpiderBuilder::sitemap() 预设替代 templates.rs
+
+=== STAT ===
+ src/crawl/builder.rs   |  32 +++++++++++++++
+ src/crawl/mod.rs       |   1 -
+ src/crawl/templates.rs | 103 -------------------------------------------------
+ tests/sitemap_test.rs  |  53 +++++++++++++++++++++++++
+ 4 files changed, 85 insertions(+), 104 deletions(-)
+
+=== DIFF ===
+diff --git a/src/crawl/builder.rs b/src/crawl/builder.rs
+index 2dbda20..587cb6e 100644
+--- a/src/crawl/builder.rs
++++ b/src/crawl/builder.rs
+@@ -223,20 +223,52 @@ impl SpiderBuilder {
+     pub fn on<F, Fut>(mut self, label: &str, handler: F) -> Self
+     where
+         F: Fn(SpiderResponse) -> Fut + Send + Sync + 'static,
+         Fut: Future<Output = (Vec<Value>, Vec<SpiderRequest>)> + Send + 'static,
+     {
+         let boxed: Handler = Arc::new(move |resp| Box::pin(handler(resp)));
+         self.handlers.insert(label.to_string(), boxed);
+         self
+     }
+ 
++    /// 预设：Sitemap 爬虫。
++    ///
++    /// 自动解析 sitemap.xml，提取 `<loc>` URL，follow 到指定 label 的 handler。
++    ///
++    /// # 示例
++    /// ```ignore
++    /// let spider = SpiderBuilder::sitemap("my_spider", vec!["https://x.com/sitemap.xml".into()], "content")
++    ///     .on("content", |resp| async move {
++    ///         (vec![serde_json::json!({"title": resp.css("h1").text()})], vec![])
++    ///     })
++    ///     .build();
++    /// ```
++    pub fn sitemap(name: &str, sitemap_urls: Vec<String>, content_label: &str) -> Self {
++        let label = content_label.to_string();
++        SpiderBuilder::new(name)
++            .start_urls(sitemap_urls)
++            .on("default", move |resp| {
++                let label = label.clone();
++                async move {
++                    let text = resp.text().unwrap_or_default();
++                    let re = regex::Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap();
++                    let follows: Vec<SpiderRequest> = re
++                        .captures_iter(&text)
++                        .filter_map(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
++                        .filter(|u| !u.is_empty())
++                        .map(|url| SpiderRequest::get(&url).with_callback(&label))
++                        .collect();
++                    (vec![], follows)
++                }
++            })
++    }
++
+     /// 设置终止条件策略。
+     pub fn until<C: super::stop::StopCondition + 'static>(mut self, cond: C) -> Self {
+         self.until_cond = Arc::new(cond);
+         self
+     }
+ 
+     /// 构建 ClosureSpider 实例。
+     ///
+     /// # Panics
+     /// 若未设置任何 handler（`parse()` / `parse_async()` / `on()` 均未调用）则 panic。
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index 39e641d..b1b07fa 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -1,16 +1,15 @@
+ //! Spider-based crawling engine.
+ 
+ pub mod scheduler;
+ pub mod robots;
+ pub mod cache;
+-pub mod templates;
+ pub mod state;
+ pub mod stats;
+ pub mod stop;
+ pub mod items;
+ pub mod builder;
+ pub mod auto;
+ pub mod engine;
+ pub mod request_cache;
+ pub mod control;
+ pub mod output;
+diff --git a/src/crawl/templates.rs b/src/crawl/templates.rs
+deleted file mode 100644
+index 17ea2eb..0000000
+--- a/src/crawl/templates.rs
++++ /dev/null
+@@ -1,103 +0,0 @@
+-//! Spider templates: CrawlSpider and SitemapSpider.
+-
+-use async_trait::async_trait;
+-use regex::Regex;
+-use serde_json::Value;
+-use std::collections::HashSet;
+-
+-use super::{Spider, SpiderRequest, SpiderResponse};
+-
+-/// A rule for CrawlSpider.
+-#[derive(Clone)]
+-pub struct CrawlRule {
+-    pub pattern: String,  // regex pattern for URLs to follow
+-    pub callback: Option<String>,
+-    pub follow: bool,
+-}
+-
+-/// Rule-based crawling spider.
+-pub struct CrawlSpider {
+-    pub name: String,
+-    pub start_urls: Vec<String>,
+-    pub rules: Vec<CrawlRule>,
+-    pub allowed_domains: HashSet<String>,
+-}
+-
+-#[async_trait]
+-impl Spider for CrawlSpider {
+-    fn name(&self) -> &str { &self.name }
+-    fn start_urls(&self) -> Vec<String> { self.start_urls.clone() }
+-    fn allowed_domains(&self) -> HashSet<String> { self.allowed_domains.clone() }
+-
+-    async fn parse(&self, response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+-        let Ok(doc) = response.parse() else { return (vec![], vec![]); };
+-        let mut follow = Vec::new();
+-
+-        // Extract all links and match against rules
+-        let links = doc.select("a[href]");
+-        for link in links.iter() {
+-            if let Some(href) = link.attr("href") {
+-                let absolute = resolve_url(&response.url, &href);
+-                for rule in &self.rules {
+-                    if let Ok(re) = Regex::new(&rule.pattern) {
+-                        if re.is_match(&absolute) {
+-                            let mut req = SpiderRequest::get(&absolute);
+-                            if let Some(cb) = &rule.callback {
+-                                req = req.with_callback(cb);
+-                            }
+-                            follow.push(req);
+-                            break;
+-                        }
+-                    }
+-                }
+-            }
+-        }
+-        (vec![], follow)
+-    }
+-}
+-
+-/// Sitemap-based crawling spider.
+-pub struct SitemapSpider {
+-    pub name: String,
+-    pub sitemap_urls: Vec<String>,
+-    pub allowed_domains: HashSet<String>,
+-}
+-
+-#[async_trait]
+-impl Spider for SitemapSpider {
+-    fn name(&self) -> &str { &self.name }
+-    fn start_urls(&self) -> Vec<String> { self.sitemap_urls.clone() }
+-    fn allowed_domains(&self) -> HashSet<String> { self.allowed_domains.clone() }
+-
+-    async fn parse(&self, response: SpiderResponse) -> (Vec<Value>, Vec<SpiderRequest>) {
+-        let Ok(text) = response.text() else { return (vec![], vec![]); };
+-        let mut follow = Vec::new();
+-
+-        // Parse sitemap XML: extract <loc> URLs
+-        let re = Regex::new(r"<loc>\s*(.*?)\s*</loc>").unwrap();
+-        for cap in re.captures_iter(&text) {
+-            if let Some(url) = cap.get(1) {
+-                let url = url.as_str().trim();
+-                if url.ends_with(".xml") {
+-                    // Nested sitemap
+-                    follow.push(SpiderRequest::get(url));
+-                } else {
+-                    follow.push(SpiderRequest::get(url));
+-                }
+-            }
+-        }
+-        (vec![], follow)
+-    }
+-}
+-
+-fn resolve_url(base: &str, href: &str) -> String {
+-    if href.starts_with("http://") || href.starts_with("https://") {
+-        return href.to_string();
+-    }
+-    if let Ok(base_url) = url::Url::parse(base) {
+-        if let Ok(resolved) = base_url.join(href) {
+-            return resolved.to_string();
+-        }
+-    }
+-    href.to_string()
+-}
+diff --git a/tests/sitemap_test.rs b/tests/sitemap_test.rs
+new file mode 100644
+index 0000000..b3ae35a
+--- /dev/null
++++ b/tests/sitemap_test.rs
+@@ -0,0 +1,53 @@
++//! SpiderBuilder::sitemap() 测试。
++use wisp::crawl::*;
++
++#[test]
++fn test_sitemap_builder_creates_spider() {
++    let spider = SpiderBuilder::sitemap(
++        "test",
++        vec!["https://example.com/sitemap.xml".into()],
++        "content",
++    )
++    .on("content", |_resp| async move {
++        (vec![serde_json::json!({"ok": true})], vec![])
++    })
++    .build();
++    assert_eq!(spider.name(), "test");
++    assert_eq!(
++        spider.start_urls(),
++        vec!["https://example.com/sitemap.xml"]
++    );
++}
++
++#[tokio::test]
++async fn test_sitemap_parses_loc_urls() {
++    let spider = SpiderBuilder::sitemap(
++        "test",
++        vec!["https://example.com/sitemap.xml".into()],
++        "content",
++    )
++    .on("content", |_resp| async move { (vec![], vec![]) })
++    .build();
++
++    let sitemap_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
++<urlset>
++  <url><loc>https://example.com/page1</loc></url>
++  <url><loc>https://example.com/page2</loc></url>
++</urlset>"#;
++    let resp = SpiderResponse {
++        url: "https://example.com/sitemap.xml".into(),
++        status: 200,
++        headers: Default::default(),
++        body: sitemap_xml.as_bytes().to_vec(),
++        request: SpiderRequest::get("https://example.com/sitemap.xml"),
++        tracker: None,
++        from_cache: false,
++    };
++
++    let (items, follows) = spider.handle(resp).await;
++    assert!(items.is_empty());
++    assert_eq!(follows.len(), 2);
++    assert_eq!(follows[0].url, "https://example.com/page1");
++    assert_eq!(follows[1].url, "https://example.com/page2");
++    assert_eq!(follows[0].callback.as_deref(), Some("content"));
++}

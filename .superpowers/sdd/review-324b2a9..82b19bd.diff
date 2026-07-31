@@ -1,0 +1,266 @@
+# Review package: 324b2a9..82b19bd
+
+## Commits
+82b19bd perf: proxy_clients 改用 DashMap 消除全局锁 (P1-1b)
+
+## Files changed
+ src/crawl/engine.rs            | 23 +++++++++++++----------
+ src/crawl/mod.rs               |  2 +-
+ src/crawl/runner.rs            |  3 +--
+ tests/p1_proxy_clients_test.rs | 31 +++++++++++++++++++++++++++++++
+ 4 files changed, 46 insertions(+), 13 deletions(-)
+
+## Diff
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index e5c0662..ffba3e0 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -56,21 +56,21 @@ pub(crate) struct EngineConfig {
+ }
+ 
+ /// 跨 task 共享的可变状态。
+ pub(crate) struct EngineShared {
+     pub sched: Arc<scheduler::Scheduler>,
+     pub robots_cache: Arc<Mutex<robots::RobotsCache>>,
+     pub follow_tx: tokio::sync::mpsc::UnboundedSender<SpiderRequest>,
+     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<SpiderRequest>>>,
+     pub domain_sems: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
+     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）
+-    pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
++    pub proxy_clients: Arc<dashmap::DashMap<String, Arc<Client>>>,
+     pub cache_store: Option<Arc<crate::storage::Store>>,
+     pub request_cache: Option<super::request_cache::RequestCache>,
+     pub control: Arc<control::EngineControl>,
+     pub work_notify: Arc<tokio::sync::Notify>,
+     pub middleware_chain: Arc<middleware::MiddlewareChain>,
+     pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
+ }
+ 
+ /// per-run 可变状态。
+ pub(crate) struct EngineState {
+@@ -620,28 +620,28 @@ pub(crate) async fn save_checkpoint(
+             }
+         }
+         Err(e) => {
+             tracing::warn!("checkpoint 序列化失败: {}", e);
+         }
+     }
+ }
+ 
+ // === fetch_page（模式分发）===
+ 
+-pub(crate) async fn fetch_page(
++pub async fn fetch_page(
+     client: &Client,
+     req: &SpiderRequest,
+     proxy_url: Option<&str>,
+     mode: FetchMode,
+     config: &http::Config,
+     rule_engine: &Mutex<auto::ModeRuleEngine>,
+-    proxy_clients: &Mutex<HashMap<String, Arc<Client>>>,
++    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
+ ) -> Result<SpiderResponse> {
+     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
+     if let Some(override_mode) = req.fetch_mode_override {
+         return fetch_page_inner(client, req, proxy_url, override_mode, config, proxy_clients).await;
+     }
+ 
+     // 2. Auto 模式：rule_engine 缓存 → HTTP 先行，blocked 检测由 StealthUpgradeMiddleware 承担
+     if mode == FetchMode::Auto {
+         let resolved = { rule_engine.lock().await.resolve(&req.url) };
+         if let Some(cached_mode) = resolved {
+@@ -651,27 +651,27 @@ pub(crate) async fn fetch_page(
+         let resp = fetch_page_inner(client, req, proxy_url, FetchMode::Http, config, proxy_clients).await?;
+         let tracker = Arc::new(std::sync::Mutex::new(auto::SelectorTracker::new()));
+         return Ok(SpiderResponse { tracker: Some(tracker), ..resp });
+     }
+ 
+     // 3. 非 Auto：直接按指定模式抓取
+     fetch_page_inner(client, req, proxy_url, mode, config, proxy_clients).await
+ }
+ 
+ /// 内部实际抓取（根据模式分发）。
+-pub(crate) async fn fetch_page_inner(
++pub async fn fetch_page_inner(
+     client: &Client,
+     req: &SpiderRequest,
+     proxy_url: Option<&str>,
+     mode: FetchMode,
+     config: &http::Config,
+-    proxy_clients: &Mutex<HashMap<String, Arc<Client>>>,
++    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
+ ) -> Result<SpiderResponse> {
+     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
+         let mut builder = match mode {
+             FetchMode::Dynamic => crate::fetcher::Fetcher::dynamic(),
+             FetchMode::Stealth => crate::fetcher::Fetcher::stealth(),
+             _ => unreachable!(),
+         };
+         builder = builder.timeout(config.timeout);
+         if let Some(proxy) = proxy_url {
+             builder = builder.proxy(proxy);
+@@ -684,29 +684,32 @@ pub(crate) async fn fetch_page_inner(
+             body: resp.body.clone(),
+             request: req.clone(),
+             tracker: None,
+             from_cache: false,
+         });
+     }
+ 
+     // Http 模式
+     // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手
+     let proxy_client: Option<Arc<Client>> = if let Some(proxy) = proxy_url {
+-        let mut cache = proxy_clients.lock().await;
+-        if !cache.contains_key(proxy) {
++        if let Some(c) = proxy_clients.get(proxy) {
++            Some(c.clone())
++        } else {
++            // 慢路径：构建新 client（可能失败，错误向上传播）
+             let new_client = Client::builder()
+                 .timeout(client.config_ref().timeout)
+                 .proxy(proxy)
+                 .build()?;
+-            cache.insert(proxy.to_string(), Arc::new(new_client));
++            let arc = Arc::new(new_client);
++            // 并发安全：若另一 task 已插入，用已存在的；否则用新建的
++            Some(proxy_clients.entry(proxy.to_string()).or_insert(arc).clone())
+         }
+-        Some(cache.get(proxy).unwrap().clone())
+     } else {
+         None
+     };
+     let use_client: &Client = match &proxy_client {
+         Some(c) => c.as_ref(),
+         None => client,
+     };
+ 
+     // 收集中间件/请求级 headers（如 UaRotationMiddleware 设置的 User-Agent，
+     // 或 CookieChallengeMiddleware 累积的 Cookie）
+@@ -789,21 +792,21 @@ mod tests {
+                 dev_mode: false,
+                 allowed: Arc::new(HashSet::new()),
+                 auto_excludes: HashSet::new(),
+             },
+             shared: EngineShared {
+                 sched: Arc::new(scheduler::Scheduler::new()),
+                 robots_cache: Arc::new(Mutex::new(robots::RobotsCache::new())),
+                 follow_tx,
+                 follow_rx: Arc::new(Mutex::new(follow_rx)),
+                 domain_sems: Arc::new(DashMap::new()),
+-                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
++                proxy_clients: Arc::new(dashmap::DashMap::new()),
+                 cache_store: None,
+                 request_cache: None,
+                 control: Arc::new(control::EngineControl::new()),
+                 work_notify: Arc::new(tokio::sync::Notify::new()),
+                 middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
+                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+             },
+             state: EngineState {
+                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
+                 stats: stats.clone(),
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index a2e3bb7..7afa4ba 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -24,21 +24,21 @@ pub use observability::events;
+ pub use observability::stats;
+ pub use observability::state;
+ 
+ pub use state::CrawlState;
+ pub use items::{Items, JsonlWriter};
+ pub use builder::{SpiderBuilder, ClosureSpider};
+ pub use auto::{SelectorTracker, ModeRuleEngine};
+ pub use request_cache::RequestCache;
+ pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
+ pub use runner::{Engine, EngineBuilder};
+-pub use engine::record_status;
++pub use engine::{record_status, fetch_page, fetch_page_inner};
+ 
+ use std::collections::{HashMap, HashSet};
+ use std::time::Duration;
+ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use async_trait::async_trait;
+ use serde::{Serialize, Deserialize};
+ use serde_json::Value;
+ use futures::stream::{self, StreamExt};
+ use tokio::sync::Mutex;
+diff --git a/src/crawl/runner.rs b/src/crawl/runner.rs
+index 9dc6078..766f7a8 100644
+--- a/src/crawl/runner.rs
++++ b/src/crawl/runner.rs
+@@ -1,13 +1,12 @@
+ //! Engine 运行时：Engine 结构体 + EngineBuilder + run_inner 流驱动。
+ 
+-use std::collections::HashMap;
+ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use std::time::Duration;
+ use futures::stream::{self, StreamExt};
+ use tokio::sync::Mutex;
+ use serde_json::Value;
+ 
+ use crate::error::Result;
+ use crate::http::Client;
+ use super::*;
+@@ -215,21 +214,21 @@ impl Engine {
+                 dev_mode: self.dev_mode,
+                 allowed,
+                 auto_excludes,
+             },
+             shared: engine::EngineShared {
+                 sched: sched.clone(),
+                 robots_cache,
+                 follow_tx,
+                 follow_rx: Arc::new(Mutex::new(follow_rx)),
+                 domain_sems: Arc::new(dashmap::DashMap::new()),
+-                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
++                proxy_clients: Arc::new(dashmap::DashMap::new()),
+                 cache_store: self.cache_store.clone(),
+                 request_cache: self.request_cache.clone(),
+                 control: self.control.clone(),
+                 work_notify: Arc::new(tokio::sync::Notify::new()),
+                 middleware_chain: {
+                     let mut chain = middleware::MiddlewareChain::new();
+                     chain.middlewares = spider.middlewares();
+                     chain.pipelines = spider.pipelines();
+                     chain.sort(); // 按 priority 排序
+                     Arc::new(chain)
+diff --git a/tests/p1_proxy_clients_test.rs b/tests/p1_proxy_clients_test.rs
+new file mode 100644
+index 0000000..b3852ed
+--- /dev/null
++++ b/tests/p1_proxy_clients_test.rs
+@@ -0,0 +1,31 @@
++//! P1-1b: proxy_clients 用 DashMap，相同 proxy 复用 Client。
++
++use std::sync::Arc;
++use wisp::crawl::engine::fetch_page_inner;
++use wisp::crawl::SpiderRequest;
++use wisp::fetcher::FetchMode;
++use wisp::http::{Client, Config};
++
++#[tokio::test]
++async fn proxy_clients_caches_client_per_proxy_url() {
++    // proxy_clients 暴露为 DashMap，验证相同 proxy 两次 fetch 只产生一个缓存条目
++    let client = Arc::new(Client::builder().build().unwrap());
++    let config = Config::default();
++    let proxy_clients = Arc::new(dashmap::DashMap::new());
++    let req = SpiderRequest::get("http://127.0.0.1:1/unreachable");
++
++    // 两次 fetch 同一 proxy（连接会失败，但 Client 应被缓存）
++    for _ in 0..2 {
++        let _ = fetch_page_inner(
++            &client,
++            &req,
++            Some("http://127.0.0.1:1"),
++            FetchMode::Http,
++            &config,
++            &proxy_clients,
++        ).await;
++    }
++
++    assert_eq!(proxy_clients.len(), 1, "相同 proxy 应只缓存 1 个 Client");
++    assert!(proxy_clients.contains_key("http://127.0.0.1:1"));
++}

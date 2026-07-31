@@ -1,0 +1,1035 @@
+# Final review package: P1 optimization a211ca7..64ecb8f
+
+## Commits (5 P1 tasks)
+64ecb8f feat: SpiderRequest.meta 跨 checkpoint 持久化 (P1-7)
+2524f3a perf: Scheduler seen/heap 锁分离 (P1-2)
+82b19bd perf: proxy_clients 改用 DashMap 消除全局锁 (P1-1b)
+324b2a9 perf: status_codes 改用 DashMap 无锁计数 (P1-1a)
+6f5c44f refactor: Method::as_str() DRY 3 处字符串转换 (P1-5)
+
+## Files changed (cumulative)
+ src/crawl/engine.rs               | 50 ++++++++++++------------
+ src/crawl/middleware/builtin.rs   | 16 ++------
+ src/crawl/mod.rs                  | 52 ++++++++++++++++++++-----
+ src/crawl/observability/stats.rs  | 14 +++++--
+ src/crawl/runner.rs               |  5 +--
+ src/crawl/scheduling/scheduler.rs | 82 ++++++++++++++++++++-------------------
+ tests/p1_meta_persistence_test.rs | 33 ++++++++++++++++
+ tests/p1_proxy_clients_test.rs    | 31 +++++++++++++++
+ tests/p1_scheduler_test.rs        | 44 +++++++++++++++++++++
+ tests/p1_status_codes_test.rs     | 33 ++++++++++++++++
+ 10 files changed, 269 insertions(+), 91 deletions(-)
+
+## Diff (cumulative, with context)
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index f2d16b7..ffba3e0 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -56,21 +56,21 @@ pub(crate) struct EngineConfig {
+ }
+ 
+ /// 跨 task 共享的可变状态。
+ pub(crate) struct EngineShared {
+     pub sched: Arc<scheduler::Scheduler>,
+     pub robots_cache: Arc<Mutex<robots::RobotsCache>>,
+     pub follow_tx: tokio::sync::mpsc::UnboundedSender<SpiderRequest>,
+     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<SpiderRequest>>>,
+     pub domain_sems: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
+     /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）
+-    pub proxy_clients: Arc<Mutex<HashMap<String, Arc<Client>>>>,
++    pub proxy_clients: Arc<dashmap::DashMap<String, Arc<Client>>>,
+     pub cache_store: Option<Arc<crate::storage::Store>>,
+     pub request_cache: Option<super::request_cache::RequestCache>,
+     pub control: Arc<control::EngineControl>,
+     pub work_notify: Arc<tokio::sync::Notify>,
+     pub middleware_chain: Arc<middleware::MiddlewareChain>,
+     pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
+ }
+ 
+ /// per-run 可变状态。
+ pub(crate) struct EngineState {
+@@ -156,40 +156,40 @@ async fn check_request_caches(ctx: &EngineContext, req: &SpiderRequest, method_s
+             let resp = SpiderResponse {
+                 url: req.url.clone(),
+                 status: entry.status,
+                 headers: entry.headers,
+                 body: entry.body,
+                 request: req.clone(),
+                 tracker: None,
+                 from_cache: true,
+             };
+             stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+-            record_status(stats, resp.status).await;
++            record_status(stats, resp.status);
+             return CacheResult::Hit(Box::new(resp));
+         }
+     }
+ 
+     // 开发模式 SQLite 缓存检查
+     if ctx.config.dev_mode {
+         if let Some(ref store) = ctx.shared.cache_store {
+             if let Some(cached) = store.load_cached_response(&req.url, method_str).ok().flatten() {
+                 let resp = SpiderResponse {
+                     url: req.url.clone(),
+                     status: cached.status,
+                     headers: cached.headers,
+                     body: cached.body,
+                     request: req.clone(),
+                     tracker: None,
+                     from_cache: true,
+                 };
+                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+-                record_status(stats, resp.status).await;
++                record_status(stats, resp.status);
+                 return CacheResult::Hit(Box::new(resp));
+             }
+         }
+     }
+ 
+     CacheResult::Miss
+ }
+ 
+ /// Stage 4: robots 检查 → 域名信号量 → 延迟 → fetch_dispatch → 缓存写入。
+ ///
+@@ -291,34 +291,29 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: SpiderRequest) {
+         let crawl_ctx = build_crawl_context(ctx);
+         match ctx.shared.middleware_chain.run_request_middlewares(&mut req, &crawl_ctx).await {
+             middleware::MwAction::Skip => return,
+             middleware::MwAction::Abort(reason) => {
+                 tracing::warn!("middleware abort: {} - {}", reason, req.url);
+                 return;
+             }
+             middleware::MwAction::Respond(cached_resp) => {
+                 // 中间件短路（如缓存命中），跳过网络请求直接处理响应
+                 stats.cache_hits.fetch_add(1, Ordering::SeqCst);
+-                record_status(stats, cached_resp.status).await;
++                record_status(stats, cached_resp.status);
+                 return process_response(ctx, cached_resp, &req).await;
+             }
+             _ => {}
+         }
+     }
+ 
+     // 提前计算 method_str（缓存查询与写入都需要）
+-    let method_str = match req.method {
+-        Method::Get => "GET",
+-        Method::Post => "POST",
+-        Method::Put => "PUT",
+-        Method::Delete => "DELETE",
+-    };
++    let method_str = req.method.as_str();
+ 
+     // 3. 缓存检查
+     match check_request_caches(ctx, &req, method_str).await {
+         CacheResult::Hit(resp) => {
+             return process_response(ctx, *resp, &req).await;
+         }
+         CacheResult::Miss => {}
+     }
+ 
+     // 4. robots + 信号量 + 延迟 + 抓取 + 缓存写入
+@@ -412,21 +407,21 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: SpiderResponse,
+         }
+     }
+     for f in follows {
+         let _ = ctx.shared.follow_tx.send(f);
+     }
+     // 通知主循环有新工作到来
+     ctx.shared.work_notify.notify_one();
+ 
+     // PageScraped 事件
+     if let Some(ref tx) = ctx.state.tx {
+-        let status_codes_snapshot = stats.status_codes.lock().await.clone();
++        let status_codes_snapshot = stats.status_codes_snapshot();
+         let _ = tx.send(CrawlEvent::PageScraped {
+             url: page_url,
+             stats: snapshot_stats_for(stats, status_codes_snapshot, ctx.state.start),
+         }).await;
+     }
+ }
+ 
+ // === 抓取分发 ===
+ 
+ /// 抓取分发：fetch → blocked 检测 → transport 级重试 fallback。
+@@ -440,21 +435,21 @@ async fn fetch_dispatch(ctx: &EngineContext, req: &SpiderRequest) -> (Option<Spi
+     let fetcher_config = &ctx.config.fetcher_config;
+     let rule_engine = &ctx.shared.rule_engine;
+     let max_retries = spider.max_retries();
+     let mut attempt: u32 = 0;
+ 
+     loop {
+         attempt += 1;
+         let proxy = req.proxy.clone();
+         match fetch_page(&ctx.config.client, req, proxy.as_deref(), fetch_mode, fetcher_config, rule_engine, &ctx.shared.proxy_clients).await {
+             Ok(resp) => {
+-                record_status(stats, resp.status).await;
++                record_status(stats, resp.status);
+                 if spider.is_blocked(&resp) {
+                     stats.blocked.fetch_add(1, Ordering::SeqCst);
+                     // attempt 从 1 起；attempt <= max_retries 表示还能重试，
+                     // 故 max_retries=3 时实际尝试 4 次（attempt 1..=4）。
+                     if attempt <= max_retries {
+                         stats.retries.fetch_add(1, Ordering::SeqCst);
+                         let delay = spider.download_delay();
+                         if delay > Duration::ZERO { tokio::time::sleep(delay).await; }
+                         tracing::warn!("blocked (status={}, attempt={}/{}), retrying: {}", resp.status, attempt, max_retries, req.url);
+                         continue;
+@@ -543,23 +538,27 @@ pub(crate) fn build_crawl_context(ctx: &EngineContext) -> middleware::CrawlConte
+         spider_name: ctx.state.spider.name().to_string(),
+         fetch_mode: ctx.config.fetch_mode,
+         max_concurrent: ctx.config.max_concurrent,
+         max_pages: ctx.config.engine_max_pages,
+         obey_robots: ctx.config.obey_robots,
+         pages_crawled: ctx.state.stats.pages.load(Ordering::SeqCst),
+         errors: ctx.state.stats.errors.load(Ordering::SeqCst),
+     }
+ }
+ 
+-async fn record_status(stats: &Arc<SpiderStats>, status: u16) {
+-    let mut m = stats.status_codes.lock().await;
+-    *m.entry(status).or_insert(0) += 1;
++/// 同步记录状态码计数（DashMap entry 原子累加，无 await）。
++pub fn record_status(stats: &Arc<SpiderStats>, status: u16) {
++    stats
++        .status_codes
++        .entry(status)
++        .and_modify(|c| { c.fetch_add(1, Ordering::Relaxed); })
++        .or_insert(AtomicUsize::new(1));
+ }
+ 
+ async fn apply_delay(ctx: &EngineContext, url: &str, spider: &Arc<dyn Spider>, obey_robots: bool) {
+     let mut delay = spider.download_delay();
+     if obey_robots {
+         let robots_delay = {
+             let mut rc = ctx.shared.robots_cache.lock().await;
+             rc.crawl_delay(&ctx.config.client, url).await
+         };
+         if let Some(secs) = robots_delay {
+@@ -621,28 +620,28 @@ pub(crate) async fn save_checkpoint(
+             }
+         }
+         Err(e) => {
+             tracing::warn!("checkpoint 序列化失败: {}", e);
+         }
+     }
+ }
+ 
+ // === fetch_page（模式分发）===
+ 
+-pub(crate) async fn fetch_page(
++pub async fn fetch_page(
+     client: &Client,
+     req: &SpiderRequest,
+     proxy_url: Option<&str>,
+     mode: FetchMode,
+     config: &http::Config,
+     rule_engine: &Mutex<auto::ModeRuleEngine>,
+-    proxy_clients: &Mutex<HashMap<String, Arc<Client>>>,
++    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
+ ) -> Result<SpiderResponse> {
+     // 1. 中间件设置的模式覆盖优先（如 StealthUpgradeMiddleware Refetch 时设置）
+     if let Some(override_mode) = req.fetch_mode_override {
+         return fetch_page_inner(client, req, proxy_url, override_mode, config, proxy_clients).await;
+     }
+ 
+     // 2. Auto 模式：rule_engine 缓存 → HTTP 先行，blocked 检测由 StealthUpgradeMiddleware 承担
+     if mode == FetchMode::Auto {
+         let resolved = { rule_engine.lock().await.resolve(&req.url) };
+         if let Some(cached_mode) = resolved {
+@@ -652,27 +651,27 @@ pub(crate) async fn fetch_page(
+         let resp = fetch_page_inner(client, req, proxy_url, FetchMode::Http, config, proxy_clients).await?;
+         let tracker = Arc::new(std::sync::Mutex::new(auto::SelectorTracker::new()));
+         return Ok(SpiderResponse { tracker: Some(tracker), ..resp });
+     }
+ 
+     // 3. 非 Auto：直接按指定模式抓取
+     fetch_page_inner(client, req, proxy_url, mode, config, proxy_clients).await
+ }
+ 
+ /// 内部实际抓取（根据模式分发）。
+-pub(crate) async fn fetch_page_inner(
++pub async fn fetch_page_inner(
+     client: &Client,
+     req: &SpiderRequest,
+     proxy_url: Option<&str>,
+     mode: FetchMode,
+     config: &http::Config,
+-    proxy_clients: &Mutex<HashMap<String, Arc<Client>>>,
++    proxy_clients: &dashmap::DashMap<String, Arc<Client>>,
+ ) -> Result<SpiderResponse> {
+     if mode == FetchMode::Dynamic || mode == FetchMode::Stealth {
+         let mut builder = match mode {
+             FetchMode::Dynamic => crate::fetcher::Fetcher::dynamic(),
+             FetchMode::Stealth => crate::fetcher::Fetcher::stealth(),
+             _ => unreachable!(),
+         };
+         builder = builder.timeout(config.timeout);
+         if let Some(proxy) = proxy_url {
+             builder = builder.proxy(proxy);
+@@ -685,29 +684,32 @@ pub(crate) async fn fetch_page_inner(
+             body: resp.body.clone(),
+             request: req.clone(),
+             tracker: None,
+             from_cache: false,
+         });
+     }
+ 
+     // Http 模式
+     // 代理 Client 缓存：相同 proxy URL 复用已建立的连接，避免每请求 TLS 握手
+     let proxy_client: Option<Arc<Client>> = if let Some(proxy) = proxy_url {
+-        let mut cache = proxy_clients.lock().await;
+-        if !cache.contains_key(proxy) {
++        if let Some(c) = proxy_clients.get(proxy) {
++            Some(c.clone())
++        } else {
++            // 慢路径：构建新 client（可能失败，错误向上传播）
+             let new_client = Client::builder()
+                 .timeout(client.config_ref().timeout)
+                 .proxy(proxy)
+                 .build()?;
+-            cache.insert(proxy.to_string(), Arc::new(new_client));
++            let arc = Arc::new(new_client);
++            // 并发安全：若另一 task 已插入，用已存在的；否则用新建的
++            Some(proxy_clients.entry(proxy.to_string()).or_insert(arc).clone())
+         }
+-        Some(cache.get(proxy).unwrap().clone())
+     } else {
+         None
+     };
+     let use_client: &Client = match &proxy_client {
+         Some(c) => c.as_ref(),
+         None => client,
+     };
+ 
+     // 收集中间件/请求级 headers（如 UaRotationMiddleware 设置的 User-Agent，
+     // 或 CookieChallengeMiddleware 累积的 Cookie）
+@@ -790,21 +792,21 @@ mod tests {
+                 dev_mode: false,
+                 allowed: Arc::new(HashSet::new()),
+                 auto_excludes: HashSet::new(),
+             },
+             shared: EngineShared {
+                 sched: Arc::new(scheduler::Scheduler::new()),
+                 robots_cache: Arc::new(Mutex::new(robots::RobotsCache::new())),
+                 follow_tx,
+                 follow_rx: Arc::new(Mutex::new(follow_rx)),
+                 domain_sems: Arc::new(DashMap::new()),
+-                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
++                proxy_clients: Arc::new(dashmap::DashMap::new()),
+                 cache_store: None,
+                 request_cache: None,
+                 control: Arc::new(control::EngineControl::new()),
+                 work_notify: Arc::new(tokio::sync::Notify::new()),
+                 middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
+                 rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
+             },
+             state: EngineState {
+                 spider: Arc::new(DummySpider) as Arc<dyn Spider>,
+                 stats: stats.clone(),
+diff --git a/src/crawl/middleware/builtin.rs b/src/crawl/middleware/builtin.rs
+index e50087a..1f682fe 100644
+--- a/src/crawl/middleware/builtin.rs
++++ b/src/crawl/middleware/builtin.rs
+@@ -1,20 +1,20 @@
+ //! 内建中间件实现。
+ 
+ use std::collections::HashSet;
+ use std::sync::Arc;
+ use std::time::Duration;
+ use async_trait::async_trait;
+ use tokio::sync::Mutex;
+ 
+ use super::{Middleware, MwAction, ErrorAction, CrawlContext, ItemPipeline};
+-use crate::crawl::{SpiderRequest, SpiderResponse, Method};
++use crate::crawl::{SpiderRequest, SpiderResponse};
+ use crate::crawl::auto::{self, ModeRuleEngine};
+ use crate::crawl::runtime::request_cache::{RequestCache, CachedEntry};
+ use crate::crawl::runtime::robots::RobotsCache;
+ use crate::fetcher::FetchMode;
+ use crate::http::Client;
+ 
+ // === 请求修改类 ===
+ 
+ /// UA 轮换中间件：每次请求随机选择一个 User-Agent。
+ pub struct UaRotationMiddleware {
+@@ -273,50 +273,40 @@ impl CacheMiddleware {
+         Self { cache: RequestCache::new(max_entries, ttl) }
+     }
+ }
+ 
+ #[async_trait]
+ impl Middleware for CacheMiddleware {
+     fn priority(&self) -> u32 { 3 }
+ 
+     async fn process_request(&self, req: &mut SpiderRequest, _ctx: &CrawlContext) -> MwAction {
+         // 键含 method，避免 POST/GET 同 URL 串味（与 engine.rs 保持一致）
+-        let method_str = match req.method {
+-            Method::Get => "GET",
+-            Method::Post => "POST",
+-            Method::Put => "PUT",
+-            Method::Delete => "DELETE",
+-        };
++        let method_str = req.method.as_str();
+         if let Some(entry) = self.cache.get(method_str, &req.url).await {
+             let resp = SpiderResponse {
+                 url: req.url.clone(),
+                 status: entry.status,
+                 headers: entry.headers,
+                 body: entry.body,
+                 request: req.clone(),
+                 tracker: None,
+                 from_cache: true,
+             };
+             return MwAction::Respond(resp);
+         }
+         MwAction::Continue
+     }
+ 
+     async fn process_response(&self, resp: &mut SpiderResponse, _ctx: &CrawlContext) -> MwAction {
+         if resp.status >= 200 && resp.status < 400 && !resp.from_cache {
+             // 写入时用请求方法（resp.request.method）作为键的一部分
+-            let method_str = match resp.request.method {
+-                Method::Get => "GET",
+-                Method::Post => "POST",
+-                Method::Put => "PUT",
+-                Method::Delete => "DELETE",
+-            };
++            let method_str = resp.request.method.as_str();
+             self.cache.put(method_str, &resp.url, CachedEntry {
+                 status: resp.status,
+                 headers: resp.headers.clone(),
+                 body: resp.body.clone(),
+             }).await;
+         }
+         MwAction::Continue
+     }
+ }
+ 
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index 30ecc40..31a601b 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -24,69 +24,95 @@ pub use observability::events;
+ pub use observability::stats;
+ pub use observability::state;
+ 
+ pub use state::CrawlState;
+ pub use items::{Items, JsonlWriter};
+ pub use builder::{SpiderBuilder, ClosureSpider};
+ pub use auto::{SelectorTracker, ModeRuleEngine};
+ pub use request_cache::RequestCache;
+ pub use stop::{StopCondition, StopContext, MaxPages, MaxItems, MaxErrors, Timeout, NeverStop, FnStopCondition};
+ pub use runner::{Engine, EngineBuilder};
++pub use engine::{record_status, fetch_page, fetch_page_inner};
+ 
+ use std::collections::{HashMap, HashSet};
+ use std::time::Duration;
+ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use async_trait::async_trait;
+ use serde::{Serialize, Deserialize};
+ use serde_json::Value;
+ use futures::stream::{self, StreamExt};
+ use tokio::sync::Mutex;
+ 
+ use crate::error::{WispError, Result};
+ use crate::http::{self, Client};
+ use crate::parser::{Node, NodeList};
+ use crate::fetcher::FetchMode;
+-use self::stats::SpiderStats;
++pub use self::stats::SpiderStats;
++
++/// 自定义 serde：把 `serde_json::Value` 编码为 `Vec<u8>` JSON 字节，
++/// 绕过 bincode 1.x 不支持 `deserialize_any` 的限制，使 meta 随 checkpoint 往返。
++mod meta_serde {
++    use serde::{Deserialize, Deserializer, Serialize, Serializer};
++    use serde_json::Value;
++
++    pub fn serialize<S: Serializer>(v: &Value, s: S) -> Result<S::Ok, S::Error> {
++        let bytes = serde_json::to_vec(v).map_err(serde::ser::Error::custom)?;
++        bytes.serialize(s)
++    }
++
++    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Value, D::Error> {
++        let bytes = Vec::<u8>::deserialize(d)?;
++        serde_json::from_slice(&bytes).map_err(serde::de::Error::custom)
++    }
++}
+ 
+ /// HTTP method for spider requests.
+ #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+ pub enum Method { Get, Post, Put, Delete }
+ 
++impl Method {
++    /// 返回标准 HTTP 动词字符串（大写）。
++    pub fn as_str(&self) -> &'static str {
++        match self {
++            Method::Get => "GET",
++            Method::Post => "POST",
++            Method::Put => "PUT",
++            Method::Delete => "DELETE",
++        }
++    }
++}
++
+ /// 请求钩子的决策结果。
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum RequestAction {
+     /// 正常执行
+     Proceed,
+     /// 跳过此请求
+     Skip,
+     /// 延迟指定时间后再执行
+     Delay(Duration),
+     /// 终止整个爬取
+     Abort,
+ }
+ 
+ /// A request to be processed by the spider.
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct SpiderRequest {
+     pub url: String,
+     pub method: Method,
+     pub headers: HashMap<String, String>,
+     pub body: Option<String>,
+-    // Task 3：必须用 `#[serde(skip)]` 而非 `#[serde(default)]`。
+-    // `serde_json::Value` 的 Deserialize 依赖 `deserialize_any`，bincode 1.x 不支持；
+-    // 用 `#[serde(default)]` 会让 `bincode::deserialize::<CrawlState>`（含 SpiderRequest）
+-    // 在 checkpoint 恢复路径抛 `DeserializeAnyNotSupported`，导致 seen/pending 全部丢失。
+-    // `#[serde(skip)]` 在序列化与反序列化两端都跳过 meta（用 Value::Null 默认值），
+-    // 与 Task 9 的既定行为一致（meta 当前不从 checkpoint 读回）。
+-    // 83cb940 误改为 `#[serde(default)]` 引入回归，此处恢复。
+-    #[serde(skip)]
++    // P1-7：用 `#[serde(with = "meta_serde")]` 使 meta 随 bincode checkpoint 往返。
++    // bincode 1.x 不支持 `serde_json::Value` 的 `deserialize_any`，
++    // 故通过 `meta_serde` 把 Value 编码为 `Vec<u8>` JSON 字节，bincode 可处理。
++    #[serde(with = "meta_serde")]
+     pub meta: Value,
+     pub callback: Option<String>,
+     pub priority: i32,
+     /// 深度：起始 URL 为 0，每 follow 一次 +1。
+     #[serde(default)]
+     pub depth: u32,
+     /// 代理 URL（由 ProxyInjectionMiddleware 设置，引擎读取并应用）。
+     #[serde(skip)]
+     pub proxy: Option<String>,
+     /// 抓取模式覆盖（由 StealthUpgradeMiddleware 等设置，引擎优先使用此模式）。
+@@ -497,11 +523,19 @@ mod tests {
+             from_cache: false,
+         };
+         // 不应 panic
+         let nodes = resp.css("p");
+         assert_eq!(nodes.iter().count(), 1);
+         // tracker 应记录（SelectorTracker.records 为私有，用 len() 方法）
+         let t = resp.tracker.as_ref().unwrap().lock().unwrap();
+         assert_eq!(t.len(), 1, "应记录 1 个选择器匹配");
+         assert_eq!(t.records().len(), 1);
+     }
++
++    #[test]
++    fn test_method_as_str_returns_standard_verbs() {
++        assert_eq!(Method::Get.as_str(), "GET");
++        assert_eq!(Method::Post.as_str(), "POST");
++        assert_eq!(Method::Put.as_str(), "PUT");
++        assert_eq!(Method::Delete.as_str(), "DELETE");
++    }
+ }
+diff --git a/src/crawl/observability/stats.rs b/src/crawl/observability/stats.rs
+index 33532f1..6d78632 100644
+--- a/src/crawl/observability/stats.rs
++++ b/src/crawl/observability/stats.rs
+@@ -1,49 +1,57 @@
+ //! Per-spider 统计计数器。
+ 
+ use std::collections::HashMap;
+ use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use std::time::{Duration, Instant};
+-use tokio::sync::Mutex;
++use dashmap::DashMap;
+ 
+ /// 单个 Spider 的运行时统计。引擎为每个 Spider 持有一个实例。
+ pub struct SpiderStats {
+     pub pages: AtomicUsize,
+     pub items: AtomicUsize,
+     pub errors: AtomicUsize,
+     pub blocked: AtomicUsize,
+     pub retries: AtomicUsize,
+     pub offsite: AtomicUsize,
+     pub cache_hits: AtomicUsize,
+     /// 在飞请求数。使用 Arc 以便 InFlightGuard 克隆。
+     pub in_flight: Arc<AtomicUsize>,
+-    pub status_codes: Mutex<HashMap<u16, usize>>,
++    pub status_codes: DashMap<u16, AtomicUsize>,
+     pub start: Instant,
+ }
+ 
+ impl SpiderStats {
+     pub fn new() -> Self {
+         Self {
+             pages: AtomicUsize::new(0),
+             items: AtomicUsize::new(0),
+             errors: AtomicUsize::new(0),
+             blocked: AtomicUsize::new(0),
+             retries: AtomicUsize::new(0),
+             offsite: AtomicUsize::new(0),
+             cache_hits: AtomicUsize::new(0),
+             in_flight: Arc::new(AtomicUsize::new(0)),
+-            status_codes: Mutex::new(HashMap::new()),
++            status_codes: DashMap::new(),
+             start: Instant::now(),
+         }
+     }
+ 
+     pub fn pages(&self) -> usize { self.pages.load(Ordering::SeqCst) }
+     pub fn items(&self) -> usize { self.items.load(Ordering::SeqCst) }
+     pub fn errors(&self) -> usize { self.errors.load(Ordering::SeqCst) }
+     pub fn in_flight(&self) -> usize { self.in_flight.load(Ordering::SeqCst) }
+     pub fn elapsed(&self) -> Duration { self.start.elapsed() }
++
++    /// 无锁快照状态码计数为 HashMap<u16, usize>。
++    pub fn status_codes_snapshot(&self) -> HashMap<u16, usize> {
++        self.status_codes
++            .iter()
++            .map(|r| (*r.key(), r.value().load(Ordering::SeqCst)))
++            .collect()
++    }
+ }
+ 
+ impl Default for SpiderStats {
+     fn default() -> Self { Self::new() }
+ }
+diff --git a/src/crawl/runner.rs b/src/crawl/runner.rs
+index b30b8f1..766f7a8 100644
+--- a/src/crawl/runner.rs
++++ b/src/crawl/runner.rs
+@@ -1,13 +1,12 @@
+ //! Engine 运行时：Engine 结构体 + EngineBuilder + run_inner 流驱动。
+ 
+-use std::collections::HashMap;
+ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::Arc;
+ use std::time::Duration;
+ use futures::stream::{self, StreamExt};
+ use tokio::sync::Mutex;
+ use serde_json::Value;
+ 
+ use crate::error::Result;
+ use crate::http::Client;
+ use super::*;
+@@ -215,21 +214,21 @@ impl Engine {
+                 dev_mode: self.dev_mode,
+                 allowed,
+                 auto_excludes,
+             },
+             shared: engine::EngineShared {
+                 sched: sched.clone(),
+                 robots_cache,
+                 follow_tx,
+                 follow_rx: Arc::new(Mutex::new(follow_rx)),
+                 domain_sems: Arc::new(dashmap::DashMap::new()),
+-                proxy_clients: Arc::new(Mutex::new(HashMap::new())),
++                proxy_clients: Arc::new(dashmap::DashMap::new()),
+                 cache_store: self.cache_store.clone(),
+                 request_cache: self.request_cache.clone(),
+                 control: self.control.clone(),
+                 work_notify: Arc::new(tokio::sync::Notify::new()),
+                 middleware_chain: {
+                     let mut chain = middleware::MiddlewareChain::new();
+                     chain.middlewares = spider.middlewares();
+                     chain.pipelines = spider.pipelines();
+                     chain.sort(); // 按 priority 排序
+                     Arc::new(chain)
+@@ -380,21 +379,21 @@ impl Engine {
+         }
+ 
+         spider.on_close().await;
+ 
+         if let Some(ref store) = self.checkpoint_store {
+             if let Err(e) = store.delete_checkpoint(&spider_name) {
+                 tracing::warn!("删除 checkpoint 失败: {}", e);
+             }
+         }
+ 
+-        let status_codes = ctx.state.stats.status_codes.lock().await.clone();
++        let status_codes = ctx.state.stats.status_codes_snapshot();
+         Ok(engine::snapshot_stats_for(&ctx.state.stats, status_codes, ctx.state.start))
+     }
+ }
+ 
+ impl EngineBuilder {
+     pub fn max_concurrent(mut self, n: usize) -> Self { self.max_concurrent = n; self }
+     pub fn max_pages(mut self, n: usize) -> Self { self.max_pages = n; self }
+     pub fn max_depth(mut self, n: u32) -> Self { self.max_depth = Some(n); self }
+     /// 设置中间件 Refetch 最大轮数（默认 5）。
+     pub fn max_refetch_rounds(mut self, n: usize) -> Self { self.max_refetch_rounds = n; self }
+diff --git a/src/crawl/scheduling/scheduler.rs b/src/crawl/scheduling/scheduler.rs
+index dfc53d0..824bb76 100644
+--- a/src/crawl/scheduling/scheduler.rs
++++ b/src/crawl/scheduling/scheduler.rs
+@@ -4,20 +4,21 @@
+ //! from buffer_unordered workers in Engine.
+ //!
+ //! CR-10: 默认使用精确 URL 去重（HashSet<String>），可选 Fingerprint 模式省内存。
+ 
+ use crate::crawl::SpiderRequest;
+ use std::cmp::Ordering;
+ use std::collections::hash_map::DefaultHasher;
+ use std::collections::{BinaryHeap, HashSet};
+ use std::hash::{Hash, Hasher};
+ use std::sync::Arc;
++use dashmap::DashSet;
+ use tokio::sync::Mutex;
+ 
+ /// 去重策略。
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum DedupStrategy {
+     /// 存储原始 URL（精确，内存较大）。默认选项，对 99% 场景足够。
+     Exact,
+     /// u64 指纹（省内存，有碰撞风险）。适合千万级 URL 大规模爬取。
+     Fingerprint,
+ }
+@@ -40,136 +41,139 @@ impl PartialOrd for PrioritizedRequest {
+ }
+ impl Ord for PrioritizedRequest {
+     fn cmp(&self, other: &Self) -> Ordering {
+         self.req
+             .priority
+             .cmp(&other.req.priority)
+             .then_with(|| other.seq.cmp(&self.seq))
+     }
+ }
+ 
+-/// Inner state guarded by Mutex.
+-struct SchedulerInner {
++/// heap 与 seq 共享一个 Mutex（push/pop 需要原子读 seq + push/pop）。
++struct HeapInner {
+     heap: BinaryHeap<PrioritizedRequest>,
+-    /// 精确去重：存储原始 URL
+-    seen_exact: HashSet<String>,
+-    /// 指纹去重：存储 u64 hash
+-    seen_fp: HashSet<u64>,
+-    strategy: DedupStrategy,
+     seq: u64,
+ }
+ 
+-/// Async URL scheduler with deduplication. Cloneable for sharing across tasks.
++/// Scheduler：seen 集合（DashSet，无锁）与 heap（独立 Mutex）分离。
++///
++/// push 时先查/插 seen（DashSet，无锁），命中才锁 heap 入队；
++/// pop 时只锁 heap。两者不再串行于同一锁。
+ #[derive(Clone)]
+ pub struct Scheduler {
+-    inner: Arc<Mutex<SchedulerInner>>,
++    heap: Arc<Mutex<HeapInner>>,
++    seen_exact: Arc<DashSet<String>>,
++    seen_fp: Arc<DashSet<u64>>,
++    strategy: DedupStrategy,
+ }
+ 
+ impl Scheduler {
+     pub fn new() -> Self {
+         Self::with_strategy(DedupStrategy::Exact)
+     }
+ 
+     /// 使用指定去重策略创建 Scheduler。
+     pub fn with_strategy(strategy: DedupStrategy) -> Self {
+         Self {
+-            inner: Arc::new(Mutex::new(SchedulerInner {
+-                heap: BinaryHeap::new(),
+-                seen_exact: HashSet::new(),
+-                seen_fp: HashSet::new(),
+-                strategy,
+-                seq: 0,
+-            })),
++            heap: Arc::new(Mutex::new(HeapInner { heap: BinaryHeap::new(), seq: 0 })),
++            seen_exact: Arc::new(DashSet::new()),
++            seen_fp: Arc::new(DashSet::new()),
++            strategy,
+         }
+     }
+ 
+     /// Push a request (deduplicates by URL).
+     pub async fn push(&self, req: SpiderRequest) {
+-        let mut g = self.inner.lock().await;
+-        let is_new = match g.strategy {
+-            DedupStrategy::Exact => g.seen_exact.insert(req.url.clone()),
+-            DedupStrategy::Fingerprint => g.seen_fp.insert(fingerprint(&req.url)),
++        // seen 去重（DashSet 无锁，不阻塞 pop）
++        let is_new = match self.strategy {
++            DedupStrategy::Exact => self.seen_exact.insert(req.url.clone()),
++            DedupStrategy::Fingerprint => self.seen_fp.insert(fingerprint(&req.url)),
+         };
+         if is_new {
++            let mut g = self.heap.lock().await;
+             let seq = g.seq;
+             g.heap.push(PrioritizedRequest { req, seq });
+             g.seq += 1;
+         }
+     }
+ 
+     /// Pop the highest-priority request.
+     pub async fn pop(&self) -> Option<SpiderRequest> {
+-        let mut g = self.inner.lock().await;
++        let mut g = self.heap.lock().await;
+         g.heap.pop().map(|p| p.req)
+     }
+ 
+     /// Snapshot the pending URLs (for checkpoint).
+     pub async fn pending_urls(&self) -> Vec<SpiderRequest> {
+-        let g = self.inner.lock().await;
++        let g = self.heap.lock().await;
+         // Note: BinaryHeap is max-heap, iteration order is unspecified.
+         // We sort by priority to give a deterministic checkpoint.
+         let mut reqs: Vec<PrioritizedRequest> = g.heap.iter().cloned().collect();
+         // Need Clone bound on PrioritizedRequest - add it
+         reqs.sort_by(|a, b| b.cmp(a));
+         reqs.into_iter().map(|p| p.req).collect()
+     }
+ 
+     /// Snapshot the seen URLs (for checkpoint).
+     ///
+     /// Exact 模式返回真实 URL；Fingerprint 模式返回 hash 字符串。
+     pub async fn seen_urls(&self) -> HashSet<String> {
+-        let g = self.inner.lock().await;
+-        match g.strategy {
+-            DedupStrategy::Exact => g.seen_exact.clone(),
+-            DedupStrategy::Fingerprint => g.seen_fp.iter().map(|h| h.to_string()).collect(),
++        match self.strategy {
++            DedupStrategy::Exact => self.seen_exact.iter().map(|s| s.clone()).collect(),
++            DedupStrategy::Fingerprint => self.seen_fp.iter().map(|h| h.to_string()).collect(),
+         }
+     }
+ 
+     /// Number of pending requests.
+     pub async fn len(&self) -> usize {
+-        self.inner.lock().await.heap.len()
++        self.heap.lock().await.heap.len()
+     }
+ 
+     pub async fn is_empty(&self) -> bool {
+-        self.inner.lock().await.heap.is_empty()
++        self.heap.lock().await.heap.is_empty()
+     }
+ 
+     /// Replace inner state (for checkpoint restore).
+     pub async fn restore(&self, pending: Vec<SpiderRequest>, seen: HashSet<String>) {
+-        let mut g = self.inner.lock().await;
+-        g.heap.clear();
+-        g.seen_exact.clear();
+-        g.seen_fp.clear();
+-        g.seq = 0;
++        // 清 seen（DashSet）
++        self.seen_exact.clear();
++        self.seen_fp.clear();
++        // 清 heap + seq（Mutex）
++        {
++            let mut g = self.heap.lock().await;
++            g.heap.clear();
++            g.seq = 0;
++        }
+         // Rebuild seen set
+         for url in &seen {
+-            match g.strategy {
++            match self.strategy {
+                 DedupStrategy::Exact => {
+-                    g.seen_exact.insert(url.clone());
++                    self.seen_exact.insert(url.clone());
+                 }
+                 DedupStrategy::Fingerprint => {
+                     // seen_urls() 在 Fingerprint 模式下返回 u64 哈希的十进制字符串，
+                     // 直接 parse 回 u64 即可，不能再 fingerprint（会产生不同 u64）。
+                     if let Ok(h) = url.parse::<u64>() {
+-                        g.seen_fp.insert(h);
++                        self.seen_fp.insert(h);
+                     }
+                 }
+             }
+         }
+         // Re-queue pending (force insert even if in seen set)
++        let mut g = self.heap.lock().await;
+         for req in pending {
+-            match g.strategy {
++            match self.strategy {
+                 DedupStrategy::Exact => {
+-                    g.seen_exact.insert(req.url.clone());
++                    self.seen_exact.insert(req.url.clone());
+                 }
+                 DedupStrategy::Fingerprint => {
+-                    g.seen_fp.insert(fingerprint(&req.url));
++                    self.seen_fp.insert(fingerprint(&req.url));
+                 }
+             }
+             let seq = g.seq;
+             g.heap.push(PrioritizedRequest { req, seq });
+             g.seq += 1;
+         }
+     }
+ }
+ 
+ // Add Clone bound for PrioritizedRequest (needed by pending_urls)
+diff --git a/tests/p1_meta_persistence_test.rs b/tests/p1_meta_persistence_test.rs
+new file mode 100644
+index 0000000..bf8b412
+--- /dev/null
++++ b/tests/p1_meta_persistence_test.rs
+@@ -0,0 +1,33 @@
++//! P1-7: SpiderRequest.meta 随 bincode checkpoint 持久化。
++
++use wisp::crawl::SpiderRequest;
++use serde_json::json;
++
++#[test]
++fn meta_survives_bincode_roundtrip() {
++    let req = SpiderRequest::get("https://example.com/page")
++        .with_meta(json!({
++            "source_page": "https://example.com/list",
++            "page_index": 42,
++            "tags": ["a", "b"],
++            "nested": { "x": 1.5, "y": null }
++        }));
++
++    let bytes = bincode::serialize(&req).expect("serialize");
++    let restored: SpiderRequest = bincode::deserialize(&bytes).expect("deserialize");
++
++    assert_eq!(restored.url, "https://example.com/page");
++    assert_eq!(restored.meta, req.meta, "meta 必须往返保持一致");
++    // 抽查嵌套字段
++    assert_eq!(restored.meta["page_index"], 42);
++    assert_eq!(restored.meta["tags"][1], "b");
++    assert_eq!(restored.meta["nested"]["y"], serde_json::Value::Null);
++}
++
++#[test]
++fn meta_default_null_when_absent() {
++    let req = SpiderRequest::get("https://example.com/x");
++    let bytes = bincode::serialize(&req).expect("serialize");
++    let restored: SpiderRequest = bincode::deserialize(&bytes).expect("deserialize");
++    assert_eq!(restored.meta, serde_json::Value::Null);
++}
+diff --git a/tests/p1_proxy_clients_test.rs b/tests/p1_proxy_clients_test.rs
+new file mode 100644
+index 0000000..b3852ed
+--- /dev/null
++++ b/tests/p1_proxy_clients_test.rs
+@@ -0,0 +1,31 @@
++//! P1-1b: proxy_clients 用 DashMap，相同 proxy 复用 Client。
++
++use std::sync::Arc;
++use wisp::crawl::engine::fetch_page_inner;
++use wisp::crawl::SpiderRequest;
++use wisp::fetcher::FetchMode;
++use wisp::http::{Client, Config};
++
++#[tokio::test]
++async fn proxy_clients_caches_client_per_proxy_url() {
++    // proxy_clients 暴露为 DashMap，验证相同 proxy 两次 fetch 只产生一个缓存条目
++    let client = Arc::new(Client::builder().build().unwrap());
++    let config = Config::default();
++    let proxy_clients = Arc::new(dashmap::DashMap::new());
++    let req = SpiderRequest::get("http://127.0.0.1:1/unreachable");
++
++    // 两次 fetch 同一 proxy（连接会失败，但 Client 应被缓存）
++    for _ in 0..2 {
++        let _ = fetch_page_inner(
++            &client,
++            &req,
++            Some("http://127.0.0.1:1"),
++            FetchMode::Http,
++            &config,
++            &proxy_clients,
++        ).await;
++    }
++
++    assert_eq!(proxy_clients.len(), 1, "相同 proxy 应只缓存 1 个 Client");
++    assert!(proxy_clients.contains_key("http://127.0.0.1:1"));
++}
+diff --git a/tests/p1_scheduler_test.rs b/tests/p1_scheduler_test.rs
+new file mode 100644
+index 0000000..2747e1f
+--- /dev/null
++++ b/tests/p1_scheduler_test.rs
+@@ -0,0 +1,44 @@
++//! P1-2: Scheduler seen/heap 分离，并发不死锁。
++
++use wisp::crawl::scheduler::{Scheduler, DedupStrategy};
++use wisp::crawl::SpiderRequest;
++
++#[tokio::test]
++async fn scheduler_concurrent_push_pop_dedup_correct() {
++    let sched = Scheduler::new();
++    // 并发 push 1000 个 URL（含 50% 重复），再 pop 全部
++    let pushers: Vec<_> = (0..10)
++        .map(|tid| {
++            let s = sched.clone();
++            tokio::spawn(async move {
++                for i in 0..100 {
++                    // tid*100+i，偶数为重复（0,2,4.. 跨线程共享同一组 URL）
++                    let url = format!("https://example.com/{}", if tid % 2 == 0 { i } else { 1000 + tid * 100 + i });
++                    s.push(SpiderRequest::get(&url)).await;
++                }
++            })
++        })
++        .collect();
++    for h in pushers { h.await.unwrap(); }
++
++    // pop 全部，验证无 panic、数量 = 唯一 URL 数
++    let mut popped = 0;
++    while sched.pop().await.is_some() {
++        popped += 1;
++    }
++    // 5 个偶数 tid 各推 0..99（100 个，但跨偶数 tid 重复同一组 0..99）→ 去重后 100 个
++    // 5 个奇数 tid 各推 1000+tid*100+i（500 个唯一）→ 500 个
++    // 总计 600 个唯一
++    assert_eq!(popped, 600, "去重后应剩 600 个唯一 URL");
++}
++
++#[tokio::test]
++async fn scheduler_fingerprint_strategy_seen_split_works() {
++    let sched = Scheduler::with_strategy(DedupStrategy::Fingerprint);
++    sched.push(SpiderRequest::get("https://example.com/a")).await;
++    // 重复 push 同 URL 应被去重
++    sched.push(SpiderRequest::get("https://example.com/a")).await;
++    assert_eq!(sched.len().await, 1);
++    let seen = sched.seen_urls().await;
++    assert_eq!(seen.len(), 1, "Fingerprint 模式 seen 应含 1 个 hash");
++}
+diff --git a/tests/p1_status_codes_test.rs b/tests/p1_status_codes_test.rs
+new file mode 100644
+index 0000000..6266663
+--- /dev/null
++++ b/tests/p1_status_codes_test.rs
+@@ -0,0 +1,33 @@
++//! P1-1a: status_codes 用 DashMap<u16, AtomicUsize> 无锁计数。
++
++use std::sync::Arc;
++use wisp::crawl::SpiderStats;
++
++#[tokio::test]
++async fn status_codes_concurrent_increment_is_correct() {
++    let stats = Arc::new(SpiderStats::new());
++    // 并发对同一状态码累加，验证无死锁且计数正确
++    let handles: Vec<_> = (0..50)
++        .map(|_| {
++            let s = stats.clone();
++            tokio::spawn(async move {
++                for _ in 0..100 {
++                    wisp::crawl::record_status(&s, 200);
++                    wisp::crawl::record_status(&s, 404);
++                }
++            })
++        })
++        .collect();
++    for h in handles { h.await.unwrap(); }
++
++    let snap = stats.status_codes_snapshot();
++    assert_eq!(snap.get(&200).copied(), Some(5000), "200 计数应为 50*100");
++    assert_eq!(snap.get(&404).copied(), Some(5000), "404 计数应为 50*100");
++    assert_eq!(snap.len(), 2, "仅 2 个状态码");
++}
++
++#[tokio::test]
++async fn status_codes_snapshot_returns_empty_for_fresh_stats() {
++    let stats = SpiderStats::new();
++    assert!(stats.status_codes_snapshot().is_empty());
++}

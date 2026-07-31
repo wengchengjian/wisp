@@ -1,0 +1,111 @@
+# Review package: 17d0716..801fa65
+
+## Commits
+801fa65 fix(crawl): tracker Mutex 中毒时不再二次 panic
+
+## Files changed
+ src/crawl/engine.rs |  2 +-
+ src/crawl/mod.rs    | 28 ++++++++++++++++++++++++++--
+ 2 files changed, 27 insertions(+), 3 deletions(-)
+
+## Diff
+diff --git a/src/crawl/engine.rs b/src/crawl/engine.rs
+index 10949b4..422e94d 100644
+--- a/src/crawl/engine.rs
++++ b/src/crawl/engine.rs
+@@ -430,21 +430,21 @@ async fn auto_upgrade_check(
+     ctx: &EngineContext,
+     tracker: &Option<Arc<std::sync::Mutex<auto::SelectorTracker>>>,
+     page_url: &str,
+     req: &SpiderRequest,
+ ) -> Option<(Vec<Value>, Vec<SpiderRequest>)> {
+     let spider = &ctx.spider;
+     let fetcher_config = &ctx.fetcher_config;
+     let rule_engine = &ctx.rule_engine;
+     let auto_exclude = &ctx.auto_excludes;
+     let tracker = tracker.as_ref()?;
+-    let needs = tracker.lock().unwrap().needs_upgrade(auto_exclude);
++    let needs = tracker.lock().unwrap_or_else(|e| e.into_inner()).needs_upgrade(auto_exclude);
+ 
+     if needs {
+         {
+             let mut engine = rule_engine.lock().await;
+             engine.learn(page_url, FetchMode::Dynamic);
+         }
+         tracing::info!("Auto: '{}' 选择器无内容，升级 Dynamic", page_url);
+         let proxy = req.proxy.clone();
+         let dynamic_resp = fetch_page_inner(
+             &ctx.client, req, proxy.as_deref(), FetchMode::Dynamic, fetcher_config, &ctx.proxy_clients,
+diff --git a/src/crawl/mod.rs b/src/crawl/mod.rs
+index fcddccc..30ecc40 100644
+--- a/src/crawl/mod.rs
++++ b/src/crawl/mod.rs
+@@ -148,30 +148,30 @@ impl SpiderResponse {
+     }
+     pub fn follow_meta(&self, href: &str, meta: Value) -> Option<SpiderRequest> {
+         let absolute = resolve_href(&self.url, href)?;
+         Some(SpiderRequest::get(&absolute).with_meta(meta).with_depth(self.request.depth + 1))
+     }
+ 
+     /// CSS 查询（Auto 模式自动追踪选择器匹配数）。
+     pub fn css(&self, sel: &str) -> NodeList {
+         let result = self.parse().map(|doc| doc.select(sel)).unwrap_or_else(|_| NodeList::new(vec![]));
+         if let Some(ref t) = self.tracker {
+-            t.lock().unwrap().record(sel, result.len());
++            t.lock().unwrap_or_else(|e| e.into_inner()).record(sel, result.len());
+         }
+         result
+     }
+ 
+     /// XPath 查询（Auto 模式自动追踪）。
+     pub fn xpath_auto(&self, expr: &str) -> NodeList {
+         let result = self.parse().map(|doc| doc.xpath(expr)).unwrap_or_else(|_| NodeList::new(vec![]));
+         if let Some(ref t) = self.tracker {
+-            t.lock().unwrap().record(expr, result.len());
++            t.lock().unwrap_or_else(|e| e.into_inner()).record(expr, result.len());
+         }
+         result
+     }
+ }
+ 
+ fn resolve_href(base: &str, href: &str) -> Option<String> {
+     if href.starts_with("http://") || href.starts_with("https://") {
+         return Some(href.to_string());
+     }
+     let base_url = url::Url::parse(base).ok()?;
+@@ -473,11 +473,35 @@ mod tests {
+         assert!(resolve_href("https://example.com", "javascript:void(0)").is_none(),
+             "javascript: scheme 应被拒绝");
+         assert!(resolve_href("https://example.com", "mailto:a@b.com").is_none(),
+             "mailto: scheme 应被拒绝");
+         assert!(resolve_href("https://example.com", "data:text/html,xxx").is_none(),
+             "data: scheme 应被拒绝");
+         // 相对链接仍正常解析
+         assert!(resolve_href("https://example.com/a/", "b").is_some());
+         assert_eq!(resolve_href("https://example.com/a/", "b"), Some("https://example.com/a/b".into()));
+     }
++
++    #[test]
++    fn spider_response_css_with_tracker_does_not_panic() {
++        use std::sync::{Arc, Mutex};
++        use crate::crawl::auto::SelectorTracker;
++
++        let tracker = Arc::new(Mutex::new(SelectorTracker::new()));
++        let resp = SpiderResponse {
++            url: "http://example.com".into(),
++            status: 200,
++            headers: std::collections::HashMap::new(),
++            body: b"<html><body><p>x</p></body></html>".to_vec(),
++            request: SpiderRequest::get("http://example.com"),
++            tracker: Some(tracker),
++            from_cache: false,
++        };
++        // 不应 panic
++        let nodes = resp.css("p");
++        assert_eq!(nodes.iter().count(), 1);
++        // tracker 应记录（SelectorTracker.records 为私有，用 len() 方法）
++        let t = resp.tracker.as_ref().unwrap().lock().unwrap();
++        assert_eq!(t.len(), 1, "应记录 1 个选择器匹配");
++        assert_eq!(t.records().len(), 1);
++    }
+ }

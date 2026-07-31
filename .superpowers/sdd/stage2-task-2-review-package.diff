@@ -1,0 +1,84 @@
+﻿=== COMMITS (0f86b54..2f3285e) ===
+2f3285e feat: 新增 Document struct + sxd-document 懒加载基础设施
+
+=== STAT ===
+ src/parser/document.rs | 50 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/parser/mod.rs      |  1 +
+ 2 files changed, 51 insertions(+)
+
+=== FULL DIFF ===
+diff --git a/src/parser/document.rs b/src/parser/document.rs
+new file mode 100644
+index 0000000..a9b5ebf
+--- /dev/null
++++ b/src/parser/document.rs
+@@ -0,0 +1,50 @@
++//! Document: 共享所有权的 HTML 文档容器。
++//!
++//! 包含 scraper::Html（CSS 查询）和懒加载的 sxd-document::Package（XPath 查询）。
++//! Node 通过 Arc<Document> 共享文档，select() 返回的 Node 引用同一文档的树中位置。
++
++use std::sync::Arc;
++use std::cell::OnceCell;
++use scraper::Html;
++use sxd_document::Package;
++
++/// 共享的 HTML 文档。scraper 树用于 CSS 查询和 DOM 导航，
++/// sxd-document 树懒加载用于 XPath 查询。
++pub struct Document {
++    /// scraper 解析的 HTML 树（html5ever 容错）
++    pub(crate) html: Arc<Html>,
++    /// 懒加载的 sxd-document 包（XPath 用）
++    sxd: OnceCell<Package>,
++}
++
++impl Document {
++    /// 从 HTML 字符串创建文档。
++    pub fn from_html(html: &str) -> Arc<Self> {
++        let parsed = Html::parse_document(html);
++        Arc::new(Self {
++            html: Arc::new(parsed),
++            sxd: OnceCell::new(),
++        })
++    }
++
++    /// 获取 sxd-document 包（懒加载）。
++    ///
++    /// 首次调用时用 html5ever 规范化后的 HTML 喂给 sxd_document::parser，
++    /// 解决 sxd 对 HTML5 容错弱的问题。后续调用直接返回缓存的 Package。
++    pub fn sxd_package(&self) -> &Package {
++        self.sxd.get_or_init(|| build_sxd_from_html(&self.html))
++    }
++}
++
++/// 用 html5ever（scraper 内部）规范化 HTML 后喂给 sxd-document。
++///
++/// sxd_document::parser 是 XML 解析器，对 HTML5 容错弱：
++/// - `<br>`/`<img>` 等空标签需要自闭合
++/// - `<script>`/`<style>` 内容会被当文本
++/// html5ever 输出的 `html()` 已经规范化处理了这些。
++fn build_sxd_from_html(html: &Html) -> Package {
++    // html() 返回规范化的 HTML 字串（含 html/head/body 结构）
++    let clean_html = html.html();
++    sxd_document::parser::parse(&clean_html)
++        .unwrap_or_else(|_| Package::new())
++}
+diff --git a/src/parser/mod.rs b/src/parser/mod.rs
+index 4f4f023..227ff2c 100644
+--- a/src/parser/mod.rs
++++ b/src/parser/mod.rs
+@@ -1,13 +1,14 @@
+ //! HTML parsing with CSS/XPath selectors.
+ 
+ pub mod difflib;
++pub mod document;
+ pub mod adaptive;
+ pub mod generate;
+ 
+ pub use adaptive::{
+     ElementSnapshot, similarity, relocate_with_snapshot,
+     css_adaptive, DEFAULT_TOLERANCE,
+ };
+ 
+ use scraper::{Html, Selector as CssSelector};
+ use std::collections::HashMap;

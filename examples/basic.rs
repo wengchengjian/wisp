@@ -8,8 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let browser = Browser::launch(LaunchOptions {
         headless: true,
         ..Default::default()
-    })
-    .await?;
+    }).await?;
 
     let mut page = browser.new_page().await?;
 

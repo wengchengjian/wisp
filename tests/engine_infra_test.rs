@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use wisp::crawl::*;
 use wisp::fetcher::FetchMode;
+use wisp::parser::ResponseExt;
 
 /// 最小 Spider：handle 返回单个 item，不 follow。
 struct CountSpider {

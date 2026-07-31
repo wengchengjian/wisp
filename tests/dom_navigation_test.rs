@@ -32,10 +32,7 @@ fn test_children_navigation() {
     let children = parent.children();
     // 3 个 <p> + 1 个 <span> = 4 个元素子节点
     assert_eq!(children.len(), 4);
-    assert_eq!(
-        children.get(0).unwrap().attr("class"),
-        Some("first".to_string())
-    );
+    assert_eq!(children.get(0).unwrap().attr("class"), Some("first".to_string()));
     assert_eq!(children.get(3).unwrap().tag(), "span");
 }
 
