@@ -108,4 +108,13 @@ mod tests {
         assert!(!blocker.should_block("not-a-url"));
         assert!(!blocker.should_block(""));
     }
+
+    #[test]
+    fn blocked_domains_returns_wildcard_patterns() {
+        let mut blocker = DomainBlocker::new();
+        blocker.block_domains(&["ads.example.com", "tracker.io"]);
+        let mut patterns = blocker.blocked_domains();
+        patterns.sort();
+        assert_eq!(patterns, vec!["*://ads.example.com/*", "*://tracker.io/*"]);
+    }
 }

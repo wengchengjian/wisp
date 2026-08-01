@@ -12,9 +12,7 @@ use crate::strategy::BrowserFetchStrategy;
 use wisp_browser::BrowserPool;
 #[cfg(feature = "browser")]
 use wisp_core::config::LaunchOptions;
-use wisp_core::error::Result;
-#[cfg(feature = "browser")]
-use wisp_core::error::WispError;
+use wisp_core::error::{Result, WispError};
 use wisp_core::{Request, Response};
 use wisp_http::Client;
 
@@ -82,6 +80,14 @@ impl FetchClient {
 
     /// HTTP 请求（共享 Client，连接复用）。直接返回统一 Response，无中间类型转换。
     pub async fn fetch_http(&self, req: &Request) -> Result<Response> {
+        if let Some(ref blocker) = self.config.domain_blocker {
+            if blocker.should_block(&req.url) {
+                return Err(WispError::Config(format!(
+                    "domain blocked by DomainBlocker: {}",
+                    wisp_core::utils::sanitize_url(&req.url)
+                )));
+            }
+        }
         self.http.fetch(req).await
     }
 
@@ -103,6 +109,25 @@ impl FetchClient {
         })?;
         // acquire 返回带 page 的 handle（permit 限制并发数）
         let mut handle = pool.acquire().await?;
+
+        if let Some(ref blocker) = self.config.domain_blocker {
+            if blocker.should_block(&req.url) {
+                return Err(WispError::Config(format!(
+                    "domain blocked by DomainBlocker: {}",
+                    wisp_core::utils::sanitize_url(&req.url)
+                )));
+            }
+            let urls = blocker.blocked_domains();
+            if !urls.is_empty() {
+                handle
+                    .page_mut()
+                    .cmd(
+                        "Network.setBlockedURLs",
+                        serde_json::json!({ "urls": urls }),
+                    )
+                    .await?;
+            }
+        }
 
         // 总超时：防止 CF 挑战页面卡住整个流程（导航+挑战+提取各阶段都有单独超时，
         // 但极端情况下可能累加超过预期，这里加一个 120s 硬上限）
