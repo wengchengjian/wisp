@@ -176,7 +176,7 @@ crates/core/                     Request/Response/Method/WispError/config/text/u
 crates/storage/                  Store + Memory/File/Sqlite + CachedResponse
 crates/parser/                   Node/NodeList/adaptive + ResponseExt
 crates/proxy/                    ProxyPool/RotationStrategy + config_file
-crates/http/                     wreq Client/Config/DomainBlocker/UaRotator
+crates/http/                     wreq Client/Config/DomainBlocker
 crates/browser/                  CDP browser automation
 crates/stealth/                  Challenge solver / human behavior / Turnstile
 crates/fetcher/                  Fetcher/FetchClient/FetchMode

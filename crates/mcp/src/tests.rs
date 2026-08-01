@@ -3,16 +3,27 @@ use serde_json::json;
 use std::sync::Arc;
 use wisp_core::error::{McpError, WispError};
 use wisp_crawl::Engine;
+use wisp_fetcher::{FetchClient, FetchClientConfig};
 use wisp_storage::Store;
+
+fn test_fetch_client() -> Arc<FetchClient> {
+    Arc::new(
+        FetchClient::new(FetchClientConfig {
+            max_concurrent_pages: 0,
+            ..Default::default()
+        })
+        .expect("build test fetch client"),
+    )
+}
 
 #[test]
 fn test_tools_list_has_five_tools() {
     let list = handle_tools_list();
     let tools = list.get("tools").unwrap().as_array().unwrap();
-    #[cfg(feature = "browser")]
-    assert_eq!(tools.len(), 5, "browser feature 下应有 5 个工具");
-    #[cfg(not(feature = "browser"))]
-    assert_eq!(tools.len(), 4, "无 browser feature 时应为 4 个工具");
+    #[cfg(feature = "stealth")]
+    assert_eq!(tools.len(), 5, "stealth feature 下应有 5 个工具");
+    #[cfg(not(feature = "stealth"))]
+    assert_eq!(tools.len(), 4, "无 stealth feature 时应为 4 个工具");
     let names: Vec<&str> = tools
         .iter()
         .map(|t| t.get("name").unwrap().as_str().unwrap())
@@ -21,7 +32,7 @@ fn test_tools_list_has_five_tools() {
     assert!(names.contains(&"extract_css"));
     assert!(names.contains(&"crawl_site"));
     assert!(names.contains(&"adaptive_scrape"));
-    #[cfg(feature = "browser")]
+    #[cfg(feature = "stealth")]
     assert!(names.contains(&"stealth_fetch"));
 }
 
@@ -43,12 +54,21 @@ async fn test_handle_tools_call_unknown_tool() {
     let req = json!({
         "params": { "name": "nonexistent", "arguments": {} }
     });
-    let result = handle_tools_call(req, &store, &engine).await;
+    let result = handle_tools_call(req, &store, &engine, &test_fetch_client()).await;
     assert!(result.is_err());
     match result.unwrap_err() {
         WispError::Mcp(McpError::UnknownTool(n)) => assert_eq!(n, "nonexistent"),
         other => panic!("预期 McpUnknownTool, 得到 {:?}", other),
     }
+}
+
+#[cfg(feature = "stealth")]
+#[tokio::test]
+async fn stealth_fetch_requires_url() {
+    let client = test_fetch_client();
+    let result = crate::tools::stealth_fetch(json!({}), &client).await;
+    let err = result.expect_err("缺少 url 应报错");
+    assert!(err.to_string().contains("url"), "错误应说明缺少 url: {err}");
 }
 
 #[tokio::test]

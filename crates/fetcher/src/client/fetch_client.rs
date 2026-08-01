@@ -12,9 +12,7 @@ use crate::strategy::BrowserFetchStrategy;
 use wisp_browser::BrowserPool;
 #[cfg(feature = "browser")]
 use wisp_core::config::LaunchOptions;
-use wisp_core::error::Result;
-#[cfg(feature = "browser")]
-use wisp_core::error::WispError;
+use wisp_core::error::{Result, WispError};
 use wisp_core::{Request, Response};
 use wisp_http::Client;
 
@@ -38,7 +36,7 @@ impl FetchClient {
         let http_jar = Arc::new(HttpCookieJar::new());
         let http = Arc::new(Self::build_http_client(&config, http_jar.jar())?);
         #[cfg(feature = "browser")]
-        let browser_pool = Self::build_browser_pool(&config);
+        let browser_pool = Self::build_browser_pool(&config)?;
         let cookie_jar: Arc<dyn CookieJar> = http_jar;
         Ok(Self {
             http,
@@ -82,6 +80,14 @@ impl FetchClient {
 
     /// HTTP 请求（共享 Client，连接复用）。直接返回统一 Response，无中间类型转换。
     pub async fn fetch_http(&self, req: &Request) -> Result<Response> {
+        if let Some(ref blocker) = self.config.domain_blocker {
+            if blocker.should_block(&req.url) {
+                return Err(WispError::Config(format!(
+                    "domain blocked by DomainBlocker: {}",
+                    wisp_core::utils::sanitize_url(&req.url)
+                )));
+            }
+        }
         self.http.fetch(req).await
     }
 
@@ -103,6 +109,25 @@ impl FetchClient {
         })?;
         // acquire 返回带 page 的 handle（permit 限制并发数）
         let mut handle = pool.acquire().await?;
+
+        if let Some(ref blocker) = self.config.domain_blocker {
+            if blocker.should_block(&req.url) {
+                return Err(WispError::Config(format!(
+                    "domain blocked by DomainBlocker: {}",
+                    wisp_core::utils::sanitize_url(&req.url)
+                )));
+            }
+            let urls = blocker.blocked_domains();
+            if !urls.is_empty() {
+                handle
+                    .page_mut()
+                    .cmd(
+                        "Network.setBlockedURLs",
+                        serde_json::json!({ "urls": urls }),
+                    )
+                    .await?;
+            }
+        }
 
         // 总超时：防止 CF 挑战页面卡住整个流程（导航+挑战+提取各阶段都有单独超时，
         // 但极端情况下可能累加超过预期，这里加一个 120s 硬上限）
@@ -153,27 +178,48 @@ impl FetchClient {
     }
 
     #[cfg(feature = "browser")]
-    fn build_browser_pool(config: &FetchClientConfig) -> Option<Arc<BrowserPool>> {
+    fn build_browser_pool(config: &FetchClientConfig) -> Result<Option<Arc<BrowserPool>>> {
         if config.max_concurrent_pages == 0 {
-            return None;
+            return Ok(None);
         }
-        let proxy_config = config
-            .proxy
-            .as_ref()
-            .map(|p| wisp_core::config::ProxyConfig {
-                server: p.clone(),
-                username: None,
-                password: None,
-            });
+        let proxy_config = match &config.proxy {
+            Some(proxy) => {
+                let parsed = url::Url::parse(proxy)
+                    .map_err(|e| WispError::Config(format!("invalid proxy URL: {e}")))?;
+                if !parsed.username().is_empty() || parsed.password().is_some() {
+                    return Err(WispError::Config("浏览器模式暂不支持代理认证".into()));
+                }
+                Some(wisp_core::config::ProxyConfig {
+                    server: proxy.clone(),
+                    username: None,
+                    password: None,
+                })
+            }
+            None => None,
+        };
         let launch_options = LaunchOptions {
             headless: config.headless,
             executable_path: config.executable_path.clone(),
             proxy: proxy_config,
             ..Default::default()
         };
-        Some(BrowserPool::new(
+        Ok(Some(BrowserPool::new(
             config.max_concurrent_pages,
             launch_options,
-        ))
+        )))
+    }
+}
+
+#[cfg(feature = "browser")]
+impl Drop for FetchClient {
+    fn drop(&mut self) {
+        let Some(pool) = self.browser_pool.take() else {
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            drop(handle.spawn(async move {
+                pool.shutdown().await;
+            }));
+        }
     }
 }

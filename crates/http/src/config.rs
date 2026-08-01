@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
-use wreq::header::HeaderName;
 use wreq_util::Profile;
 
 /// HTTP client configuration.
@@ -20,8 +19,6 @@ pub struct Config {
     pub max_redirects: usize,
     /// 浏览器 TLS 指纹模拟（默认 Chrome136，覆盖最广）
     pub emulation: Option<Profile>,
-    /// 自定义 header 顺序（wreq 6.0.0-rc.29 未暴露 headers_order 方法，字段暂不应用）
-    pub header_order: Option<Vec<HeaderName>>,
     /// DNS-over-HTTPS 服务器 URL（如 "https://1.1.1.1/dns-query"）。
     /// 启用后通过 DoH 解析域名，防止代理场景下 DNS 泄漏。
     pub dns_over_https: Option<String>,
@@ -46,7 +43,6 @@ impl Default for Config {
             max_redirects: 10,
             // 默认 Chrome 136 指纹（覆盖最广）
             emulation: Some(Profile::Chrome136),
-            header_order: None,
             dns_over_https: None,
             max_body_size: 64 * 1024 * 1024,
             danger_accept_invalid_certs: false,

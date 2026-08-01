@@ -16,11 +16,11 @@ http = []
 # 浏览器模式（Dynamic）：启用 browser 模块 + DynamicStrategy
 browser = ["wisp-fetcher/browser", "wisp-crawl/browser", "dep:wisp-browser"]
 # Stealth 模式：启用 stealth 模块 + StealthStrategy（依赖 browser）
-stealth = ["browser", "wisp-fetcher/stealth", "wisp-crawl/stealth", "dep:wisp-stealth"]
+stealth = ["browser", "wisp-fetcher/stealth", "wisp-crawl/stealth", "dep:wisp-stealth", "wisp-mcp?/stealth"]
 # MCP 服务：启用 mcp 模块
 mcp = ["dep:wisp-mcp"]
 # 启用 SQLite 存储后端（默认禁用，使用 FileStore）
-sqlite = ["wisp-storage/sqlite"]
+sqlite = ["wisp-storage/sqlite", "wisp-mcp?/sqlite"]
 
 [dependencies]
 wisp-core = { path = "crates/core" }

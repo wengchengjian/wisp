@@ -1,22 +1,24 @@
 //! Verify checkpoint save/load round-trip.
 
-use std::collections::HashSet;
-use wisp::crawl::{CrawlState, CrawlStats, Request};
+use std::collections::{HashMap, HashSet};
+use wisp::crawl::{CrawlState, Request};
 use wisp::storage::MemoryStore;
 
 #[tokio::test]
 async fn test_checkpoint_save_load_roundtrip() {
     let store = MemoryStore::default();
 
-    let stats = CrawlStats {
-        items_scraped: 100,
-        pages_crawled: 42,
-        errors: 3,
-        duration: std::time::Duration::from_millis(5678),
-        ..Default::default()
-    };
-    let pending = vec![Request::get("https://example.com/pending")];
-    let state = CrawlState::from_stats("test-spider".to_string(), &stats, pending);
+    let mut state = CrawlState::new("test-spider".to_string());
+    state.pending_urls = vec![Request::get("https://example.com/pending")];
+    state.pages_crawled = 42;
+    state.items_scraped = 100;
+    state.errors = 3;
+    state.duration_ms = 5678;
+    state.status_codes = HashMap::from([(200, 40), (404, 2)]);
+    state.blocked = 1;
+    state.retries = 2;
+    state.offsite = 3;
+    state.cache_hits = 4;
 
     let blob = bincode::serialize(&state).unwrap();
     wisp::storage::save_checkpoint(&store, "test-spider", &blob)
@@ -36,14 +38,26 @@ async fn test_checkpoint_save_load_roundtrip() {
     assert_eq!(restored.duration_ms, 5678);
     assert_eq!(restored.pending_urls.len(), 1);
     assert_eq!(restored.pending_urls[0].url, "https://example.com/pending");
+    assert_eq!(restored.status_codes, HashMap::from([(200, 40), (404, 2)]));
+    assert_eq!(restored.blocked, 1);
+    assert_eq!(restored.retries, 2);
+    assert_eq!(restored.offsite, 3);
+    assert_eq!(restored.cache_hits, 4);
 
-    // 验证 to_stats 往返
     let restored_stats = restored.to_stats();
     assert_eq!(restored_stats.pages_crawled, 42);
     assert_eq!(
         restored_stats.duration,
         std::time::Duration::from_millis(5678)
     );
+    assert_eq!(
+        restored_stats.status_code_counts,
+        HashMap::from([(200, 40), (404, 2)])
+    );
+    assert_eq!(restored_stats.blocked_requests, 1);
+    assert_eq!(restored_stats.retry_count, 2);
+    assert_eq!(restored_stats.offsite_requests_count, 3);
+    assert_eq!(restored_stats.cache_hits, 4);
 }
 
 #[tokio::test]
@@ -87,18 +101,17 @@ fn test_crawl_state_new_defaults() {
     assert_eq!(state.duration_ms, 0);
     assert!(state.pending_urls.is_empty());
     assert!(state.seen_urls.is_empty());
+    assert!(state.status_codes.is_empty());
+    assert_eq!(state.blocked, 0);
+    assert_eq!(state.retries, 0);
+    assert_eq!(state.offsite, 0);
+    assert_eq!(state.cache_hits, 0);
 }
 
-/// Task 3：验证 CrawlState 序列化层 seen_urls 往返。
-///
-/// 此测试模拟 save_checkpoint 写入：手动构造含 seen_urls 的 CrawlState，
-/// 经 bincode 序列化 → Store 持久化 → 加载 → 反序列化，确认 seen_urls 不丢失。
-/// 注意：此处只验证序列化层契约；save_checkpoint 真正写入 seen_urls 的行为
-/// 由 engine.rs 内部 lib 测试 `save_checkpoint_persists_seen_urls` 覆盖。
+/// 验证 seen_urls 序列化层往返。
 #[tokio::test]
 async fn checkpoint_restore_preserves_seen_urls() {
     let store = MemoryStore::default();
-    // 模拟 save_checkpoint 写入：构造含 seen_urls 的 CrawlState
     let mut state = CrawlState::new("test_spider".into());
     state.pending_urls = vec![Request::get("https://example.com/pending")];
     state.seen_urls = HashSet::from(["https://example.com/already-crawled".to_string()]);
@@ -107,7 +120,6 @@ async fn checkpoint_restore_preserves_seen_urls() {
         .await
         .unwrap();
 
-    // 加载并验证 seen_urls 被持久化
     let loaded = wisp::storage::load_checkpoint(&store, "test_spider")
         .await
         .unwrap()

@@ -116,4 +116,12 @@ impl DomainBlocker {
             })
             .collect()
     }
+
+    /// 返回可直接用于 CDP `Network.setBlockedURLs` 的 URL 模式列表。
+    pub fn blocked_domains(&self) -> Vec<String> {
+        self.blocked
+            .iter()
+            .map(|domain| format!("*://{}/*", domain))
+            .collect()
+    }
 }

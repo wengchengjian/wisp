@@ -80,7 +80,6 @@ pub use crawl::{
     ClosureSpider, CrawlEvent, CrawlStream, Engine, EngineConfig, Items, JsonlWriter, Spider,
     SpiderBuilder,
 };
-pub use http::UaRotator;
 
 // === 底层类型（FetchClientConfig 公共字段需要） ===
 pub use http::DomainBlocker;

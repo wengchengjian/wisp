@@ -11,7 +11,7 @@ futures = "0.3"
 tracing = "0.1"
 rand = "0.10"
 hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime", "dns-over-https-rustls", "webpki-roots"] }
-wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
+wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream", "socks"] }
 wreq-util = "=3.0.0-rc.14"
 
 [dev-dependencies]

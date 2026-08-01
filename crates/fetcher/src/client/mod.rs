@@ -36,12 +36,55 @@ mod tests {
         assert_eq!(client.http().config_ref().timeout, Duration::from_secs(30));
     }
 
+    #[tokio::test]
+    async fn fetch_http_blocks_configured_domain() {
+        use wisp_core::Request;
+        use wisp_http::DomainBlocker;
+        let mut blocker = DomainBlocker::new();
+        blocker.block_domain("ads.example.com");
+        let config = FetchClientConfig {
+            domain_blocker: Some(blocker),
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+        let err = client
+            .fetch_http(&Request::get("https://ads.example.com/ad.js"))
+            .await
+            .expect_err("拦截域名应报错");
+        assert!(err.to_string().contains("blocked"), "错误应说明拦截: {err}");
+    }
+
     #[cfg(feature = "browser")]
     #[test]
     fn test_fetch_client_with_browser_pool() {
         let config = FetchClientConfig::default();
         let client = FetchClient::new(config).expect("build client");
         assert!(client.browser_pool().is_some());
+    }
+
+    #[cfg(feature = "browser")]
+    #[test]
+    fn browser_pool_rejects_authenticated_proxy() {
+        let config = FetchClientConfig {
+            http: wisp_http::Config {
+                proxy: Some("http://user:pass@127.0.0.1:8080".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = match FetchClient::new(config) {
+            Ok(_) => panic!("认证代理应被拒绝"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("代理认证"), "错误应明确: {err}");
+    }
+
+    #[cfg(feature = "browser")]
+    #[test]
+    fn fetch_client_drop_does_not_panic_inside_runtime() {
+        let config = FetchClientConfig::default();
+        let client = FetchClient::new(config).expect("build client");
+        drop(client);
     }
 
     #[tokio::test]

@@ -36,9 +36,6 @@ use wisp_core::error::Result;
 pub struct Browser {
     session: Arc<CdpSession>,
     process: tokio::process::Child,
-    /// 临时目录路径（用于访问）。
-    #[allow(dead_code)]
-    user_data_path: std::path::PathBuf,
     /// 自动清理守卫：Drop 时自动删除临时目录。
     /// 用户自定义 user_data_dir 时为 None（不清理）。
     _temp_dir: Option<tempfile::TempDir>,
@@ -58,7 +55,7 @@ impl Browser {
         let (user_data_path, temp_dir) = process::setup_user_data_dir(&options)?;
         let port_file = user_data_path.join("DevToolsActivePort");
         let _ = std::fs::remove_file(&port_file);
-        let chrome_args = process::build_chrome_args(&options, &user_data_path);
+        let chrome_args = process::build_chrome_args(&options, &user_data_path)?;
         let child = process::spawn_chrome_process(&executable, &chrome_args, options.headless)?;
         let ws_url = process::wait_for_devtools_url(&user_data_path).await?;
         tracing::info!("Chrome DevTools: {}", ws_url);
@@ -66,7 +63,6 @@ impl Browser {
         Ok(Self {
             session,
             process: child,
-            user_data_path,
             _temp_dir: temp_dir,
             headless: options.headless,
         })

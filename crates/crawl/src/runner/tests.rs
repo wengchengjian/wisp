@@ -44,3 +44,51 @@ fn merge_checkpoint_states_deduplicates_urls() {
     assert_eq!(pending.len(), 2, "相同 URL 只应入队一次");
     assert_eq!(seen.len(), 2);
 }
+
+#[test]
+fn engine_builder_accepts_existing_fetch_client() {
+    use std::sync::Arc;
+    use wisp_fetcher::{FetchClient, FetchClientConfig};
+
+    let client = Arc::new(FetchClient::new(FetchClientConfig::default()).unwrap());
+    let engine = Engine::infra()
+        .fetch_client(Arc::clone(&client))
+        .build()
+        .unwrap();
+    assert!(Arc::ptr_eq(&engine.fetch_client, &client));
+}
+
+#[test]
+fn engine_builder_rejects_zero_max_concurrent() {
+    let err = match Engine::infra().max_concurrent(0).build() {
+        Ok(_) => panic!("max_concurrent=0 应构建失败"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("max_concurrent"),
+        "错误应说明 max_concurrent: {err}"
+    );
+}
+
+#[test]
+fn checkpoint_restores_full_stats() {
+    use std::collections::HashMap;
+
+    let mut state = CrawlState::new("s".into());
+    state.status_codes = HashMap::from([(200, 10)]);
+    state.blocked = 5;
+    state.retries = 6;
+    state.offsite = 7;
+    state.cache_hits = 8;
+
+    let stats = crate::SpiderStats::new();
+    stats.restore_from(&state);
+    assert_eq!(stats.blocked.load(std::sync::atomic::Ordering::SeqCst), 5);
+    assert_eq!(stats.retries.load(std::sync::atomic::Ordering::SeqCst), 6);
+    assert_eq!(stats.offsite.load(std::sync::atomic::Ordering::SeqCst), 7);
+    assert_eq!(
+        stats.cache_hits.load(std::sync::atomic::Ordering::SeqCst),
+        8
+    );
+    assert_eq!(stats.status_codes_snapshot(), HashMap::from([(200, 10)]));
+}

@@ -81,8 +81,8 @@ pub(super) fn setup_user_data_dir(
 pub(super) fn build_chrome_args(
     options: &LaunchOptions,
     user_data_path: &std::path::Path,
-) -> Vec<String> {
-    let mut args = launch::build_stealth_args(options);
+) -> Result<Vec<String>> {
+    let mut args = launch::build_stealth_args(options)?;
     // 临时 profile 会触发组件下载（AI 模型、优化提示等），爬虫场景不需要它们。
     args.push("disable-component-update".to_string());
     args.push("remote-debugging-port=0".to_string());
@@ -90,7 +90,7 @@ pub(super) fn build_chrome_args(
         args.push("headless=new".to_string());
     }
     args.push(format!("user-data-dir={}", user_data_path.display()));
-    args.iter().map(|a| format!("--{a}")).collect()
+    Ok(args.iter().map(|a| format!("--{a}")).collect())
 }
 
 pub(super) fn spawn_chrome_process(

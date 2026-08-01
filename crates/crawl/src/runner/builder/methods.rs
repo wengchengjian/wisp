@@ -8,6 +8,11 @@ impl EngineBuilder {
         self.max_concurrent = n;
         self
     }
+    /// 使用已有 FetchClient（MCP 等需要共享 HTTP/BrowserPool 的场景）。
+    pub fn fetch_client(mut self, client: Arc<FetchClient>) -> Self {
+        self.fetch_client = Some(client);
+        self
+    }
     /// 设置最大爬取页数。
     pub fn max_pages(mut self, n: usize) -> Self {
         self.max_pages = n;

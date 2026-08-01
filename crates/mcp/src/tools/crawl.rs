@@ -5,6 +5,7 @@ use wisp_core::error::{McpError, Result, WispError};
 use wisp_crawl::Engine;
 
 use super::spider::SimpleSpider;
+use regex::Regex;
 
 /// 爬取站点：用内置 SimpleSpider 按 CSS 选择器提取，返回 JSONL。
 ///
@@ -37,10 +38,34 @@ pub async fn crawl_site(args: Value, engine: &Engine) -> Result<Value> {
         .and_then(|v| v.as_u64())
         .unwrap_or(100)
         .min(1000) as usize;
+    let follow_pattern = args
+        .get("follow_pattern")
+        .and_then(|v| v.as_str())
+        .map(|p| {
+            Regex::new(p).map_err(|e| {
+                WispError::Mcp(McpError::General(format!(
+                    "invalid follow_pattern regex: {e}"
+                )))
+            })
+        })
+        .transpose()?;
+    let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let allowed_domains: Vec<String> = args
+        .get("allowed_domains")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     let spider = SimpleSpider {
         css: css_selector,
         start_urls,
         max_pages,
+        follow_pattern,
+        max_depth,
+        allowed_domains,
     };
     let (_stats, items) = engine.run(spider).await?;
     let jsonl: String = items

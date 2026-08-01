@@ -1,14 +1,15 @@
 //! Chrome 启动参数构建。
 
 use wisp_core::config::LaunchOptions;
+use wisp_core::error::{Result, WispError};
 
 /// Build default Chrome launch arguments from options, with patches applied.
 /// These args include the "--" prefix (for testing/verification).
-pub fn build_default_args(options: &LaunchOptions) -> Vec<String> {
-    build_stealth_args(options)
+pub fn build_default_args(options: &LaunchOptions) -> Result<Vec<String>> {
+    Ok(build_stealth_args(options)?
         .iter()
         .map(|a| format!("--{a}"))
-        .collect()
+        .collect())
 }
 
 fn base_stealth_args() -> Vec<String> {
@@ -37,17 +38,15 @@ fn base_stealth_args() -> Vec<String> {
     ]
 }
 
-fn push_proxy_arg(args: &mut Vec<String>, options: &LaunchOptions) {
+fn push_proxy_arg(args: &mut Vec<String>, options: &LaunchOptions) -> Result<()> {
     let Some(ref proxy) = options.proxy else {
-        return;
+        return Ok(());
     };
-    args.push(format!("proxy-server={}", proxy.server));
     if proxy.username.is_some() || proxy.password.is_some() {
-        tracing::warn!(
-            "Browser proxy auth (username/password) is not supported via --proxy-server. \
-             The proxy will be used without authentication; expect 407 responses."
-        );
+        return Err(WispError::Config("浏览器模式暂不支持代理认证".into()));
     }
+    args.push(format!("proxy-server={}", proxy.server));
+    Ok(())
 }
 
 fn push_extra_args(args: &mut Vec<String>, options: &LaunchOptions) {
@@ -59,9 +58,9 @@ fn push_extra_args(args: &mut Vec<String>, options: &LaunchOptions) {
 
 /// Build stealth launch args WITHOUT "--" prefix.
 /// Aligned with patchright's chromiumSwitches.ts for maximum stealth.
-pub fn build_stealth_args(options: &LaunchOptions) -> Vec<String> {
+pub fn build_stealth_args(options: &LaunchOptions) -> Result<Vec<String>> {
     let mut args = base_stealth_args();
-    push_proxy_arg(&mut args, options);
+    push_proxy_arg(&mut args, options)?;
     push_extra_args(&mut args, options);
-    args
+    Ok(args)
 }

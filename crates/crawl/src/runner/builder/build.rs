@@ -5,7 +5,15 @@ use super::*;
 impl EngineBuilder {
     /// 构建引擎实例。
     pub fn build(self) -> Result<Engine> {
-        let fetch_client = Arc::new(FetchClient::new(self.fetch_client_config)?);
+        if self.max_concurrent == 0 {
+            return Err(wisp_core::error::WispError::Config(
+                "max_concurrent must be > 0".into(),
+            ));
+        }
+        let fetch_client = match self.fetch_client {
+            Some(client) => client,
+            None => Arc::new(FetchClient::new(self.fetch_client_config)?),
+        };
         Ok(Engine {
             fetch_client,
             cache_store: self.cache_store,

@@ -96,6 +96,14 @@ impl SpiderStats {
         self.pages.store(state.pages_crawled, Ordering::SeqCst);
         self.items.store(state.items_scraped, Ordering::SeqCst);
         self.errors.store(state.errors, Ordering::SeqCst);
+        self.blocked.store(state.blocked, Ordering::SeqCst);
+        self.retries.store(state.retries, Ordering::SeqCst);
+        self.offsite.store(state.offsite, Ordering::SeqCst);
+        self.cache_hits.store(state.cache_hits, Ordering::SeqCst);
+        self.status_codes.clear();
+        for (status, count) in &state.status_codes {
+            self.status_codes.insert(*status, AtomicUsize::new(*count));
+        }
         self.elapsed_offset_ms
             .store(state.duration_ms as u64, Ordering::SeqCst);
         self.callback_pages.clear();

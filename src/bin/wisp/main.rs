@@ -71,6 +71,10 @@ enum McpCmd {
     Serve {
         #[arg(long, default_value = "./wisp.db")]
         db: String,
+        #[arg(long, default_value_t = true)]
+        headless: bool,
+        #[arg(long, default_value_t = true)]
+        human_mode: bool,
     },
 }
 
