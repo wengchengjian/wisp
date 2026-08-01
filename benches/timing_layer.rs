@@ -6,8 +6,10 @@
 //! 用 DashMap 替代 Mutex<HashMap>，避免并发时锁竞争成为 benchmark 自身的瓶颈。
 
 use dashmap::DashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::field::{Field, Visit};
 use tracing::span::Id;
 use tracing::Subscriber;
 use tracing_subscriber::layer::Context;
@@ -21,6 +23,8 @@ pub struct TimingLayer {
 struct Inner {
     /// span_id → 创建时间
     create_times: DashMap<Id, Instant>,
+    /// span_id → 聚合 key（span 名 + middleware 名）
+    span_keys: DashMap<Id, String>,
     /// span name → (总耗时, 调用次数)
     stats: DashMap<String, (Duration, usize)>,
 }
@@ -30,6 +34,7 @@ impl TimingLayer {
         Self {
             inner: Arc::new(Inner {
                 create_times: DashMap::new(),
+                span_keys: DashMap::new(),
                 stats: DashMap::new(),
             }),
         }
@@ -38,6 +43,7 @@ impl TimingLayer {
     /// 清空统计（每个 benchmark 级别前重置）
     pub fn reset(&self) {
         self.inner.create_times.clear();
+        self.inner.span_keys.clear();
         self.inner.stats.clear();
     }
 
@@ -53,12 +59,18 @@ impl TimingLayer {
             .iter()
             .map(|r| (r.key().clone(), *r.value()))
             .collect();
-        entries.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        entries.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         let total = entries
             .iter()
             .find(|(name, _)| name == "process_request")
             .map(|(_, (dur, _))| *dur)
-            .unwrap_or_else(|| entries.iter().map(|(_, (d, _))| *d).max().unwrap_or_default());
+            .unwrap_or_else(|| {
+                entries
+                    .iter()
+                    .map(|(_, (d, _))| *d)
+                    .max()
+                    .unwrap_or_default()
+            });
         for (name, (dur, count)) in entries {
             let pct = if total.as_nanos() > 0 {
                 dur.as_secs_f64() / total.as_secs_f64() * 100.0
@@ -80,22 +92,47 @@ impl<S> Layer<S> for TimingLayer
 where
     S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    fn on_new_span(
-        &self,
-        _attrs: &tracing::span::Attributes<'_>,
-        id: &Id,
-        _ctx: Context<'_, S>,
-    ) {
+    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &Id, _ctx: Context<'_, S>) {
+        let mut key = attrs.metadata().name().to_string();
+        if attrs.metadata().target() == "middleware" {
+            struct MwVisitor {
+                value: Option<String>,
+            }
+            impl Visit for MwVisitor {
+                fn record_str(&mut self, field: &Field, value: &str) {
+                    if field.name() == "mw" {
+                        self.value = Some(value.to_string());
+                    }
+                }
+                fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+                    if field.name() == "mw" {
+                        self.value = Some(format!("{value:?}"));
+                    }
+                }
+            }
+            let mut visitor = MwVisitor { value: None };
+            attrs.values().record(&mut visitor);
+            if let Some(mw) = visitor.value {
+                key = format!("{}:{}", key, mw);
+            }
+        }
+        self.inner.span_keys.insert(id.clone(), key);
         self.inner.create_times.insert(id.clone(), Instant::now());
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         if let Some((_, created)) = self.inner.create_times.remove(&id) {
             let dur = created.elapsed();
-            let name = ctx
-                .span(&id)
-                .map(|s| s.name().to_string())
-                .unwrap_or_default();
+            let name = self
+                .inner
+                .span_keys
+                .remove(&id)
+                .map(|(_, k)| k)
+                .unwrap_or_else(|| {
+                    ctx.span(&id)
+                        .map(|s| s.name().to_string())
+                        .unwrap_or_default()
+                });
             self.inner
                 .stats
                 .entry(name)

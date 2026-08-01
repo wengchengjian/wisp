@@ -1,7 +1,5 @@
 //! Proxy pool management with rotation strategies.
 
-pub mod config_file;
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// How to pick the next proxy from the pool.
@@ -33,7 +31,9 @@ impl ProxyPool {
         use rand::rngs::{SmallRng, SysRng};
         use rand::{RngExt, SeedableRng};
         let initial = if strategy == RotationStrategy::Sticky && !proxies.is_empty() {
-            SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed").random_range(0..proxies.len())
+            SmallRng::try_from_rng(&mut SysRng)
+                .expect("OS RNG failed")
+                .random_range(0..proxies.len())
         } else {
             0
         };
@@ -59,11 +59,11 @@ impl ProxyPool {
             RotationStrategy::Random => {
                 use rand::rngs::{SmallRng, SysRng};
                 use rand::{RngExt, SeedableRng};
-                SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed").random_range(0..self.proxies.len())
+                SmallRng::try_from_rng(&mut SysRng)
+                    .expect("OS RNG failed")
+                    .random_range(0..self.proxies.len())
             }
-            RotationStrategy::Sticky => {
-                self.index.load(Ordering::Relaxed) % self.proxies.len()
-            }
+            RotationStrategy::Sticky => self.index.load(Ordering::Relaxed) % self.proxies.len(),
         };
 
         Some(self.proxies[idx].clone())
@@ -78,11 +78,6 @@ impl ProxyPool {
     pub fn is_empty(&self) -> bool {
         self.proxies.is_empty()
     }
-
-    /// Format a proxy URL as a Chrome `--proxy-server` argument value.
-    pub fn to_chrome_arg(proxy: &str) -> String {
-        proxy.to_string()
-    }
 }
 
 #[cfg(test)]
@@ -92,7 +87,11 @@ mod tests {
     #[test]
     fn test_sequential_rotation() {
         let pool = ProxyPool::new(
-            vec!["http://p1:8080".into(), "http://p2:8080".into(), "http://p3:8080".into()],
+            vec![
+                "http://p1:8080".into(),
+                "http://p2:8080".into(),
+                "http://p3:8080".into(),
+            ],
             RotationStrategy::Sequential,
         );
         assert_eq!(pool.next().unwrap(), "http://p1:8080");

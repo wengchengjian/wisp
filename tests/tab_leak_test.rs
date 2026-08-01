@@ -1,3 +1,4 @@
+#![cfg(feature = "browser")]
 //! 验证 Page drop 后是否泄漏 Chrome tab。
 //!
 //! 测试逻辑：
@@ -11,8 +12,8 @@
 //!
 //! 探针 page 在两次测量中都被算入，差异抵消，避免探针自身污染结果。
 
-use std::path::PathBuf;
 use serde_json::json;
+use std::path::PathBuf;
 use wisp::{Browser, LaunchOptions};
 
 async fn launch_browser() -> Option<Browser> {

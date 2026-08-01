@@ -5,7 +5,7 @@
 
 use std::net::IpAddr;
 
-use crate::error::{Result, WispError, McpError};
+use crate::error::{McpError, Result, WispError};
 
 /// 校验 URL 是否安全可访问。
 ///
@@ -24,78 +24,82 @@ use crate::error::{Result, WispError, McpError};
 /// validate_url("http://127.0.0.1/")?;          // Err（环回）
 /// validate_url("ftp://example.com")?;          // Err（scheme 非法）
 /// ```
-pub fn validate_url(url: &str) -> Result<()> {
-    let trimmed = url.trim();
-    let parsed = url::Url::parse(trimmed).map_err(|e| {
-        WispError::Mcp(McpError::General(format!("URL 解析失败 '{url}': {e}")))
-    })?;
+fn parse_safe_url(url: &str) -> Result<url::Url> {
+    url::Url::parse(url.trim())
+        .map_err(|e| WispError::Mcp(McpError::General(format!("URL 解析失败 '{url}': {e}"))))
+}
 
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(WispError::Mcp(McpError::General(
-            format!("URL scheme 非法，仅支持 http/https，拒绝: {url}")
-        )));
+fn check_scheme(parsed: &url::Url, url: &str) -> Result<()> {
+    if parsed.scheme() == "http" || parsed.scheme() == "https" {
+        return Ok(());
     }
+    Err(WispError::Mcp(McpError::General(format!(
+        "URL scheme 非法，仅支持 http/https，拒绝: {url}"
+    ))))
+}
 
-    // 使用 host() 而非 host_str()，正确处理 IPv6 字面量（host_str 返回 "[::1]" 带括号）
-    // 注意：url crate 会将 "https:///path" 解析为 host=Some("")（空 domain），
-    // 因此需要额外检查 host_str 是否为空字符串。
+fn check_host(parsed: &url::Url, url: &str) -> Result<()> {
     let host_str = parsed.host_str();
     if host_str.map(|s| s.is_empty()).unwrap_or(true) {
         return Err(WispError::Mcp(McpError::General(format!(
             "URL 缺少 host: {url}"
         ))));
     }
-    let host = parsed.host().ok_or_else(|| {
-        WispError::Mcp(McpError::General(format!("URL 缺少 host: {url}")))
-    })?;
-
-    // 若 host 是 IP，检查是否为内网/保留地址
-    if let url::Host::Ipv4(ip) = host {
-        if is_private_ip(&IpAddr::V4(ip)) {
-            return Err(WispError::Mcp(McpError::General(
-                format!("URL host 指向内网/保留 IP 地址，拒绝: {url} ({ip})")
-            )));
-        }
-    } else if let url::Host::Ipv6(ip) = host {
-        if is_private_ip(&IpAddr::V6(ip)) {
-            return Err(WispError::Mcp(McpError::General(
-                format!("URL host 指向内网/保留 IPv6 地址，拒绝: {url} ({ip})")
-            )));
-        }
-    }
-
+    parsed
+        .host()
+        .ok_or_else(|| WispError::Mcp(McpError::General(format!("URL 缺少 host: {url}"))))?;
     Ok(())
 }
 
-/// 判断 IP 是否为内网/环回/链路本地/多播/保留地址。
-///
-/// - `127.0.0.0/8`、`::1` — 环回
-/// - `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`fc00::/7` — 私有
-/// - `169.254.0.0/16`、`fe80::/10` — 链路本地
-/// - `0.0.0.0/8` — 未指定/本机
-/// - `224.0.0.0/4`、`ff00::/8` — 多播
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || v4.is_broadcast()
+fn reject_private_host(parsed: &url::Url, url: &str) -> Result<()> {
+    let host = parsed
+        .host()
+        .ok_or_else(|| WispError::Mcp(McpError::General(format!("URL 缺少 host: {url}"))))?;
+    match host {
+        url::Host::Ipv4(ip) if is_private_ip(&IpAddr::V4(ip)) => {
+            Err(WispError::Mcp(McpError::General(format!(
+                "URL host 指向内网/保留 IP 地址，拒绝: {url} ({ip})"
+            ))))
         }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                // IPv6 私有地址 fc00::/7（unique local）
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                // IPv6 链路本地 fe80::/10
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        url::Host::Ipv6(ip) if is_private_ip(&IpAddr::V6(ip)) => {
+            Err(WispError::Mcp(McpError::General(format!(
+                "URL host 指向内网/保留 IPv6 地址，拒绝: {url} ({ip})"
+            ))))
         }
+        _ => Ok(()),
     }
 }
 
+pub fn validate_url(url: &str) -> Result<()> {
+    let parsed = parse_safe_url(url)?;
+    check_scheme(&parsed, url)?;
+    check_host(&parsed, url)?;
+    reject_private_host(&parsed, url)
+}
+
+fn is_private_ipv4(v4: std::net::Ipv4Addr) -> bool {
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_multicast()
+        || v4.is_broadcast()
+}
+
+fn is_private_ipv6(v6: std::net::Ipv6Addr) -> bool {
+    v6.is_loopback()
+        || v6.is_unspecified()
+        || v6.is_multicast()
+        || (v6.segments()[0] & 0xfe00) == 0xfc00
+        || (v6.segments()[0] & 0xffc0) == 0xfe80
+}
+
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_private_ipv4(*v4),
+        IpAddr::V6(v6) => is_private_ipv6(*v6),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

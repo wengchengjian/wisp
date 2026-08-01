@@ -23,29 +23,20 @@ pub fn resolve_href(base: &str, href: &str) -> Option<String> {
 /// 错误信息和日志中不应包含 URL 凭据。此函数将 `http://user:pass@host/path`
 /// 转换为 `http://***:***@host/path`，避免凭据泄露。
 pub fn sanitize_url(url: &str) -> String {
-    match url::Url::parse(url) {
-        Ok(u) => {
-            // 无 username，直接返回原 URL
-            if u.username().is_empty() {
-                return url.to_string();
-            }
-            // 有凭据，替换为 ***
-            let mut s = url.to_string();
-            // 替换 username:password@ 为 ***:***@
-            if let Some(at_pos) = s.find('@') {
-                // 找到 scheme:// 后的位置
-                if let Some(scheme_end) = s.find("://") {
-                    let creds_start = scheme_end + 3;
-                    if at_pos > creds_start {
-                        let creds = &s[creds_start..at_pos];
-                        s = s.replace(creds, "***:***");
-                    }
-                }
-            }
-            s
-        }
-        Err(_) => url.to_string(),
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    if parsed.username().is_empty() {
+        return url.to_string();
     }
+    let has_password = parsed.password().is_some();
+    let _ = parsed.set_username("***");
+    if has_password {
+        let _ = parsed.set_password(Some("***"));
+    } else {
+        let _ = parsed.set_password(None);
+    }
+    parsed.to_string()
 }
 
 /// 将 URL 转换为安全的文件名（用于 Markdown 输出等场景）。
@@ -83,11 +74,28 @@ fn sanitize_filename_component(s: &str) -> String {
     let upper = s.to_uppercase();
     let is_reserved = matches!(
         upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
-        | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
-        | "COM6" | "COM7" | "COM8" | "COM9"
-        | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5"
-        | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
     );
     if is_reserved {
         format!("wisp_{}", s)
@@ -195,5 +203,32 @@ mod tests {
         let sanitized = sanitize_url(url);
         assert!(!sanitized.contains("user@"));
         assert!(sanitized.contains("***"));
+    }
+
+    #[test]
+    fn sanitize_url_password_with_at_fully_redacted() {
+        let sanitized = sanitize_url("http://user:p@ss@example.com/path");
+        assert!(
+            !sanitized.contains("p@ss"),
+            "密码含 @ 时不得泄露: {sanitized}"
+        );
+        assert!(sanitized.contains("***:***@example.com"));
+    }
+
+    #[test]
+    fn sanitize_url_keeps_query_value_intact() {
+        let sanitized = sanitize_url("http://user:pass@example.com/?q=user:pass");
+        assert!(
+            sanitized.contains("q=user:pass"),
+            "query 不应被替换: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_url_username_only_keeps_single_star_pair() {
+        assert_eq!(
+            sanitize_url("http://user@example.com/"),
+            "http://***@example.com/"
+        );
     }
 }

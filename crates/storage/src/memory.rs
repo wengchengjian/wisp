@@ -1,11 +1,12 @@
 //! 内存存储后端。单 moka 实例，per-entry TTL 原生支持。
 
-use std::time::{Duration, Instant};
+use async_trait::async_trait;
 use moka::sync::Cache as MokaCache;
 use moka::Expiry;
+use std::time::{Duration, Instant};
 
-use wisp_core::error::Result;
 use super::Store;
+use wisp_core::error::Result;
 
 /// entry 包装：value + 可选过期时间。
 #[derive(Clone, Debug)]
@@ -25,7 +26,8 @@ impl Expiry<(String, String), Entry> for EntryExpiry {
         entry: &Entry,
         _now: Instant,
     ) -> Option<Duration> {
-        entry.expires_at
+        entry
+            .expires_at
             .map(|at| at.saturating_duration_since(_now))
     }
 }
@@ -34,6 +36,9 @@ impl Expiry<(String, String), Entry> for EntryExpiry {
 ///
 /// 单 moka 实例，capacity 限制总 entry 数（默认 100_000）。
 /// TTL 通过 `set_with_ttl` 写入 entry 的 `expires_at` 字段，moka 在过期时自动淘汰。
+///
+/// moka::sync::Cache 的方法都是同步非阻塞的，故直接用 `async fn` 包装，
+/// 不需要 `spawn_blocking`。
 pub struct MemoryStore {
     inner: MokaCache<(String, String), Entry>,
 }
@@ -57,25 +62,32 @@ impl Default for MemoryStore {
     }
 }
 
+#[async_trait]
 impl Store for MemoryStore {
-    fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
-        let entry = Entry { value: value.to_vec(), expires_at: None };
-        self.inner.insert((namespace.to_string(), key.to_string()), entry);
+    async fn set(&self, namespace: &str, key: &str, value: &[u8]) -> Result<()> {
+        let entry = Entry {
+            value: value.to_vec(),
+            expires_at: None,
+        };
+        self.inner
+            .insert((namespace.to_string(), key.to_string()), entry);
         Ok(())
     }
 
-    fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.inner
+    async fn get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .inner
             .get(&(namespace.to_string(), key.to_string()))
             .map(|e| e.value))
     }
 
-    fn delete(&self, namespace: &str, key: &str) -> Result<()> {
-        self.inner.invalidate(&(namespace.to_string(), key.to_string()));
+    async fn delete(&self, namespace: &str, key: &str) -> Result<()> {
+        self.inner
+            .invalidate(&(namespace.to_string(), key.to_string()));
         Ok(())
     }
 
-    fn set_with_ttl(
+    async fn set_with_ttl(
         &self,
         namespace: &str,
         key: &str,
@@ -83,8 +95,12 @@ impl Store for MemoryStore {
         ttl: Option<Duration>,
     ) -> Result<()> {
         let expires_at = ttl.map(|d| Instant::now() + d);
-        let entry = Entry { value: value.to_vec(), expires_at };
-        self.inner.insert((namespace.to_string(), key.to_string()), entry);
+        let entry = Entry {
+            value: value.to_vec(),
+            expires_at,
+        };
+        self.inner
+            .insert((namespace.to_string(), key.to_string()), entry);
         Ok(())
     }
 }

@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::client::FetchClientConfig;
+use crate::strategy::{extract_browser_response, recv_navigation_status, BrowserFetchStrategy};
 use wisp_browser::Page;
 use wisp_core::error::{BrowserError, Result, WispError};
-use crate::client::FetchClientConfig;
 use wisp_core::{Request, Response};
-use crate::strategy::{extract_browser_response, recv_navigation_status, BrowserFetchStrategy};
 
 /// Dynamic 模式策略：浏览器渲染 + JS 执行，无 CF 绕过。
 ///
@@ -34,64 +34,82 @@ impl DynamicStrategy {
     }
 }
 
+async fn dynamic_enable_network(page: &mut Page, url: &str) -> Result<()> {
+    page.cmd("Network.enable", serde_json::json!({}))
+        .await
+        .map_err(|e| {
+            WispError::Browser(BrowserError::CdpConnection(format!(
+                "Network.enable failed: {e}"
+            )))
+        })?;
+    tracing::info!("BrowserWork: {url} 开始（Dynamic）");
+    Ok(())
+}
+
+async fn dynamic_navigate_and_status(page: &mut Page, url: &str) -> Result<u16> {
+    let mut event_rx = page.session().subscribe_events();
+    let sid = page.session_id().to_string();
+    let t_nav = std::time::Instant::now();
+    tracing::info!("BrowserWork: {url} 导航");
+    if let Err(e) = page.goto(url).await {
+        tracing::warn!("BrowserWork: {url} goto 失败: {e}");
+        return Err(e);
+    }
+    tracing::trace!(elapsed_ms = t_nav.elapsed().as_millis(), url = %url, "goto timing");
+    let t_status = std::time::Instant::now();
+    let nav_status = match recv_navigation_status(&mut event_rx, &sid).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("BrowserWork: {url} recv_navigation_status 失败: {e}");
+            return Err(e);
+        }
+    };
+    tracing::trace!(
+        elapsed_ms = t_status.elapsed().as_millis(),
+        code = nav_status,
+        url = %url,
+        "recv_status timing"
+    );
+    Ok(nav_status)
+}
+
+async fn dynamic_wait_and_extract(
+    page: &mut Page,
+    req: &Request,
+    nav_status: u16,
+    wait_for: &Option<String>,
+    extra_wait_ms: u64,
+    timeout: Duration,
+) -> Result<Response> {
+    if let Some(ref selector) = wait_for {
+        page.wait_for_selector(selector, timeout.as_millis() as u64)
+            .await?;
+    }
+    if extra_wait_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(extra_wait_ms)).await;
+    }
+    let url = &req.url;
+    tracing::debug!("BrowserWork: {url} 提取响应");
+    let resp = extract_browser_response(page, req, nav_status).await?;
+    tracing::info!("BrowserWork: {url} 完成 ({} bytes)", resp.body.len());
+    Ok(resp)
+}
+
 #[async_trait]
 impl BrowserFetchStrategy for DynamicStrategy {
     async fn fetch(&self, page: &mut Page, req: &Request) -> Result<Response> {
         let url = &req.url;
-        tracing::info!("BrowserWork: {url} 开始（Dynamic）");
-
-        // 启用 Network 域以捕获真实 HTTP 状态码
-        page.cmd("Network.enable", serde_json::json!({}))
-            .await
-            .map_err(|e| {
-                WispError::Browser(BrowserError::CdpConnection(format!(
-                    "Network.enable failed: {e}"
-                )))
-            })?;
-
-        // goto 之前订阅事件流，避免竞态
-        let mut event_rx = page.session.subscribe_events();
-        let sid = page.session_id.clone();
-
-        let t_nav = std::time::Instant::now();
-        tracing::info!("BrowserWork: {url} 导航");
-        if let Err(e) = page.goto(&req.url).await {
-            tracing::warn!("BrowserWork: {url} goto 失败: {e}");
-            return Err(e);
-        }
-        tracing::trace!(elapsed_ms = t_nav.elapsed().as_millis(), url = %url, "goto timing");
-
-        // 捕获导航请求的真实 HTTP 状态码
-        let t_status = std::time::Instant::now();
-        let nav_status = match recv_navigation_status(&mut event_rx, &sid).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("BrowserWork: {url} recv_navigation_status 失败: {e}");
-                return Err(e);
-            }
-        };
-        tracing::trace!(
-            elapsed_ms = t_status.elapsed().as_millis(),
-            code = nav_status,
-            url = %url,
-            "recv_status timing"
-        );
-
-        // 等待特定选择器
-        if let Some(ref selector) = self.wait_for {
-            page.wait_for_selector(selector, self.timeout.as_millis() as u64)
-                .await?;
-        }
-
-        // 额外等待
-        if self.extra_wait_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(self.extra_wait_ms)).await;
-        }
-
-        tracing::debug!("BrowserWork: {url} 提取响应");
-        let resp = extract_browser_response(page, req, nav_status).await?;
-        tracing::info!("BrowserWork: {url} 完成 ({} bytes)", resp.body.len());
-        Ok(resp)
+        dynamic_enable_network(page, url).await?;
+        let nav_status = dynamic_navigate_and_status(page, url).await?;
+        dynamic_wait_and_extract(
+            page,
+            req,
+            nav_status,
+            &self.wait_for,
+            self.extra_wait_ms,
+            self.timeout,
+        )
+        .await
     }
 }
 

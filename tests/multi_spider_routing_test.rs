@@ -1,9 +1,9 @@
-use wisp::crawl::{Request, Spider, SpiderBuilder};
-use wisp::crawl::stop::MaxPages;
-use wisp::crawl::Engine;
-use wisp::fetcher::FetchMode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use wisp::crawl::stop::MaxPages;
+use wisp::crawl::Engine;
+use wisp::crawl::{Request, Spider, SpiderBuilder};
+use wisp::fetcher::FetchMode;
 
 #[test]
 fn closure_spider_accepts_only_owned_callbacks() {
@@ -68,18 +68,22 @@ async fn detail_spider_until_does_not_block_chapter_spider() {
     let home = SpiderBuilder::new("home")
         .start_urls(vec![base.clone()])
         .on_page("default", |mut page| {
-            page.follow_links(&["a"], "detail", |_page, _i, a| {
-                serde_json::json!({ "title": a.text().trim() })
-            });
+            page.follow_links(
+                &["a"],
+                "detail",
+                |_page, _i, a| serde_json::json!({ "title": a.text().trim() }),
+            );
             page
         })
         .build();
     let detail = SpiderBuilder::new("detail")
         .on_page("detail", |mut page| {
             let title = page.meta_str("title");
-            page.follow_links(&["a"], "chapter", |_page, _i, _a| {
-                serde_json::json!({ "title": title.clone() })
-            });
+            page.follow_links(
+                &["a"],
+                "chapter",
+                |_page, _i, _a| serde_json::json!({ "title": title.clone() }),
+            );
             page
         })
         .until(MaxPages(2))
@@ -99,10 +103,7 @@ async fn detail_spider_until_does_not_block_chapter_spider() {
         .build()
         .unwrap();
 
-    let (stats, items) = engine
-        .run_many(vec![home, detail, chapter])
-        .await
-        .unwrap();
+    let (stats, items) = engine.run_many(vec![home, detail, chapter]).await.unwrap();
     assert_eq!(stats[0].pages_crawled, 1, "home 只爬首页");
     assert_eq!(stats[1].pages_crawled, 2, "detail 只爬 2 个详情");
     assert_eq!(items.len(), 2, "chapter 应产出 2 个 item");

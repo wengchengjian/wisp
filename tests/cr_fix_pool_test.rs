@@ -1,3 +1,4 @@
+#![cfg(feature = "browser")]
 //! 验证单 Browser 多 Page 并发模型的正确性。
 //!
 //! 旧模型（多 Browser 进程）有索引移位和句柄别名 bug；新模型（单 Browser
@@ -87,13 +88,14 @@ async fn acquire_blocks_when_permits_exhausted() {
 
     // 起 task 尝试 acquire（应阻塞）
     let pool_clone = pool.clone();
-    let acquire_task = tokio::spawn(async move {
-        pool_clone.acquire().await.expect("acquire h2")
-    });
+    let acquire_task = tokio::spawn(async move { pool_clone.acquire().await.expect("acquire h2") });
 
     // 等待 200ms，确认 task 仍在阻塞（未完成）
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!acquire_task.is_finished(), "acquire should block when permits=0");
+    assert!(
+        !acquire_task.is_finished(),
+        "acquire should block when permits=0"
+    );
 
     // 释放 h1，task 应完成
     drop(h1);

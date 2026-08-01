@@ -1,3 +1,4 @@
+#![cfg(feature = "browser")]
 use wisp::{Browser, LaunchOptions};
 
 /// Helper: launch browser for tests. Returns None if no Chrome found.
@@ -83,11 +84,17 @@ async fn test_element_click_and_fill() {
         .unwrap();
 
     page.click("#btn").await.unwrap();
-    let value = page.evaluate_as_string("document.getElementById('inp').value").await.unwrap();
+    let value = page
+        .evaluate_as_string("document.getElementById('inp').value")
+        .await
+        .unwrap();
     assert_eq!(value, "clicked");
 
     page.fill("#inp", "typed text").await.unwrap();
-    let value = page.evaluate_as_string("document.getElementById('inp').value").await.unwrap();
+    let value = page
+        .evaluate_as_string("document.getElementById('inp').value")
+        .await
+        .unwrap();
     assert_eq!(value, "typed text");
 
     browser.close().await.unwrap();
@@ -120,8 +127,11 @@ async fn test_screenshot_creates_file() {
 
 /// Adaptive + crawl integration tests (no network required).
 mod adaptive_test {
+    use std::sync::Arc;
+    use wisp::crawl::adaptive::row_to_snapshot;
+    use wisp::crawl::AdaptiveTracker;
     use wisp::parser::Node;
-    use wisp::storage::{Store, MemoryStore};
+    use wisp::storage::{MemoryStore, Store};
 
     const PRODUCT_HTML: &str = r#"
     <html><body>
@@ -145,29 +155,37 @@ mod adaptive_test {
     </body></html>
     "#;
 
-    #[test]
-    fn test_end_to_end_adaptive_relocation() {
-        let store = MemoryStore::default();
+    #[tokio::test]
+    async fn test_end_to_end_adaptive_relocation() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
         let url = "https://shop.example.com/products";
+        let tracker = AdaptiveTracker::new(Arc::clone(&store));
 
         // Phase 1: capture snapshot
         let doc = Node::from_html(PRODUCT_HTML);
-        let node = doc.css_adaptive(".title", "product-title", url, &store, true, 0.5);
+        let node = tracker
+            .css_adaptive(&doc, ".title", "product-title", url, true, 0.5)
+            .await
+            .unwrap();
         assert!(node.is_some());
         assert_eq!(node.unwrap().text(), "Widget");
 
         // Phase 2: site redesign, CSS fails, adaptive kicks in
         let doc2 = Node::from_html(PRODUCT_HTML_V2);
-        let node2 = doc2.css_adaptive(".title", "product-title", url, &store, true, 0.5);
+        let node2 = tracker
+            .css_adaptive(&doc2, ".title", "product-title", url, true, 0.5)
+            .await
+            .unwrap();
         assert!(node2.is_some(), "adaptive should relocate after redesign");
         assert_eq!(node2.unwrap().text(), "Widget");
     }
 
-    #[test]
-    fn test_dom_navigation_with_adaptive_snapshot() {
+    #[tokio::test]
+    async fn test_dom_navigation_with_adaptive_snapshot() {
         // 验证 Node 重构后 adaptive 仍正常工作，且 capture 用了导航 API
-        let store = MemoryStore::default();
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
         let url = "https://shop.example.com/products";
+        let tracker = AdaptiveTracker::new(Arc::clone(&store));
 
         let html = r#"
         <html><body>
@@ -180,14 +198,23 @@ mod adaptive_test {
         "#;
 
         let doc = Node::from_html(html);
-        let node = doc.css_adaptive(".title", "product-title", url, &store, true, 0.5);
+        let node = tracker
+            .css_adaptive(&doc, ".title", "product-title", url, true, 0.5)
+            .await
+            .unwrap();
         assert!(node.is_some());
         assert_eq!(node.unwrap().text(), "Widget");
 
         // 验证 capture 用了导航 API：检查 snapshot 的 ancestor_path 包含 "div.products"
-        let saved = wisp::storage::load_element(&store, url, "product-title").unwrap().expect("snapshot should be saved");
-        let snapshot = wisp::parser::ElementSnapshot::from_row(saved);
-        assert!(snapshot.ancestor_path.iter().any(|p| p.contains("products")));
+        let saved = wisp::storage::load_element(&*store, url, "product-title")
+            .await
+            .unwrap()
+            .expect("snapshot should be saved");
+        let snapshot = row_to_snapshot(saved);
+        assert!(snapshot
+            .ancestor_path
+            .iter()
+            .any(|p| p.contains("products")));
     }
 
     #[test]
@@ -215,22 +242,32 @@ mod fetch_test {
             .emulation(Profile::Chrome136)
             .timeout(std::time::Duration::from_secs(30))
             .build();
-        assert!(client.is_ok(), "emulation client should build: {:?}", client.err());
+        assert!(
+            client.is_ok(),
+            "emulation client should build: {:?}",
+            client.err()
+        );
     }
 
     #[test]
     fn test_client_default_config_has_emulation() {
         // 验证默认 Config 带 Chrome136 指纹（Client::new 走 Config::default）
         let client = Client::new();
-        assert!(client.is_ok(), "default client should build with Chrome136 emulation: {:?}", client.err());
+        assert!(
+            client.is_ok(),
+            "default client should build with Chrome136 emulation: {:?}",
+            client.err()
+        );
     }
 
     #[test]
     fn test_client_builder_no_emulation_builds() {
         // 验证关闭 emulation 的 client 能成功 build
-        let client = Client::builder()
-            .no_emulation()
-            .build();
-        assert!(client.is_ok(), "no_emulation client should build: {:?}", client.err());
+        let client = Client::builder().no_emulation().build();
+        assert!(
+            client.is_ok(),
+            "no_emulation client should build: {:?}",
+            client.err()
+        );
     }
 }

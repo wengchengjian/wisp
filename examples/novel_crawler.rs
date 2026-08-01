@@ -9,9 +9,7 @@
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use wisp::crawl::middleware::{
-    JsonlWriterPipeline, UaRotationMiddleware,
-};
+use wisp::crawl::middleware::{JsonlWriterPipeline, UaRotationMiddleware};
 use wisp::crawl::stop::MaxPages;
 use wisp::crawl::{ClosureSpider, Engine, SpiderBuilder};
 /// 清理章节正文：去广告行、空行。
@@ -52,18 +50,28 @@ const CONTENT_SELECTORS: [&str; 6] = [
 fn handler_spider() -> ClosureSpider {
     SpiderBuilder::new("novel-handler")
         .start_urls(vec!["https://www.qishuxia.com/".to_string()])
-        .on_links_n("default", &HOME_SELECTORS, "detail", 10, |_page, _idx, a| json!({
-            "title": a.text().trim(),
-            "author": "",
-        }))
-        .on_links("detail", &CHAPTER_SELECTORS, "chapter", |page, idx, a| json!({
-            "title": page.meta_str("title"),
-            "author": page.select_one(".txt ul:nth-child(1)")
-                .map(|n| n.text().trim().to_string())
-                .unwrap_or_default(),
-            "chapter_title": a.text().trim(),
-            "chapter_index": idx,
-        }))
+        .on_links_n(
+            "default",
+            &HOME_SELECTORS,
+            "detail",
+            10,
+            |_page, _idx, a| {
+                json!({
+                    "title": a.text().trim(),
+                    "author": "",
+                })
+            },
+        )
+        .on_links("detail", &CHAPTER_SELECTORS, "chapter", |page, idx, a| {
+            json!({
+                "title": page.meta_str("title"),
+                "author": page.select_one(".txt ul:nth-child(1)")
+                    .map(|n| n.text().trim().to_string())
+                    .unwrap_or_default(),
+                "chapter_title": a.text().trim(),
+                "chapter_index": idx,
+            })
+        })
         .on_content("chapter", &CONTENT_SELECTORS, clean_content)
         .until(MaxPages(100))
         .build()
@@ -73,20 +81,24 @@ fn multi_spiders() -> Vec<ClosureSpider> {
     vec![
         SpiderBuilder::new("home")
             .start_urls(vec!["https://www.qishuxia.com/".to_string()])
-            .on_links("default", &HOME_SELECTORS, "detail", |_page, _idx, a| json!({
-                "title": a.text().trim(),
-                "author": "",
-            }))
+            .on_links("default", &HOME_SELECTORS, "detail", |_page, _idx, a| {
+                json!({
+                    "title": a.text().trim(),
+                    "author": "",
+                })
+            })
             .build(),
         SpiderBuilder::new("detail")
-            .on_links("detail", &CHAPTER_SELECTORS, "chapter", |page, idx, a| json!({
-                "title": page.meta_str("title"),
-                "author": page.select_one(".txt ul:nth-child(1)")
-                    .map(|n| n.text().trim().to_string())
-                    .unwrap_or_default(),
-                "chapter_title": a.text().trim(),
-                "chapter_index": idx,
-            }))
+            .on_links("detail", &CHAPTER_SELECTORS, "chapter", |page, idx, a| {
+                json!({
+                    "title": page.meta_str("title"),
+                    "author": page.select_one(".txt ul:nth-child(1)")
+                        .map(|n| n.text().trim().to_string())
+                        .unwrap_or_default(),
+                    "chapter_title": a.text().trim(),
+                    "chapter_index": idx,
+                })
+            })
             .until(MaxPages(10))
             .build(),
         SpiderBuilder::new("chapter")
@@ -95,25 +107,29 @@ fn multi_spiders() -> Vec<ClosureSpider> {
     ]
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
-
+fn parse_mode() -> String {
     let mode = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "--mode".to_string());
-    let mode = if mode == "--mode" {
-        std::env::args().nth(2).unwrap_or_else(|| "handler".to_string())
+    if mode == "--mode" {
+        std::env::args()
+            .nth(2)
+            .unwrap_or_else(|| "handler".to_string())
     } else {
         mode
-    };
-    let output = if mode == "spider" {
+    }
+}
+
+fn output_path(mode: &str) -> &'static str {
+    if mode == "spider" {
         "novel_spiders.jsonl"
     } else {
         "novel_handler.jsonl"
-    };
+    }
+}
 
-    let engine = Engine::infra()
+fn build_engine(output: &str) -> Result<Engine, Box<dyn std::error::Error>> {
+    Ok(Engine::infra()
         .max_concurrent(4)
         .max_pages(500)
         .download_delay(Duration::from_millis(500))
@@ -129,30 +145,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ua_rotation(UaRotationMiddleware::desktop())
         .cookie_challenge(true)
         .pipeline(Arc::new(JsonlWriterPipeline::new(output)))
-        .build()?;
+        .build()?)
+}
 
-    println!("=== 开始爬取 qishuxia.com ({mode} mode) ===\n");
+async fn run_spider_mode(
+    engine: &Engine,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    let (stats, items) = engine.run_many(multi_spiders()).await?;
+    println!("\n=== 爬取完成 ===");
+    for s in &stats {
+        println!("{}", s.summary());
+    }
+    Ok(items)
+}
 
-    let items = if mode == "spider" {
-        let (stats, items) = engine.run_many(multi_spiders()).await?;
-        println!("\n=== 爬取完成 ===");
-        for s in &stats {
-            println!("{}", s.summary());
-        }
-        items
-    } else {
-        let (stats, items) = engine.run(handler_spider()).await?;
-        println!("\n=== 爬取完成 ===");
-        println!("{}", stats.summary());
-        items
-    };
+async fn run_handler_mode(
+    engine: &Engine,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    let (stats, items) = engine.run(handler_spider()).await?;
+    println!("\n=== 爬取完成 ===");
+    println!("{}", stats.summary());
+    Ok(items)
+}
 
+fn print_item_summary(items: &[serde_json::Value]) {
     let books: std::collections::HashSet<&str> = items
         .iter()
         .filter_map(|item| item["title"].as_str())
         .collect();
-    println!("共获取 {} 个章节条目，覆盖 {} 本书", items.len(), books.len());
-
+    println!(
+        "共获取 {} 个章节条目，覆盖 {} 本书",
+        items.len(),
+        books.len()
+    );
     for item in items.iter().take(3) {
         println!(
             "\n--- {} | {} ---",
@@ -163,7 +188,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let preview: String = content.chars().take(100).collect();
         println!("  内容预览: {}...", preview);
     }
+}
 
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().with_env_filter("info").init();
+    let mode = parse_mode();
+    let output = output_path(&mode);
+    let engine = build_engine(output)?;
+    println!("=== 开始爬取 qishuxia.com ({mode} mode) ===\n");
+    let items = if mode == "spider" {
+        run_spider_mode(&engine).await?
+    } else {
+        run_handler_mode(&engine).await?
+    };
+    print_item_summary(&items);
     println!("\n结果已通过 pipeline 保存到 {output}");
     Ok(())
 }

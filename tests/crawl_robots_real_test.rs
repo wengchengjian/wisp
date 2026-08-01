@@ -1,7 +1,7 @@
 //! 真实环境测试：robots.txt 解析。cargo test --test crawl_robots_real_test -- --ignored 运行。
 
-use wisp::http::Client;
 use wisp::crawl::robots::RobotsCache;
+use wisp::http::Client;
 
 #[tokio::test]
 #[ignore = "requires network access"]
@@ -24,7 +24,9 @@ async fn test_real_robots_txt_disallow_respected() {
     let client = Client::new().unwrap();
     let mut cache = RobotsCache::new();
     // httpbin.org 的 robots.txt 应允许 /status/200（不被 Disallow 阻止）
-    let allowed = cache.is_allowed(&client, "https://httpbin.org/status/200").await;
+    let allowed = cache
+        .is_allowed(&client, "https://httpbin.org/status/200")
+        .await;
     println!("httpbin.org/status/200 allowed: {}", allowed);
     // 不断言具体值（站点 robots 可能变化），仅验证不 panic
 }

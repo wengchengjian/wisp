@@ -61,12 +61,13 @@ fn engine() -> Engine {
 }
 
 fn assert_ten_books(items: &[serde_json::Value]) {
-    let books: HashSet<&str> = items
-        .iter()
-        .filter_map(|v| v["title"].as_str())
-        .collect();
+    let books: HashSet<&str> = items.iter().filter_map(|v| v["title"].as_str()).collect();
     assert_eq!(books.len(), 10, "应爬取 10 本书，实际 {}", books.len());
-    assert!(items.len() >= 20, "每本书应至少产出 2 个章节，实际 {}", items.len());
+    assert!(
+        items.len() >= 20,
+        "每本书应至少产出 2 个章节，实际 {}",
+        items.len()
+    );
 }
 
 #[tokio::test]
@@ -75,9 +76,12 @@ async fn handler_mode_crawls_ten_books() {
     let spider = SpiderBuilder::new("handler")
         .start_urls(vec![base.clone()])
         .on_page("default", |mut page| {
-            page.follow_links_n(&["a.book"], "detail", 10, |_page, _i, a| {
-                serde_json::json!({ "title": a.text().trim() })
-            });
+            page.follow_links_n(
+                &["a.book"],
+                "detail",
+                10,
+                |_page, _i, a| serde_json::json!({ "title": a.text().trim() }),
+            );
             page
         })
         .on_page("detail", |mut page| {
@@ -106,9 +110,11 @@ async fn spider_mode_crawls_ten_books() {
     let home = SpiderBuilder::new("home")
         .start_urls(vec![base.clone()])
         .on_page("default", |mut page| {
-            page.follow_links(&["a.book"], "detail", |_page, _i, a| {
-                serde_json::json!({ "title": a.text().trim() })
-            });
+            page.follow_links(
+                &["a.book"],
+                "detail",
+                |_page, _i, a| serde_json::json!({ "title": a.text().trim() }),
+            );
             page
         })
         .build();

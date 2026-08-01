@@ -37,7 +37,11 @@ fn test_ratio_empty_inputs() {
     let a: Vec<char> = Vec::new();
     let b: Vec<char> = Vec::new();
     let ratio = SequenceMatcher::new(&a, &b).ratio();
-    assert!((ratio - 1.0).abs() < 1e-9, "expected 1.0 for empty inputs, got {}", ratio);
+    assert!(
+        (ratio - 1.0).abs() < 1e-9,
+        "expected 1.0 for empty inputs, got {}",
+        ratio
+    );
 }
 
 #[test]
@@ -66,5 +70,9 @@ fn test_ratio_longer_strings() {
     let b: Vec<char> = "hallo werld".chars().collect();
     let ratio = SequenceMatcher::new(&a, &b).ratio();
     // Python 实际值约为 0.8182 (verified: 0.8181818181818182)
-    assert!((ratio - 0.8182).abs() < 1e-3, "expected ~0.8182, got {}", ratio);
+    assert!(
+        (ratio - 0.8182).abs() < 1e-3,
+        "expected ~0.8182, got {}",
+        ratio
+    );
 }

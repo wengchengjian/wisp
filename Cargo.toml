@@ -14,11 +14,11 @@ default = ["http", "browser", "stealth", "mcp"]
 # HTTP 模式（默认启用）：HTTP fetcher + parser + storage + crawl 基础
 http = []
 # 浏览器模式（Dynamic）：启用 browser 模块 + DynamicStrategy
-browser = ["wisp-fetcher/browser"]
+browser = ["wisp-fetcher/browser", "wisp-crawl/browser", "dep:wisp-browser"]
 # Stealth 模式：启用 stealth 模块 + StealthStrategy（依赖 browser）
-stealth = ["wisp-fetcher/stealth"]
+stealth = ["browser", "wisp-fetcher/stealth", "wisp-crawl/stealth", "dep:wisp-stealth"]
 # MCP 服务：启用 mcp 模块
-mcp = []
+mcp = ["dep:wisp-mcp"]
 # 启用 SQLite 存储后端（默认禁用，使用 FileStore）
 sqlite = ["wisp-storage/sqlite"]
 
@@ -28,11 +28,11 @@ wisp-storage = { path = "crates/storage" }
 wisp-parser = { path = "crates/parser" }
 wisp-proxy = { path = "crates/proxy" }
 wisp-http = { path = "crates/http" }
-wisp-browser = { path = "crates/browser" }
-wisp-stealth = { path = "crates/stealth" }
+wisp-browser = { path = "crates/browser", optional = true }
+wisp-stealth = { path = "crates/stealth", optional = true }
 wisp-fetcher = { path = "crates/fetcher" }
 wisp-crawl = { path = "crates/crawl" }
-wisp-mcp = { path = "crates/mcp" }
+wisp-mcp = { path = "crates/mcp", optional = true }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
@@ -61,9 +61,16 @@ wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
 name = "bench"
 harness = false
 
+[[example]]
+name = "basic"
+required-features = ["browser"]
+
 [[bin]]
 name = "wisp"
-path = "src/bin/wisp.rs"
+path = "src/bin/wisp/main.rs"
+# bin/wisp.rs 包含 Browser/Mcp 命令，需要对应 feature 才能编译；
+# HTTP-only 构建用 `cargo build --lib --no-default-features --features http`。
+required-features = ["browser", "stealth", "mcp"]
 
 # ND-001-DEP：release profile 优化（性能敏感的爬虫框架）
 # 注意：未启用 panic = "abort"，因为部分 Drop 实现依赖 catch_unwind 语义

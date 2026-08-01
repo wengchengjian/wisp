@@ -4,9 +4,10 @@
 //! `CrawlStats.duration: Duration` 不实现 serde，所以 CrawlState 拆开
 //! stats 为标量字段 + duration_ms，避免修改 CrawlStats 的 derive。
 
+use crate::{CrawlStats, Request};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::collections::HashSet;
-use serde::{Serialize, Deserialize};
-use crate::{Request, CrawlStats};
 
 /// Serializable crawl state for checkpoint persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,12 @@ pub struct CrawlState {
     pub pages_crawled: usize,
     /// 错误数。
     pub errors: usize,
+    /// 各 callback 已爬页数（`"default"` 表示无 callback 的入口请求）。
+    #[serde(default)]
+    pub callback_pages: HashMap<String, usize>,
+    /// 保存时仍在处理中的请求（重启后重新入队，保证至少一次语义）。
+    #[serde(default)]
+    pub in_flight_urls: Vec<Request>,
     /// 爬取累计时长（毫秒）。`std::time::Duration` 不实现 serde，
     /// 用 u128 毫秒往返（足够精度，无溢出风险）。
     pub duration_ms: u128,
@@ -40,6 +47,8 @@ impl CrawlState {
             items_scraped: 0,
             pages_crawled: 0,
             errors: 0,
+            callback_pages: HashMap::new(),
+            in_flight_urls: Vec::new(),
             duration_ms: 0,
             saved_at: chrono::Utc::now(),
         }
@@ -54,6 +63,8 @@ impl CrawlState {
             items_scraped: stats.items_scraped,
             pages_crawled: stats.pages_crawled,
             errors: stats.errors,
+            callback_pages: HashMap::new(),
+            in_flight_urls: Vec::new(),
             duration_ms: stats.duration.as_millis(),
             saved_at: chrono::Utc::now(),
         }

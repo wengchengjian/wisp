@@ -7,8 +7,8 @@ use rand::{RngExt, SeedableRng};
 use serde_json::json;
 use std::time::Duration;
 
-use wisp_core::error::Result;
 use wisp_browser::page::Page;
+use wisp_core::error::Result;
 
 /// Human-like behavior simulator bound to a page.
 pub struct HumanBehavior<'a> {
@@ -23,7 +23,9 @@ impl<'a> HumanBehavior<'a> {
 
     /// Random delay with gaussian-like distribution between min and max.
     pub async fn random_delay(&self, min_ms: u64, max_ms: u64) -> Result<()> {
-        let delay = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed").random_range(min_ms..=max_ms);
+        let delay = SmallRng::try_from_rng(&mut SysRng)
+            .expect("OS RNG failed")
+            .random_range(min_ms..=max_ms);
         tokio::time::sleep(Duration::from_millis(delay)).await;
         Ok(())
     }
@@ -67,11 +69,12 @@ impl<'a> HumanBehavior<'a> {
             let x = cubic_bezier(start_x, cp1_x, cp2_x, target_x, t);
             let y = cubic_bezier(start_y, cp1_y, cp2_y, target_y, t);
 
-            self.page.cmd("Input.dispatchMouseEvent", json!({
-                "type": "mouseMoved",
-                "x": x,
-                "y": y,
-            })).await?;
+            self.page
+                .cmd(
+                    "Input.dispatchMouseEvent",
+                    json!({ "type": "mouseMoved", "x": x, "y": y }),
+                )
+                .await?;
 
             // Small delay between movements (5-25ms)
             tokio::time::sleep(Duration::from_millis(rng.random_range(5..=25))).await;
@@ -93,24 +96,34 @@ impl<'a> HumanBehavior<'a> {
         // Pause before clicking (50-150ms)
         tokio::time::sleep(Duration::from_millis(rng.random_range(50..=150))).await;
 
-        self.page.cmd("Input.dispatchMouseEvent", json!({
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1,
-        })).await?;
+        self.page
+            .cmd(
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": "mousePressed",
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "clickCount": 1,
+                }),
+            )
+            .await?;
 
         // Hold for 30-80ms
         tokio::time::sleep(Duration::from_millis(rng.random_range(30..=80))).await;
 
-        self.page.cmd("Input.dispatchMouseEvent", json!({
-            "type": "mouseReleased",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1,
-        })).await?;
+        self.page
+            .cmd(
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": "mouseReleased",
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "clickCount": 1,
+                }),
+            )
+            .await?;
 
         Ok(())
     }
@@ -123,14 +136,18 @@ impl<'a> HumanBehavior<'a> {
 
         let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
         for ch in text.chars() {
-            self.page.cmd("Input.dispatchKeyEvent", json!({
-                "type": "keyDown",
-                "text": ch.to_string(),
-            })).await?;
-            self.page.cmd("Input.dispatchKeyEvent", json!({
-                "type": "keyUp",
-                "text": ch.to_string(),
-            })).await?;
+            self.page
+                .cmd(
+                    "Input.dispatchKeyEvent",
+                    json!({ "type": "keyDown", "text": ch.to_string() }),
+                )
+                .await?;
+            self.page
+                .cmd(
+                    "Input.dispatchKeyEvent",
+                    json!({ "type": "keyUp", "text": ch.to_string() }),
+                )
+                .await?;
 
             // Random typing speed (40-180ms per char, occasional longer pause)
             let delay = if rng.random_range(0..10) < 2 {
@@ -150,8 +167,15 @@ impl<'a> HumanBehavior<'a> {
         let step_size = pixels as f64 / steps as f64;
 
         for _ in 0..steps {
-            self.page.evaluate(&format!("window.scrollBy(0, {})", step_size)).await?;
-            tokio::time::sleep(Duration::from_millis(SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed").random_range(10..=40))).await;
+            self.page
+                .evaluate(&format!("window.scrollBy(0, {})", step_size))
+                .await?;
+            tokio::time::sleep(Duration::from_millis(
+                SmallRng::try_from_rng(&mut SysRng)
+                    .expect("OS RNG failed")
+                    .random_range(10..=40),
+            ))
+            .await;
         }
         Ok(())
     }
@@ -165,34 +189,38 @@ impl<'a> HumanBehavior<'a> {
     }
 
     /// Simulate browsing behavior: random scrolls + pauses over a duration.
+    async fn browse_scroll_action(&self) -> Result<()> {
+        self.random_scroll().await?;
+        self.random_delay(500, 2000).await
+    }
+
+    async fn browse_pause_action(&self) -> Result<()> {
+        self.random_delay(1000, 3000).await
+    }
+
+    async fn browse_mouse_action(&self) -> Result<()> {
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
+        let x: f64 = rng.random_range(100.0..800.0);
+        let y: f64 = rng.random_range(100.0..500.0);
+        self.page
+            .cmd(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": x, "y": y }),
+            )
+            .await?;
+        self.random_delay(300, 1000).await
+    }
+
     pub async fn browse(&self, duration: Duration) -> Result<()> {
         let start = tokio::time::Instant::now();
         let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
-
         while start.elapsed() < duration {
-            // Random action: scroll (70%), pause (20%), mouse move (10%)
             match rng.random_range(0..10) {
-                0..=6 => {
-                    self.random_scroll().await?;
-                    self.random_delay(500, 2000).await?;
-                }
-                7..=8 => {
-                    self.random_delay(1000, 3000).await?;
-                }
-                _ => {
-                    // Move mouse to random position
-                    let x: f64 = rng.random_range(100.0..800.0);
-                    let y: f64 = rng.random_range(100.0..500.0);
-                    self.page.cmd("Input.dispatchMouseEvent", json!({
-                        "type": "mouseMoved",
-                        "x": x,
-                        "y": y,
-                    })).await?;
-                    self.random_delay(300, 1000).await?;
-                }
+                0..=6 => self.browse_scroll_action().await?,
+                7..=8 => self.browse_pause_action().await?,
+                _ => self.browse_mouse_action().await?,
             }
         }
-
         Ok(())
     }
 }

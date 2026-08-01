@@ -22,16 +22,16 @@ impl<'a> Text<'a> {
 
     /// Collapse all whitespace runs into single spaces and trim.
     pub fn clean(&self) -> String {
-        RE_WHITESPACE
-            .replace_all(self.0, " ")
-            .trim()
-            .to_string()
+        RE_WHITESPACE.replace_all(self.0, " ").trim().to_string()
     }
 
     /// Extract all matches of a regex pattern.
     pub fn extract_regex(&self, pattern: &str) -> Vec<String> {
         match Regex::new(pattern) {
-            Ok(re) => re.find_iter(self.0).map(|m| m.as_str().to_string()).collect(),
+            Ok(re) => re
+                .find_iter(self.0)
+                .map(|m| m.as_str().to_string())
+                .collect(),
             Err(e) => {
                 tracing::warn!("无效正则 '{}': {}", pattern, e);
                 Vec::new()

@@ -1,3 +1,4 @@
+#![cfg(feature = "stealth")]
 //! Cloudflare bypass 真实环境测试。
 //!
 //! 运行方式：`cargo test --test cf_bypass_real_test -- --ignored`
@@ -14,13 +15,13 @@
 //! 4. CF JS Challenge (5秒档) 自动等待
 //! 5. Engine + 代理池抓取 CF 保护站点
 
-use std::time::Duration;
-use wisp::http::Client;
-use wisp::fetcher::Fetcher;
-use wisp::crawl::{Engine, SpiderBuilder};
 use std::sync::Arc;
-use wisp::proxy::{ProxyPool, RotationStrategy};
+use std::time::Duration;
+use wisp::crawl::{Engine, SpiderBuilder};
+use wisp::fetcher::Fetcher;
+use wisp::http::Client;
 use wisp::parser::ResponseExt;
+use wisp::proxy::{ProxyPool, RotationStrategy};
 use wreq_util::Profile;
 
 /// 本地代理地址
@@ -36,7 +37,10 @@ async fn proxy_available() -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    client.get("https://www.google.com/generate_204", &[]).await.is_ok()
+    client
+        .get("https://www.google.com/generate_204", &[])
+        .await
+        .is_ok()
 }
 
 // === 测试 1: TLS 指纹验证 ===
@@ -56,7 +60,10 @@ async fn test_tls_fingerprint_chrome() {
         .build()
         .unwrap();
 
-    let resp = client.get("https://tls.peet.ws/api/all", &[]).await.unwrap();
+    let resp = client
+        .get("https://tls.peet.ws/api/all", &[])
+        .await
+        .unwrap();
     assert_eq!(resp.status, 200, "tls.peet.ws 应返回 200");
 
     let json = resp.json().unwrap();
@@ -100,7 +107,10 @@ async fn test_fetch_with_proxy_bot_detection() {
         .unwrap();
 
     // bot.sannysoft.com 检测基本浏览器特征
-    let resp = client.get("https://quotes.toscrape.com/", &[]).await.unwrap();
+    let resp = client
+        .get("https://quotes.toscrape.com/", &[])
+        .await
+        .unwrap();
     assert_eq!(resp.status, 200);
 
     let text = resp.text().unwrap();
@@ -201,12 +211,16 @@ async fn test_engine_with_proxy_pool() {
         .start_urls(vec!["https://quotes.toscrape.com/"])
         .on("default", |resp| async move {
             let doc = resp.parse();
-            let items: Vec<serde_json::Value> = doc.select(".quote").iter().map(|q| {
-                serde_json::json!({
-                    "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
-                    "author": q.select_one(".author").map(|n| n.text()).unwrap_or_default(),
+            let items: Vec<serde_json::Value> = doc
+                .select(".quote")
+                .iter()
+                .map(|q| {
+                    serde_json::json!({
+                        "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
+                        "author": q.select_one(".author").map(|n| n.text()).unwrap_or_default(),
+                    })
                 })
-            }).collect();
+                .collect();
             (items, vec![])
         })
         .build();
@@ -214,13 +228,19 @@ async fn test_engine_with_proxy_pool() {
     let engine = Engine::infra()
         .max_pages(1)
         .obey_robots(false)
-        .middleware(Arc::new(wisp::crawl::middleware::ProxyInjectionMiddleware::new(pool)))
+        .middleware(Arc::new(
+            wisp::crawl::middleware::ProxyInjectionMiddleware::new(pool),
+        ))
         .build()
         .unwrap();
     let (stats, _items) = engine.run(spider).await.unwrap();
 
     assert_eq!(stats.pages_crawled, 1, "应成功抓取 1 页");
-    assert!(stats.items_scraped >= 5, "应提取至少 5 条名言, 实际: {}", stats.items_scraped);
+    assert!(
+        stats.items_scraped >= 5,
+        "应提取至少 5 条名言, 实际: {}",
+        stats.items_scraped
+    );
     assert_eq!(stats.errors, 0, "不应有错误");
 }
 
@@ -352,7 +372,8 @@ async fn test_banzhu_stealth_bypass() {
                 eprintln!("[Stealth] Body preview: {}", preview);
             } else if resp.status == 200 {
                 // 检查是否获取到真实内容
-                if html.contains("书库") || html.contains("小说") || html.contains("lastupdate") {
+                if html.contains("书库") || html.contains("小说") || html.contains("lastupdate")
+                {
                     println!("[Stealth] PASS: 成功绕过 CF，获取到真实页面!");
                 } else {
                     println!("[Stealth] WARN: 状态 200 但未检测到预期内容");
@@ -393,7 +414,9 @@ async fn test_banzhu_cf_diagnostic() {
             password: None,
         }),
         ..Default::default()
-    }).await {
+    })
+    .await
+    {
         Ok(b) => b,
         Err(e) => {
             eprintln!("浏览器启动失败: {}", e);
@@ -437,17 +460,58 @@ async fn test_banzhu_cf_diagnostic() {
 
     if let Ok(check) = cf_check {
         println!("\n[4] CF 挑战检测:");
-        println!("    - Title: {}", check.get("title").and_then(|v| v.as_str()).unwrap_or(""));
-        println!("    - Just a moment: {}", check.get("hasJustAMoment").and_then(|v| v.as_bool()).unwrap_or(false));
-        println!("    - CF Challenge: {}", check.get("hasCfChallenge").and_then(|v| v.as_bool()).unwrap_or(false));
-        println!("    - Turnstile: {}", check.get("hasTurnstile").and_then(|v| v.as_bool()).unwrap_or(false));
-        println!("    - Challenge Platform: {}", check.get("hasChallengePlatform").and_then(|v| v.as_bool()).unwrap_or(false));
-        println!("    - Body Length: {}", check.get("bodyLength").and_then(|v| v.as_u64()).unwrap_or(0));
-        println!("    - Body Preview: {}", check.get("bodyPreview").and_then(|v| v.as_str()).unwrap_or(""));
+        println!(
+            "    - Title: {}",
+            check.get("title").and_then(|v| v.as_str()).unwrap_or("")
+        );
+        println!(
+            "    - Just a moment: {}",
+            check
+                .get("hasJustAMoment")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
+        println!(
+            "    - CF Challenge: {}",
+            check
+                .get("hasCfChallenge")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
+        println!(
+            "    - Turnstile: {}",
+            check
+                .get("hasTurnstile")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
+        println!(
+            "    - Challenge Platform: {}",
+            check
+                .get("hasChallengePlatform")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
+        println!(
+            "    - Body Length: {}",
+            check
+                .get("bodyLength")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+        );
+        println!(
+            "    - Body Preview: {}",
+            check
+                .get("bodyPreview")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+        );
     }
 
     // 检查 Turnstile iframe
-    let iframe_check = page.evaluate(r#"(() => {
+    let iframe_check = page
+        .evaluate(
+            r#"(() => {
         const iframes = document.querySelectorAll('iframe');
         const result = [];
         for (const iframe of iframes) {
@@ -460,21 +524,31 @@ async fn test_banzhu_cf_diagnostic() {
             });
         }
         return result;
-    })()"#).await;
+    })()"#,
+        )
+        .await;
 
     if let Ok(iframes) = iframe_check {
-        println!("\n[5] Iframe 检测 (JS):" );
+        println!("\n[5] Iframe 检测 (JS):");
         if let Some(arr) = iframes.as_array() {
             if arr.is_empty() {
                 println!("    - 未找到 iframe (JS 无法访问 shadow DOM)");
             }
             for (i, iframe) in arr.iter().enumerate() {
                 println!("    - Iframe {}:", i);
-                println!("        src: {}", iframe.get("src").and_then(|v| v.as_str()).unwrap_or(""));
-                println!("        id: {}", iframe.get("id").and_then(|v| v.as_str()).unwrap_or(""));
-                println!("        size: {}x{}",
+                println!(
+                    "        src: {}",
+                    iframe.get("src").and_then(|v| v.as_str()).unwrap_or("")
+                );
+                println!(
+                    "        id: {}",
+                    iframe.get("id").and_then(|v| v.as_str()).unwrap_or("")
+                );
+                println!(
+                    "        size: {}x{}",
                     iframe.get("width").and_then(|v| v.as_u64()).unwrap_or(0),
-                    iframe.get("height").and_then(|v| v.as_u64()).unwrap_or(0));
+                    iframe.get("height").and_then(|v| v.as_u64()).unwrap_or(0)
+                );
             }
         }
     }
@@ -482,7 +556,13 @@ async fn test_banzhu_cf_diagnostic() {
     // 使用 CDP pierce 检测 shadow DOM 内的 iframe
     println!("\n[5b] Iframe 检测 (CDP pierce):");
     let _ = page.cmd("DOM.enable", serde_json::json!({})).await;
-    if let Ok(doc) = page.cmd("DOM.getDocument", serde_json::json!({"depth": 200, "pierce": true})).await {
+    if let Ok(doc) = page
+        .cmd(
+            "DOM.getDocument",
+            serde_json::json!({"depth": 200, "pierce": true}),
+        )
+        .await
+    {
         fn find_iframes(node: &serde_json::Value, depth: usize) -> Vec<String> {
             let mut results = Vec::new();
             let node_name = node.get("nodeName").and_then(|n| n.as_str()).unwrap_or("");
@@ -497,8 +577,12 @@ async fn test_banzhu_cf_diagnostic() {
                         if chunk.len() == 2 {
                             let key = chunk[0].as_str().unwrap_or("");
                             let val = chunk[1].as_str().unwrap_or("");
-                            if key == "src" { src = val.to_string(); }
-                            if key == "id" { id = val.to_string(); }
+                            if key == "src" {
+                                src = val.to_string();
+                            }
+                            if key == "id" {
+                                id = val.to_string();
+                            }
                         }
                     }
                 }
@@ -547,7 +631,11 @@ async fn test_banzhu_cf_diagnostic() {
     for cookie in &cookies {
         let name = cookie.get("name").and_then(|n| n.as_str()).unwrap_or("");
         if name.starts_with("cf_") || name.starts_with("__cf") {
-            println!("    - {}: {}", name, cookie.get("value").and_then(|v| v.as_str()).unwrap_or(""));
+            println!(
+                "    - {}: {}",
+                name,
+                cookie.get("value").and_then(|v| v.as_str()).unwrap_or("")
+            );
         }
     }
 
@@ -582,8 +670,8 @@ async fn test_banzhu_stealth_no_proxy() {
             println!("[Stealth-NoProxy] Body length: {} bytes", resp.body.len());
 
             let html = resp.text().unwrap_or_default();
-            let on_challenge = html.contains("Just a moment")
-                || html.contains("cf-challenge-running");
+            let on_challenge =
+                html.contains("Just a moment") || html.contains("cf-challenge-running");
 
             if on_challenge {
                 println!("[Stealth-NoProxy] 结果: 停留在 CF 挑战页（无代理预期结果）");
@@ -606,7 +694,7 @@ async fn test_banzhu_stealth_headed() {
         return;
     }
 
-    println!("\n=== Headed 模式测试 (Fetcher::stealth) ===" );
+    println!("\n=== Headed 模式测试 (Fetcher::stealth) ===");
     println!("目标: {}", BANZHU_TARGET_URL);
     println!("模式: 可见浏览器 + Turnstile 解决器");
 
@@ -614,7 +702,7 @@ async fn test_banzhu_stealth_headed() {
         .headless(false)
         .proxy(PROXY)
         .challenge_timeout(Duration::from_secs(90))
-        .human_mode(false)  // 禁用人类行为模拟，减少干扰
+        .human_mode(false) // 禁用人类行为模拟，减少干扰
         .get(BANZHU_TARGET_URL)
         .await;
 
@@ -658,7 +746,7 @@ async fn test_banzhu_passive_wait() {
         return;
     }
 
-    println!("\n=== 纯等待测试 ===" );
+    println!("\n=== 纯等待测试 ===");
     println!("目标: {}", BANZHU_TARGET_URL);
     println!("策略: 只导航+等待，不发送任何 CDP 命令");
 
@@ -670,7 +758,9 @@ async fn test_banzhu_passive_wait() {
             password: None,
         }),
         ..Default::default()
-    }).await {
+    })
+    .await
+    {
         Ok(b) => b,
         Err(e) => {
             eprintln!("浏览器启动失败: {}", e);
@@ -729,33 +819,42 @@ async fn test_banzhu_param_sweep() {
     // 参数组合：(passive_wait_ms, mouse_steps, mouse_step_delay_ms, poll_interval_ms, click_hold_ms)
     let configs: Vec<(&str, TurnstileConfig)> = vec![
         ("默认", TurnstileConfig::default()),
-        ("激进", TurnstileConfig {
-            passive_wait_ms: 200,
-            click_interval_ms: 1500,
-            poll_interval_ms: 100,
-            mouse_steps: 3,
-            mouse_step_delay_ms: 5,
-            click_hold_ms: 30,
-            dom_depth: 10,
-        }),
-        ("极速", TurnstileConfig {
-            passive_wait_ms: 100,
-            click_interval_ms: 1000,
-            poll_interval_ms: 50,
-            mouse_steps: 2,
-            mouse_step_delay_ms: 3,
-            click_hold_ms: 20,
-            dom_depth: 8,
-        }),
-        ("保守", TurnstileConfig {
-            passive_wait_ms: 1000,
-            click_interval_ms: 3000,
-            poll_interval_ms: 300,
-            mouse_steps: 8,
-            mouse_step_delay_ms: 25,
-            click_hold_ms: 100,
-            dom_depth: 15,
-        }),
+        (
+            "激进",
+            TurnstileConfig {
+                passive_wait_ms: 200,
+                click_interval_ms: 1500,
+                poll_interval_ms: 100,
+                mouse_steps: 3,
+                mouse_step_delay_ms: 5,
+                click_hold_ms: 30,
+                dom_depth: 10,
+            },
+        ),
+        (
+            "极速",
+            TurnstileConfig {
+                passive_wait_ms: 100,
+                click_interval_ms: 1000,
+                poll_interval_ms: 50,
+                mouse_steps: 2,
+                mouse_step_delay_ms: 3,
+                click_hold_ms: 20,
+                dom_depth: 8,
+            },
+        ),
+        (
+            "保守",
+            TurnstileConfig {
+                passive_wait_ms: 1000,
+                click_interval_ms: 3000,
+                poll_interval_ms: 300,
+                mouse_steps: 8,
+                mouse_step_delay_ms: 25,
+                click_hold_ms: 100,
+                dom_depth: 15,
+            },
+        ),
     ];
 
     println!("\n=== 参数扫描测试 ===");
@@ -763,9 +862,15 @@ async fn test_banzhu_param_sweep() {
     println!("测试 {} 组参数\n", configs.len());
 
     for (name, cfg) in &configs {
-        println!("--- [{}] passive={}ms, mouse={}x{}ms, poll={}ms, hold={}ms ---",
-            name, cfg.passive_wait_ms, cfg.mouse_steps, cfg.mouse_step_delay_ms,
-            cfg.poll_interval_ms, cfg.click_hold_ms);
+        println!(
+            "--- [{}] passive={}ms, mouse={}x{}ms, poll={}ms, hold={}ms ---",
+            name,
+            cfg.passive_wait_ms,
+            cfg.mouse_steps,
+            cfg.mouse_step_delay_ms,
+            cfg.poll_interval_ms,
+            cfg.click_hold_ms
+        );
 
         let result = Fetcher::stealth()
             .headless(false)

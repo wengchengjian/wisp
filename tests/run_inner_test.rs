@@ -17,11 +17,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use wisp::crawl::{
-    CrawlEvent, MaxPagesByCallback, Request, Response, Spider, SpiderBuilder,
-};
+use wisp::crawl::events::{metrics_listener, EventBus, Metrics};
+use wisp::crawl::{CrawlEvent, MaxPagesByCallback, Request, Response, Spider, SpiderBuilder};
 use wisp::fetcher::FetchMode;
-use wisp::storage::{MemoryStore, Store};
+use wisp::storage::MemoryStore;
 use wisp::Engine;
 
 /// 最小 Spider：handle 返回空，不产出 items/follows。
@@ -147,6 +146,42 @@ async fn run_stops_on_shutdown() {
     let _ = result.unwrap().unwrap();
 }
 
+/// shutdown 应等待正在执行的 handler 完成，而不是取消。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_waits_for_in_flight_handler() {
+    let url = spawn_html_server("<html><body>ok</body></html>").await;
+    let engine = Engine::infra()
+        .max_pages(100)
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
+        .build()
+        .unwrap();
+
+    let ctrl = engine.control().clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        ctrl.shutdown();
+    });
+
+    let handle_calls = Arc::new(AtomicUsize::new(0));
+    let spider = GracefulShutdownSpider {
+        name: "slow-shutdown".into(),
+        url,
+        handle_calls: handle_calls.clone(),
+    };
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(5), engine.run(spider)).await;
+    assert!(result.is_ok(), "shutdown 后 run 应在 5s 内退出");
+    let _ = result.unwrap().unwrap();
+    let elapsed = start.elapsed();
+    assert!(handle_calls.load(Ordering::SeqCst) >= 1, "handler 应被调用");
+    assert!(
+        elapsed >= Duration::from_millis(400),
+        "shutdown 应等待 in-flight handler 完成，实际耗时 {elapsed:?}"
+    );
+}
+
 /// max_pages=1 时，第一个请求后应停止（即使有 follow）。
 #[tokio::test]
 async fn run_stops_at_max_pages() {
@@ -191,9 +226,11 @@ async fn run_stops_at_max_pages_by_callback() {
     let spider = SpiderBuilder::new("callback-stop")
         .start_urls(vec![url])
         .on_page("default", |mut page| {
-            page.follow_links(&["a"], "detail", |_page, _idx, a| {
-                serde_json::json!({ "title": a.text().trim() })
-            });
+            page.follow_links(
+                &["a"],
+                "detail",
+                |_page, _idx, a| serde_json::json!({ "title": a.text().trim() }),
+            );
             page
         })
         .on_page("detail", |page| page)
@@ -243,18 +280,20 @@ async fn run_clears_checkpoint_on_successful_completion() {
     assert_eq!(items.len(), 1, "应产出 1 个 item");
 
     // 爬取成功完成后 checkpoint 应被清理
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-clear-test").unwrap();
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-clear-test")
+        .await
+        .unwrap();
     assert!(
         ckpt.is_none(),
         "爬取成功完成后 checkpoint 应被清理，但仍然存在"
     );
 }
 
-/// checkpoint 在爬取被 shutdown 中断时也应被清理（当前 run_inner 设计：结束即清理）。
+/// checkpoint 在爬取被 shutdown 中断时应保留，供下次 run 前恢复。
 ///
 /// 使用 multi_thread runtime 确保 shutdown spawn task 能并行执行。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn run_clears_checkpoint_on_shutdown_interrupt() {
+async fn run_keeps_checkpoint_on_shutdown_interrupt() {
     let url = spawn_html_server("<html><body>ok</body></html>").await;
     let store: Arc<dyn wisp::storage::Store> = Arc::new(MemoryStore::default());
 
@@ -276,21 +315,67 @@ async fn run_clears_checkpoint_on_shutdown_interrupt() {
 
     // 用 FollowSpider 让爬取持续（返回 follows 避免立即结束）
     let handle_calls = Arc::new(AtomicUsize::new(0));
-    let spider = FollowSpider {
+    let spider = GracefulShutdownSpider {
         name: "ckpt-shutdown-test".into(),
-        start: url.clone(),
-        follows: vec![url.clone(), url.clone()],
+        url,
         handle_calls: handle_calls.clone(),
     };
     let _ = engine.run(spider).await;
 
-    // run 结束（shutdown 中断）后 checkpoint 也被清理
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-shutdown-test").unwrap();
+    // shutdown 中断必须保留 checkpoint，供下次 run 前恢复
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-shutdown-test")
+        .await
+        .unwrap();
     assert!(
-        ckpt.is_none(),
-        "run_inner 结束时总是清理 checkpoint（当前设计），实际: {:?}",
+        ckpt.is_some(),
+        "shutdown 中断后应保留 checkpoint 供恢复，实际: {:?}",
         ckpt.is_some()
     );
+}
+
+/// shutdown 中断后再次 run 应从 checkpoint 恢复并继续，自然完成后清理。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_resumes_from_checkpoint_after_shutdown() {
+    let url = spawn_html_server("<html><body>ok</body></html>").await;
+    let store: Arc<dyn wisp::storage::Store> = Arc::new(MemoryStore::default());
+    let engine = Engine::infra()
+        .max_pages(100)
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
+        .checkpoint(store.clone(), 1)
+        .build()
+        .unwrap();
+
+    let ctrl = engine.control().clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        ctrl.shutdown();
+    });
+    let handle_calls = Arc::new(AtomicUsize::new(0));
+    let first = GracefulShutdownSpider {
+        name: "ckpt-resume-test".into(),
+        url: url.clone(),
+        handle_calls: handle_calls.clone(),
+    };
+    let (first_stats, _) = engine.run(first).await.unwrap();
+
+    let second = DummySpider {
+        name: "ckpt-resume-test".into(),
+        urls: vec![url],
+    };
+    let (second_stats, _) = engine.run(second).await.unwrap();
+
+    assert!(
+        second_stats.pages_crawled > first_stats.pages_crawled,
+        "恢复后应继续爬取，实际 first={}, second={}",
+        first_stats.pages_crawled,
+        second_stats.pages_crawled
+    );
+    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-resume-test")
+        .await
+        .unwrap();
+    assert!(ckpt.is_none(), "自然完成后 checkpoint 应被清理");
 }
 
 // === follow channel 测试 ===
@@ -425,6 +510,73 @@ async fn run_stream_emits_error_then_done_on_failure() {
     assert!(got_done, "应收到 Done 事件终止流");
 }
 
+/// EngineBuilder 注册的 EventBus 应接入 run 运行路径（Response/Item/Metrics）。
+#[tokio::test]
+async fn event_bus_is_wired_into_run() {
+    let url = spawn_html_server("<html><body>ok</body></html>").await;
+    let mut bus = EventBus::new();
+    let metrics = Arc::new(Metrics::new());
+    bus.on(metrics_listener(Arc::clone(&metrics)));
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
+        .event_bus(bus)
+        .build()
+        .unwrap();
+    let spider = ItemSpider {
+        name: "event-bus-test".into(),
+        url,
+    };
+    let (stats, _) = engine.run(spider).await.unwrap();
+    assert_eq!(stats.pages_crawled, 1);
+    assert!(
+        metrics.responses.load(Ordering::SeqCst) >= 1,
+        "ResponseReceived 事件应驱动 metrics"
+    );
+    assert!(
+        metrics.items.load(Ordering::SeqCst) >= 1,
+        "ItemScraped 事件应驱动 metrics"
+    );
+}
+
+/// run_stream_many 应产出 DoneMany，且每个 Spider 有独立 stats。
+#[tokio::test]
+async fn run_stream_many_emits_done_many() {
+    let url = spawn_html_server("<html><body>ok</body></html>").await;
+    let engine = Engine::infra()
+        .max_pages(10)
+        .obey_robots(false)
+        .max_retries(0)
+        .fetch_mode(FetchMode::Http)
+        .build()
+        .unwrap();
+    let spider_a = ItemSpider {
+        name: "stream-a".into(),
+        url: format!("{}/a", url),
+    };
+    let spider_b = ItemSpider {
+        name: "stream-b".into(),
+        url: format!("{}/b", url),
+    };
+    let mut stream = engine.run_stream_many(vec![spider_a, spider_b]).events();
+    let mut done_many = None;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap_or(None)
+    {
+        if let CrawlEvent::DoneMany(stats) = event {
+            done_many = Some(stats);
+            break;
+        }
+    }
+    let stats = done_many.expect("应收到 DoneMany");
+    assert_eq!(stats.len(), 2, "两个 Spider 应各有一个 stats");
+    assert_eq!(stats[0].pages_crawled, 1);
+    assert_eq!(stats[1].pages_crawled, 1);
+}
+
 /// SlowSpider：handle 中 sleep，让 run 不立即完成。
 struct SlowSpider {
     name: String,
@@ -441,6 +593,28 @@ impl Spider for SlowSpider {
     }
     async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
         tokio::time::sleep(Duration::from_secs(10)).await;
+        (vec![], vec![])
+    }
+}
+
+/// 用于验证 shutdown 优雅等待 in-flight handler 完成。
+struct GracefulShutdownSpider {
+    name: String,
+    url: String,
+    handle_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Spider for GracefulShutdownSpider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn start_urls(&self) -> Vec<String> {
+        vec![self.url.clone()]
+    }
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        self.handle_calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(500)).await;
         (vec![], vec![])
     }
 }

@@ -1,6 +1,6 @@
 //! P1-2: Scheduler seen/heap 分离，并发不死锁。
 
-use wisp::crawl::scheduler::{Scheduler, DedupStrategy};
+use wisp::crawl::scheduler::{DedupStrategy, Scheduler};
 use wisp::crawl::Request;
 
 #[tokio::test]
@@ -13,13 +13,22 @@ async fn scheduler_concurrent_push_pop_dedup_correct() {
             tokio::spawn(async move {
                 for i in 0..100 {
                     // tid*100+i，偶数为重复（0,2,4.. 跨线程共享同一组 URL）
-                    let url = format!("https://example.com/{}", if tid % 2 == 0 { i } else { 1000 + tid * 100 + i });
+                    let url = format!(
+                        "https://example.com/{}",
+                        if tid % 2 == 0 {
+                            i
+                        } else {
+                            1000 + tid * 100 + i
+                        }
+                    );
                     s.push(Request::get(&url)).await;
                 }
             })
         })
         .collect();
-    for h in pushers { h.await.unwrap(); }
+    for h in pushers {
+        h.await.unwrap();
+    }
 
     // pop 全部，验证无 panic、数量 = 唯一 URL 数
     let mut popped = 0;

@@ -82,7 +82,7 @@ impl EngineControl {
         self.bump();
     }
 
-    /// 优雅关闭：in-flight 请求完成后引擎退出。
+    /// 优雅关闭：停止调度新请求，已开始的 in-flight 请求完成后引擎退出。
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
         self.bump();
@@ -153,9 +153,17 @@ mod tests {
     async fn test_engine_control_pause_resume() {
         let ctrl = EngineControl::new();
         ctrl.pause("https://example.com/a").await;
-        assert!(ctrl.paused_urls.read().await.contains("https://example.com/a"));
+        assert!(ctrl
+            .paused_urls
+            .read()
+            .await
+            .contains("https://example.com/a"));
         ctrl.resume("https://example.com/a").await;
-        assert!(!ctrl.paused_urls.read().await.contains("https://example.com/a"));
+        assert!(!ctrl
+            .paused_urls
+            .read()
+            .await
+            .contains("https://example.com/a"));
     }
 
     #[tokio::test]

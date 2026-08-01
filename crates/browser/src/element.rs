@@ -1,8 +1,8 @@
 //! DOM 元素操作：点击、填充、等待、文本提取。
 
-use wisp_core::error::{BrowserError, Result, WispError};
-use crate::page::Page;
 use crate::page::do_evaluate as evaluate;
+use crate::page::Page;
+use wisp_core::error::{BrowserError, Result, WispError};
 
 /// 点击匹配选择器的元素。
 pub async fn click(page: &Page, selector: &str) -> Result<()> {
@@ -13,7 +13,9 @@ pub async fn click(page: &Page, selector: &str) -> Result<()> {
     );
     evaluate(page, &js).await.map_err(|e| match e {
         WispError::Browser(BrowserError::EvalError(msg)) if msg.contains("Element not found") => {
-            WispError::Browser(BrowserError::ElementNotFound { selector: selector.to_string() })
+            WispError::Browser(BrowserError::ElementNotFound {
+                selector: selector.to_string(),
+            })
         }
         other => other,
     })?;
@@ -30,7 +32,9 @@ pub async fn fill(page: &Page, selector: &str, value: &str) -> Result<()> {
     );
     evaluate(page, &js).await.map_err(|e| match e {
         WispError::Browser(BrowserError::EvalError(msg)) if msg.contains("Element not found") => {
-            WispError::Browser(BrowserError::ElementNotFound { selector: selector.to_string() })
+            WispError::Browser(BrowserError::ElementNotFound {
+                selector: selector.to_string(),
+            })
         }
         other => other,
     })?;
@@ -63,7 +67,9 @@ pub async fn text_content(page: &Page, selector: &str) -> Result<String> {
     );
     let value = evaluate(page, &js).await.map_err(|e| match e {
         WispError::Browser(BrowserError::EvalError(msg)) if msg.contains("Element not found") => {
-            WispError::Browser(BrowserError::ElementNotFound { selector: selector.to_string() })
+            WispError::Browser(BrowserError::ElementNotFound {
+                selector: selector.to_string(),
+            })
         }
         other => other,
     })?;

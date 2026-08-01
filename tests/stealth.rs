@@ -1,3 +1,4 @@
+#![cfg(feature = "browser")]
 use std::sync::atomic::{AtomicU32, Ordering};
 use wisp::{Browser, LaunchOptions};
 

@@ -61,13 +61,19 @@ mod tests {
     fn response_ext_parse_then_query() {
         let resp = make_response("<h1>Title</h1>");
         let doc = resp.parse();
-        assert_eq!(doc.select_one("h1").map(|n| n.text()), Some("Title".to_string()));
+        assert_eq!(
+            doc.select_one("h1").map(|n| n.text()),
+            Some("Title".to_string())
+        );
     }
 
     #[test]
     fn response_ext_select_one() {
         let resp = make_response(r#"<p id="main">Content</p>"#);
-        assert_eq!(resp.select_one("#main").map(|n| n.text()), Some("Content".to_string()));
+        assert_eq!(
+            resp.select_one("#main").map(|n| n.text()),
+            Some("Content".to_string())
+        );
     }
 
     #[test]
