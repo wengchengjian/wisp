@@ -5,6 +5,8 @@ use regex::Regex;
 use wisp_core::error::{Result, WispError};
 use wisp_fetcher::FetchMode;
 
+const AUTO_RULE_LIMIT: usize = 1000;
+
 /// URL 模式 → 抓取模式的规则引擎。
 ///
 /// 优先级：用户规则 > 自动学习规则 > None（走 Auto 检测）
@@ -13,6 +15,8 @@ pub struct ModeRuleEngine {
     user_rules: Vec<(Regex, FetchMode)>,
     /// 自动泛化的缓存规则（运行时学习）
     auto_rules: Vec<(Regex, FetchMode)>,
+    /// 是否已发出 auto_rules 上限告警（只告警一次）。
+    auto_rules_warned: bool,
 }
 
 impl ModeRuleEngine {
@@ -21,6 +25,7 @@ impl ModeRuleEngine {
         Self {
             user_rules: Vec::new(),
             auto_rules: Vec::new(),
+            auto_rules_warned: false,
         }
     }
 
@@ -51,6 +56,13 @@ impl ModeRuleEngine {
                 }
             }
             // 新增规则
+            if self.auto_rules.len() >= AUTO_RULE_LIMIT {
+                if !self.auto_rules_warned {
+                    self.auto_rules_warned = true;
+                    tracing::warn!("auto_rules 达到上限 {AUTO_RULE_LIMIT}，停止学习新规则");
+                }
+                return;
+            }
             self.auto_rules.push((re, mode));
         }
     }
@@ -97,5 +109,36 @@ impl ModeRuleEngine {
 impl Default for ModeRuleEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wisp_fetcher::FetchMode;
+
+    fn unique_literal_url(i: usize) -> String {
+        let mut n = i;
+        let mut letters = String::new();
+        loop {
+            letters.push((b'a' + (n % 26) as u8) as char);
+            n /= 26;
+            if n == 0 {
+                break;
+            }
+        }
+        format!("https://example.com/{letters}")
+    }
+
+    #[test]
+    fn auto_rules_stop_learning_at_limit() {
+        let mut engine = ModeRuleEngine::new();
+        for i in 0..AUTO_RULE_LIMIT {
+            engine.learn(&unique_literal_url(i), FetchMode::Http);
+        }
+        assert_eq!(engine.auto_rule_count(), AUTO_RULE_LIMIT);
+        engine.learn("https://1.2.3.4/!!!", FetchMode::Stealth);
+        assert_eq!(engine.auto_rule_count(), AUTO_RULE_LIMIT);
+        assert_eq!(engine.resolve("https://1.2.3.4/!!!"), None);
     }
 }
