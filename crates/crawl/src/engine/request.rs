@@ -35,8 +35,6 @@ pub(crate) async fn check_control_and_hook(
     }
 }
 
-/// 处理请求阶段：控制检查 → 中间件请求链 → 抓取。
-
 /// Spider 业务策略过滤：域名白名单与最大深度。
 fn is_allowed_domain(spider: &Arc<dyn Spider>, req: &Request) -> bool {
     if spider.allowed_domains().is_empty() {

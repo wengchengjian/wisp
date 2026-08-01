@@ -7,11 +7,11 @@
 //! - `BrowserHandle::Drop` 自动关闭 tab + release permit
 //! - Browser 懒启动（首次 acquire 时 launch）
 
-mod handle;
 mod core;
+mod handle;
 
-pub use handle::BrowserHandle;
 pub use core::BrowserPool;
+pub use handle::BrowserHandle;
 
 #[cfg(test)]
 mod tests {

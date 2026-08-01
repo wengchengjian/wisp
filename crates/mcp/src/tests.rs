@@ -55,7 +55,10 @@ async fn test_handle_tools_call_unknown_tool() {
 async fn fetch_page_rejects_private_ip() {
     let result = crate::tools::fetch_page(json!({ "url": "http://127.0.0.1/" })).await;
     let err = result.expect_err("MCP fetch_page 应拒绝内网地址");
-    assert!(err.to_string().contains("拒绝"), "错误应来自 SSRF 校验: {err}");
+    assert!(
+        err.to_string().contains("拒绝"),
+        "错误应来自 SSRF 校验: {err}"
+    );
 }
 
 #[tokio::test]
@@ -67,5 +70,8 @@ async fn adaptive_scrape_rejects_private_ip() {
     )
     .await;
     let err = result.expect_err("MCP adaptive_scrape 应拒绝内网地址");
-    assert!(err.to_string().contains("拒绝"), "错误应来自 SSRF 校验: {err}");
+    assert!(
+        err.to_string().contains("拒绝"),
+        "错误应来自 SSRF 校验: {err}"
+    );
 }

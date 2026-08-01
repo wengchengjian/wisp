@@ -9,9 +9,7 @@ use crate::scheduler;
 use crate::{CrawlState, Request, Spider, SpiderStats};
 
 /// 合并多个 Spider 的 checkpoint：pending/in-flight 按 URL 去重，seen 集合合并。
-pub(crate) fn merge_checkpoint_states(
-    states: Vec<CrawlState>,
-) -> (Vec<Request>, HashSet<String>) {
+pub(crate) fn merge_checkpoint_states(states: Vec<CrawlState>) -> (Vec<Request>, HashSet<String>) {
     let mut pending: Vec<Request> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut inserted: HashSet<String> = HashSet::new();

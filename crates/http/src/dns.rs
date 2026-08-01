@@ -17,9 +17,8 @@ pub struct DoHResolver {
 impl DoHResolver {
     /// 从 `https://host[:port]/path` 构造；host 会在启动时解析一次为 IP。
     pub fn new(endpoint: &str) -> Result<Self> {
-        let parsed = url::Url::parse(endpoint).map_err(|e| {
-            WispError::Network(NetworkError::Http(format!("invalid DoH URL: {e}")))
-        })?;
+        let parsed = url::Url::parse(endpoint)
+            .map_err(|e| WispError::Network(NetworkError::Http(format!("invalid DoH URL: {e}"))))?;
         if parsed.scheme() != "https" {
             return Err(WispError::Network(NetworkError::Http(
                 "DoH endpoint must use https".into(),

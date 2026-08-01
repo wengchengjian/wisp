@@ -74,11 +74,28 @@ fn sanitize_filename_component(s: &str) -> String {
     let upper = s.to_uppercase();
     let is_reserved = matches!(
         upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
-        | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
-        | "COM6" | "COM7" | "COM8" | "COM9"
-        | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5"
-        | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
     );
     if is_reserved {
         format!("wisp_{}", s)
@@ -191,14 +208,20 @@ mod tests {
     #[test]
     fn sanitize_url_password_with_at_fully_redacted() {
         let sanitized = sanitize_url("http://user:p@ss@example.com/path");
-        assert!(!sanitized.contains("p@ss"), "密码含 @ 时不得泄露: {sanitized}");
+        assert!(
+            !sanitized.contains("p@ss"),
+            "密码含 @ 时不得泄露: {sanitized}"
+        );
         assert!(sanitized.contains("***:***@example.com"));
     }
 
     #[test]
     fn sanitize_url_keeps_query_value_intact() {
         let sanitized = sanitize_url("http://user:pass@example.com/?q=user:pass");
-        assert!(sanitized.contains("q=user:pass"), "query 不应被替换: {sanitized}");
+        assert!(
+            sanitized.contains("q=user:pass"),
+            "query 不应被替换: {sanitized}"
+        );
     }
 
     #[test]

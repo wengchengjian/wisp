@@ -40,8 +40,7 @@ fn merge_checkpoint_states_deduplicates_urls() {
     s2.pending_urls = vec![req_a.clone()];
     s2.seen_urls = HashSet::from(["https://example.com/a".into()]);
 
-    let (pending, seen) =
-        super::setup::checkpoint::merge_checkpoint_states(vec![s1, s2]);
+    let (pending, seen) = super::setup::checkpoint::merge_checkpoint_states(vec![s1, s2]);
     assert_eq!(pending.len(), 2, "相同 URL 只应入队一次");
     assert_eq!(seen.len(), 2);
 }

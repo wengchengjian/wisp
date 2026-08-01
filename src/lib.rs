@@ -27,6 +27,7 @@
 // 子 crate 按模块路径 re-export，保持既有 `wisp::xxx` API。
 #[cfg(feature = "browser")]
 pub use wisp_browser as browser;
+pub use wisp_core::{config, error, text, utils};
 pub use wisp_crawl as crawl;
 pub use wisp_fetcher as fetcher;
 pub use wisp_http as http;
@@ -37,20 +38,19 @@ pub use wisp_proxy as proxy;
 #[cfg(feature = "stealth")]
 pub use wisp_stealth as stealth;
 pub use wisp_storage as storage;
-pub use wisp_core::{config, error, text, utils};
 
 // === 统一入口 ===
-pub use fetcher::{FetchClient, FetchClientConfig, Fetcher, FetchMode, FetcherBuilder};
-pub use fetcher::{Response, Request, Method};
-#[cfg(feature = "browser")]
-pub use fetcher::DynamicStrategy;
-#[cfg(feature = "stealth")]
-pub use fetcher::StealthStrategy;
-pub use fetcher::cookie::{Cookie, CookieJar, HttpCookieJar};
 #[cfg(feature = "browser")]
 pub use fetcher::cookie::BrowserCookieJar;
 #[cfg(feature = "stealth")]
 pub use fetcher::cookie::{CfCookieJar, CfSession};
+pub use fetcher::cookie::{Cookie, CookieJar, HttpCookieJar};
+#[cfg(feature = "browser")]
+pub use fetcher::DynamicStrategy;
+#[cfg(feature = "stealth")]
+pub use fetcher::StealthStrategy;
+pub use fetcher::{FetchClient, FetchClientConfig, FetchMode, Fetcher, FetcherBuilder};
+pub use fetcher::{Method, Request, Response};
 #[cfg(feature = "stealth")]
 pub use stealth::TurnstileConfig;
 
@@ -58,24 +58,28 @@ pub use stealth::TurnstileConfig;
 #[cfg(feature = "browser")]
 pub use browser::{Browser, Page};
 pub use config::{LaunchOptions, ProxyConfig};
-pub use error::{WispError, Result, BrowserError, NetworkError, ParseError, McpError, StorageError};
+pub use error::{
+    BrowserError, McpError, NetworkError, ParseError, Result, StorageError, WispError,
+};
 
 pub use parser::{Node, NodeList, ResponseExt};
 pub use proxy::RotationStrategy;
-pub use storage::{Store, MemoryStore, FileStore, CachedResponse, ElementSnapshotRow};
+pub use storage::{CachedResponse, ElementSnapshotRow, FileStore, MemoryStore, Store};
 
 // 自由函数导出（业务层 API）
 pub use storage::{
-    save_checkpoint, load_checkpoint, delete_checkpoint,
-    save_element, load_element,
-    save_response, load_response, delete_response,
+    delete_checkpoint, delete_response, load_checkpoint, load_element, load_response,
+    save_checkpoint, save_element, save_response,
 };
 
 #[cfg(feature = "sqlite")]
 pub use storage::SqliteStore;
 
 // === 爬虫引擎 ===
-pub use crawl::{Spider, Engine, EngineConfig, CrawlEvent, CrawlStream, Items, JsonlWriter, SpiderBuilder, ClosureSpider};
+pub use crawl::{
+    ClosureSpider, CrawlEvent, CrawlStream, Engine, EngineConfig, Items, JsonlWriter, Spider,
+    SpiderBuilder,
+};
 pub use http::UaRotator;
 
 // === 底层类型（FetchClientConfig 公共字段需要） ===

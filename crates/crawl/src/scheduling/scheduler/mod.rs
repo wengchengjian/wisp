@@ -5,12 +5,12 @@
 //!
 //! CR-10: 默认使用精确 URL 去重（HashSet<String>），可选 Fingerprint 模式省内存。
 
+mod core;
 mod dedup;
 mod queue;
-mod core;
 
-pub use dedup::DedupStrategy;
 pub use core::Scheduler;
+pub use dedup::DedupStrategy;
 
 #[cfg(test)]
 mod tests {

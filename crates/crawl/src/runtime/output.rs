@@ -163,10 +163,7 @@ mod tests {
 
     #[test]
     fn warc_record_sanitizes_crlf_in_headers() {
-        let headers = HashMap::from([(
-            "X-Bad".to_string(),
-            "a\r\nInjected: yes".to_string(),
-        )]);
+        let headers = HashMap::from([("X-Bad".to_string(), "a\r\nInjected: yes".to_string())]);
         let record = to_warc_record("https://example.com", 200, &headers, b"ok");
         let text = String::from_utf8_lossy(&record);
         assert!(!text.contains("\r\nInjected"), "header 注入必须被清洗");
