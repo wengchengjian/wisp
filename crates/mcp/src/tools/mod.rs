@@ -73,6 +73,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn crawl_site_rejects_invalid_follow_pattern() {
+        let engine = wisp_crawl::Engine::infra()
+            .max_pages(0)
+            .obey_robots(false)
+            .build()
+            .unwrap();
+        let args = json!({
+            "start_urls": ["https://example.com/"],
+            "css_selector": "p",
+            "follow_pattern": "["
+        });
+        let result = crawl_site(args, &engine).await;
+        assert!(result.is_err(), "非法正则应报错");
+    }
+
+    #[tokio::test]
     async fn test_adaptive_scrape_missing_args() {
         let store: Arc<dyn Store> = Arc::new(wisp_storage::MemoryStore::default());
         let args = json!({});
