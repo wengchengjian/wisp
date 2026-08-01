@@ -4,9 +4,18 @@ use super::McpCmd;
 
 pub(super) async fn run_mcp(cmd: McpCmd) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        McpCmd::Serve { db } => {
+        McpCmd::Serve {
+            db,
+            headless,
+            human_mode,
+        } => {
             let store = build_store(&db)?;
-            wisp::mcp::serve(store).await?;
+            let fetch_client = Arc::new(wisp::FetchClient::new(wisp::FetchClientConfig {
+                headless,
+                human_mode,
+                ..Default::default()
+            })?);
+            wisp::mcp::serve(store, fetch_client).await?;
         }
     }
     Ok(())
@@ -23,7 +32,12 @@ fn build_store(db: &str) -> Result<Arc<dyn wisp::Store>, Box<dyn std::error::Err
     }
     #[cfg(not(feature = "sqlite"))]
     {
-        let _ = db;
-        Ok(Arc::new(wisp::FileStore::default()))
+        if db.is_empty() || db == ":memory:" {
+            return Ok(Arc::new(wisp::FileStore::default()));
+        }
+        eprintln!("当前构建未启用 sqlite，使用 FileStore 目录: {db}");
+        Ok(Arc::new(wisp::FileStore::with_dir(
+            std::path::PathBuf::from(db),
+        )))
     }
 }

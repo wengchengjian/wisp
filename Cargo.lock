@@ -3377,10 +3377,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde_json",
+ "tempfile",
  "tokio",
- "wisp-browser",
  "wisp-core",
  "wisp-crawl",
+ "wisp-fetcher",
  "wisp-http",
  "wisp-parser",
  "wisp-storage",

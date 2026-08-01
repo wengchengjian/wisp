@@ -44,3 +44,16 @@ fn merge_checkpoint_states_deduplicates_urls() {
     assert_eq!(pending.len(), 2, "相同 URL 只应入队一次");
     assert_eq!(seen.len(), 2);
 }
+
+#[test]
+fn engine_builder_accepts_existing_fetch_client() {
+    use std::sync::Arc;
+    use wisp_fetcher::{FetchClient, FetchClientConfig};
+
+    let client = Arc::new(FetchClient::new(FetchClientConfig::default()).unwrap());
+    let engine = Engine::infra()
+        .fetch_client(Arc::clone(&client))
+        .build()
+        .unwrap();
+    assert!(Arc::ptr_eq(&engine.fetch_client, &client));
+}

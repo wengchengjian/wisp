@@ -7,7 +7,7 @@ use std::sync::Arc;
 use wisp_core::error::{Result, WispError};
 use wisp_core::{FetchMode, Request, Response};
 
-#[cfg(feature = "browser")]
+#[cfg(feature = "stealth")]
 use crate::cookie::CfCookieJar;
 #[cfg(feature = "browser")]
 use crate::strategies::DynamicStrategy;

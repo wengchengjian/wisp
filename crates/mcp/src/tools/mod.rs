@@ -5,13 +5,14 @@ mod crawl;
 mod extract;
 mod fetch;
 mod spider;
+#[cfg(feature = "stealth")]
 mod stealth;
 
 pub use adaptive::adaptive_scrape;
 pub use crawl::crawl_site;
 pub use extract::extract_css;
 pub use fetch::fetch_page;
-#[cfg(feature = "browser")]
+#[cfg(feature = "stealth")]
 pub use stealth::stealth_fetch;
 
 #[cfg(test)]
@@ -19,6 +20,8 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
+    #[cfg(feature = "stealth")]
+    use wisp_fetcher::{FetchClient, FetchClientConfig};
     use wisp_storage::Store;
 
     #[tokio::test]
@@ -77,11 +80,18 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(feature = "browser")]
+    #[cfg(feature = "stealth")]
     #[tokio::test]
     async fn test_stealth_fetch_missing_url() {
         let args = json!({});
-        let result = stealth_fetch(args).await;
+        let client = Arc::new(
+            FetchClient::new(FetchClientConfig {
+                max_concurrent_pages: 0,
+                ..Default::default()
+            })
+            .expect("build test fetch client"),
+        );
+        let result = stealth_fetch(args, &client).await;
         assert!(result.is_err());
     }
 }

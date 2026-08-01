@@ -56,7 +56,9 @@ pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
                     "start_urls": { "type": "array", "items": { "type": "string" } },
                     "css_selector": { "type": "string", "description": "每页提取的 CSS 选择器" },
                     "max_pages": { "type": "integer", "default": 100 },
-                    "follow_pattern": { "type": "string", "description": "可选：跟随链接的正则" }
+                    "follow_pattern": { "type": "string", "description": "可选：仅跟随匹配此正则的链接" },
+                    "max_depth": { "type": "integer", "default": 0, "description": "最大跟随深度，0 表示不限制" },
+                    "allowed_domains": { "type": "array", "items": { "type": "string" }, "description": "可选：仅跟随这些域名的链接" }
                 },
                 "required": ["start_urls", "css_selector"]
             }),
@@ -75,16 +77,14 @@ pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
                 "required": ["url", "selector", "key"]
             }),
         },
-        #[cfg(feature = "browser")]
+        #[cfg(feature = "stealth")]
         Tool {
             name: "stealth_fetch",
-            description: "浏览器模式抓取（绕 CF Turnstile 等重度反 bot）。",
+            description: "浏览器隐身抓取（CF 挑战解决 + 人类行为模拟，复用共享浏览器池）。",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "url": { "type": "string" },
-                    "headless": { "type": "boolean", "default": true },
-                    "human_mode": { "type": "boolean", "default": false, "description": "启用人类行为模拟" }
+                    "url": { "type": "string" }
                 },
                 "required": ["url"]
             }),

@@ -15,6 +15,7 @@ use wisp_fetcher::{FetchClient, FetchClientConfig};
 
 /// Engine 构造器（Builder 模式）。
 pub struct EngineBuilder {
+    fetch_client: Option<Arc<FetchClient>>,
     fetch_client_config: FetchClientConfig,
     max_concurrent: usize,
     max_pages: usize,
@@ -45,6 +46,7 @@ impl Engine {
     /// Engine 不再持有 Spider，长期持有共享底层资源。
     pub fn infra() -> EngineBuilder {
         EngineBuilder {
+            fetch_client: None,
             fetch_client_config: FetchClientConfig::default(),
             max_concurrent: 8,
             max_pages: 1000,

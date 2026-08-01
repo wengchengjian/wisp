@@ -9,6 +9,7 @@ use super::protocol::TOOLS;
 use crate::tools;
 use wisp_core::error::{McpError, ParseError, Result, WispError};
 use wisp_crawl::Engine;
+use wisp_fetcher::FetchClient;
 use wisp_storage::Store;
 
 async fn write_json_line(stdout: &mut tokio::io::Stdout, value: &Value) -> Result<()> {
@@ -31,7 +32,12 @@ async fn write_parse_error(stdout: &mut tokio::io::Stdout, error: &str) -> Resul
     .await
 }
 
-async fn dispatch_request(request: Value, store: &Arc<dyn Store>, engine: &Engine) -> Value {
+async fn dispatch_request(
+    request: Value,
+    store: &Arc<dyn Store>,
+    engine: &Engine,
+    fetch_client: &Arc<FetchClient>,
+) -> Value {
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let id = request.get("id").cloned();
     match method {
@@ -43,7 +49,7 @@ async fn dispatch_request(request: Value, store: &Arc<dyn Store>, engine: &Engin
             "jsonrpc": "2.0", "id": id,
             "result": handle_tools_list()
         }),
-        "tools/call" => match handle_tools_call(request, store, engine).await {
+        "tools/call" => match handle_tools_call(request, store, engine, fetch_client).await {
             Ok(result) => json!({
                 "jsonrpc": "2.0", "id": id,
                 "result": result
@@ -72,6 +78,7 @@ async fn handle_request_line(
     line: &str,
     store: &Arc<dyn Store>,
     engine: &Engine,
+    fetch_client: &Arc<FetchClient>,
     stdout: &mut tokio::io::Stdout,
 ) -> Result<()> {
     let request: Value = match serde_json::from_str(line) {
@@ -82,7 +89,7 @@ async fn handle_request_line(
     };
     let id = request.get("id").cloned();
     let is_notification = id.is_none();
-    let response = dispatch_request(request, store, engine).await;
+    let response = dispatch_request(request, store, engine, fetch_client).await;
     if is_notification {
         return Ok(());
     }
@@ -90,8 +97,9 @@ async fn handle_request_line(
 }
 
 /// MCP server 主循环（stdio JSON-RPC 2.0）
-pub async fn serve(store: Arc<dyn Store>) -> Result<()> {
+pub async fn serve(store: Arc<dyn Store>, fetch_client: Arc<FetchClient>) -> Result<()> {
     let engine = Engine::infra()
+        .fetch_client(fetch_client.clone())
         .max_pages(100000)
         .obey_robots(false)
         .build()?;
@@ -102,7 +110,7 @@ pub async fn serve(store: Arc<dyn Store>) -> Result<()> {
     let mut lines = reader.lines();
 
     while let Some(line) = lines.next_line().await? {
-        handle_request_line(&line, &store, &engine, &mut stdout).await?;
+        handle_request_line(&line, &store, &engine, &fetch_client, &mut stdout).await?;
     }
 
     Ok(())
@@ -139,20 +147,23 @@ pub(super) async fn handle_tools_call(
     request: Value,
     store: &Arc<dyn Store>,
     engine: &Engine,
+    fetch_client: &Arc<FetchClient>,
 ) -> Result<Value> {
     let params = request
         .get("params")
         .ok_or_else(|| WispError::Mcp(McpError::General("missing params".into())))?;
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    #[cfg(not(feature = "stealth"))]
+    let _ = fetch_client;
 
     let result = match name {
         "fetch_page" => tools::fetch_page(args).await,
         "extract_css" => tools::extract_css(args).await,
         "crawl_site" => tools::crawl_site(args, engine).await,
         "adaptive_scrape" => tools::adaptive_scrape(args, store).await,
-        #[cfg(feature = "browser")]
-        "stealth_fetch" => tools::stealth_fetch(args).await,
+        #[cfg(feature = "stealth")]
+        "stealth_fetch" => tools::stealth_fetch(args, fetch_client).await,
         _ => Err(WispError::Mcp(McpError::UnknownTool(name.into()))),
     }?;
 
