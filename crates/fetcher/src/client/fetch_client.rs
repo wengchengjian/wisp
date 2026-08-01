@@ -209,3 +209,17 @@ impl FetchClient {
         )))
     }
 }
+
+#[cfg(feature = "browser")]
+impl Drop for FetchClient {
+    fn drop(&mut self) {
+        let Some(pool) = self.browser_pool.take() else {
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let _ = handle.spawn(async move {
+                pool.shutdown().await;
+            });
+        }
+    }
+}

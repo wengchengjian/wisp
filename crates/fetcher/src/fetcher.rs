@@ -49,14 +49,32 @@ impl Fetcher {
     }
 
     /// 从已有 FetchClient 创建 Fetcher。
-    /// 注意：此构造方式不创建 browser_strategy，Dynamic/Stealth 模式下需调用方自行注入。
-    #[must_use]
-    pub fn from_client(client: Arc<FetchClient>, mode: FetchMode) -> Self {
-        Self {
-            client,
-            mode,
-            #[cfg(feature = "browser")]
-            browser_strategy: None,
+    /// 自动构造 Dynamic/Stealth strategy，与 `Fetcher::new` 行为一致。
+    pub fn from_client(client: Arc<FetchClient>, mode: FetchMode) -> Result<Self> {
+        if mode == FetchMode::Auto {
+            return Err(WispError::Config(
+                "Auto mode is owned by wisp_crawl Engine; use Http/Dynamic/Stealth explicitly"
+                    .into(),
+            ));
+        }
+        #[cfg(feature = "browser")]
+        {
+            let browser_strategy = Self::build_strategy(mode, client.config())?;
+            Ok(Self {
+                client,
+                mode,
+                browser_strategy,
+            })
+        }
+        #[cfg(not(feature = "browser"))]
+        {
+            match mode {
+                FetchMode::Http => Ok(Self { client, mode }),
+                FetchMode::Dynamic | FetchMode::Stealth => Err(WispError::Config(format!(
+                    "{mode:?} mode requires 'browser' feature"
+                ))),
+                FetchMode::Auto => unreachable!("Auto 已在函数开头拒绝"),
+            }
         }
     }
 
@@ -84,9 +102,7 @@ impl Fetcher {
             // 非 browser feature 下，Dynamic/Stealth 模式不可用
             match mode {
                 FetchMode::Http => Ok(Self { client, mode }),
-                FetchMode::Auto => Err(WispError::Config(
-                    "Auto mode is owned by wisp_crawl Engine".into(),
-                )),
+                FetchMode::Auto => unreachable!("Auto 已在函数开头拒绝"),
                 FetchMode::Dynamic | FetchMode::Stealth => Err(WispError::Config(format!(
                     "{mode:?} mode requires 'browser' feature"
                 ))),
@@ -203,5 +219,36 @@ impl Fetcher {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{FetchClient, FetchClientConfig};
+    use std::sync::Arc;
+
+    #[test]
+    fn from_client_http_works() {
+        let client = Arc::new(
+            FetchClient::new(FetchClientConfig {
+                max_concurrent_pages: 0,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let fetcher = Fetcher::from_client(client, FetchMode::Http).unwrap();
+        assert_eq!(fetcher.mode(), FetchMode::Http);
+    }
+
+    #[cfg(feature = "browser")]
+    #[test]
+    fn from_client_dynamic_builds_strategy() {
+        let client = Arc::new(FetchClient::new(FetchClientConfig::default()).unwrap());
+        let fetcher = Fetcher::from_client(client, FetchMode::Dynamic).unwrap();
+        assert!(
+            fetcher.browser_strategy().is_some(),
+            "from_client 应自动构造 Dynamic strategy"
+        );
     }
 }

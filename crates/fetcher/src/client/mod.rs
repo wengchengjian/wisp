@@ -74,6 +74,14 @@ mod tests {
         assert!(err.to_string().contains("代理认证"), "错误应明确: {err}");
     }
 
+    #[cfg(feature = "browser")]
+    #[test]
+    fn fetch_client_drop_does_not_panic_inside_runtime() {
+        let config = FetchClientConfig::default();
+        let client = FetchClient::new(config).expect("build client");
+        drop(client);
+    }
+
     #[tokio::test]
     async fn fetch_client_has_cookie_jar() {
         let config = FetchClientConfig::default();
