@@ -11,9 +11,7 @@ pub(crate) async fn persist_spider_checkpoint(
 ) -> Result<()> {
     let pending = sched.pending_urls().await;
     let seen = sched.seen_urls().await; // 持久化 seen 去重集合
-    let snapshot = snapshot_stats_for(stats, HashMap::new());
-    // 手动构造 CrawlState 填入 seen_urls；
-    // `CrawlState::from_stats` 硬编码 seen_urls 为空，不能直接用。
+    let snapshot = snapshot_stats_for(stats, stats.status_codes_snapshot());
     let state = CrawlState {
         spider_name: spider_name.to_string(),
         pending_urls: pending,
@@ -21,6 +19,11 @@ pub(crate) async fn persist_spider_checkpoint(
         items_scraped: snapshot.items_scraped,
         pages_crawled: snapshot.pages_crawled,
         errors: snapshot.errors,
+        status_codes: snapshot.status_code_counts,
+        blocked: snapshot.blocked_requests,
+        retries: snapshot.retry_count,
+        offsite: snapshot.offsite_requests_count,
+        cache_hits: snapshot.cache_hits,
         callback_pages: stats.callback_pages_snapshot(),
         in_flight_urls: in_flight,
         duration_ms: snapshot.duration.as_millis(),

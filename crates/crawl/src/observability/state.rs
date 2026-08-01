@@ -24,6 +24,21 @@ pub struct CrawlState {
     pub pages_crawled: usize,
     /// 错误数。
     pub errors: usize,
+    /// 状态码分布。
+    #[serde(default)]
+    pub status_codes: HashMap<u16, usize>,
+    /// 被拦截数。
+    #[serde(default)]
+    pub blocked: usize,
+    /// 重试数。
+    #[serde(default)]
+    pub retries: usize,
+    /// 站外请求数。
+    #[serde(default)]
+    pub offsite: usize,
+    /// 缓存命中数。
+    #[serde(default)]
+    pub cache_hits: usize,
     /// 各 callback 已爬页数（`"default"` 表示无 callback 的入口请求）。
     #[serde(default)]
     pub callback_pages: HashMap<String, usize>,
@@ -47,25 +62,14 @@ impl CrawlState {
             items_scraped: 0,
             pages_crawled: 0,
             errors: 0,
+            status_codes: HashMap::new(),
+            blocked: 0,
+            retries: 0,
+            offsite: 0,
+            cache_hits: 0,
             callback_pages: HashMap::new(),
             in_flight_urls: Vec::new(),
             duration_ms: 0,
-            saved_at: chrono::Utc::now(),
-        }
-    }
-
-    /// 从 CrawlStats 构造（snapshot 用）。
-    pub fn from_stats(spider_name: String, stats: &CrawlStats, pending: Vec<Request>) -> Self {
-        Self {
-            spider_name,
-            pending_urls: pending,
-            seen_urls: HashSet::new(), // stage 1: not tracked separately
-            items_scraped: stats.items_scraped,
-            pages_crawled: stats.pages_crawled,
-            errors: stats.errors,
-            callback_pages: HashMap::new(),
-            in_flight_urls: Vec::new(),
-            duration_ms: stats.duration.as_millis(),
             saved_at: chrono::Utc::now(),
         }
     }
@@ -77,7 +81,11 @@ impl CrawlState {
             pages_crawled: self.pages_crawled,
             errors: self.errors,
             duration: std::time::Duration::from_millis(self.duration_ms as u64),
-            ..Default::default()
+            blocked_requests: self.blocked,
+            retry_count: self.retries,
+            status_code_counts: self.status_codes.clone(),
+            offsite_requests_count: self.offsite,
+            cache_hits: self.cache_hits,
         }
     }
 }

@@ -69,3 +69,26 @@ fn engine_builder_rejects_zero_max_concurrent() {
         "错误应说明 max_concurrent: {err}"
     );
 }
+
+#[test]
+fn checkpoint_restores_full_stats() {
+    use std::collections::HashMap;
+
+    let mut state = CrawlState::new("s".into());
+    state.status_codes = HashMap::from([(200, 10)]);
+    state.blocked = 5;
+    state.retries = 6;
+    state.offsite = 7;
+    state.cache_hits = 8;
+
+    let stats = crate::SpiderStats::new();
+    stats.restore_from(&state);
+    assert_eq!(stats.blocked.load(std::sync::atomic::Ordering::SeqCst), 5);
+    assert_eq!(stats.retries.load(std::sync::atomic::Ordering::SeqCst), 6);
+    assert_eq!(stats.offsite.load(std::sync::atomic::Ordering::SeqCst), 7);
+    assert_eq!(
+        stats.cache_hits.load(std::sync::atomic::Ordering::SeqCst),
+        8
+    );
+    assert_eq!(stats.status_codes_snapshot(), HashMap::from([(200, 10)]));
+}
