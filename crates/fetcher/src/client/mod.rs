@@ -65,8 +65,13 @@ mod tests {
     #[cfg(feature = "browser")]
     #[test]
     fn browser_pool_rejects_authenticated_proxy() {
-        let mut config = FetchClientConfig::default();
-        config.proxy = Some("http://user:pass@127.0.0.1:8080".into());
+        let config = FetchClientConfig {
+            http: wisp_http::Config {
+                proxy: Some("http://user:pass@127.0.0.1:8080".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let err = match FetchClient::new(config) {
             Ok(_) => panic!("认证代理应被拒绝"),
             Err(e) => e,

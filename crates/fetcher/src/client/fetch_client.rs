@@ -217,9 +217,9 @@ impl Drop for FetchClient {
             return;
         };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let _ = handle.spawn(async move {
+            drop(handle.spawn(async move {
                 pool.shutdown().await;
-            });
+            }));
         }
     }
 }
