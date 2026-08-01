@@ -1,3 +1,4 @@
+#![cfg(feature = "stealth")]
 //! Cloudflare bypass 真实环境测试。
 //!
 //! 运行方式：`cargo test --test cf_bypass_real_test -- --ignored`

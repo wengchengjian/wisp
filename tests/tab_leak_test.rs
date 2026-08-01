@@ -1,3 +1,4 @@
+#![cfg(feature = "browser")]
 //! 验证 Page drop 后是否泄漏 Chrome tab。
 //!
 //! 测试逻辑：

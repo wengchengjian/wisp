@@ -1,3 +1,4 @@
+#![cfg(feature = "mcp")]
 //! Task 1 回归测试：crawl_site 传入 start_urls 修复。
 use serde_json::json;
 use wisp::mcp::tools::crawl_site;

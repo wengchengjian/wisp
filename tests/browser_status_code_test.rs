@@ -1,3 +1,4 @@
+#![cfg(feature = "browser")]
 //! 验证浏览器请求能获取真实 HTTP 状态码（不再 fallback 到 200）。
 //!
 //! 测试逻辑：
@@ -51,7 +52,10 @@ fn fetch_client_config() -> FetchClientConfig {
         executable_path,
         // 关闭人类行为模拟，加速测试
         human_mode: false,
-        timeout: Duration::from_secs(15),
+        http: wisp::http::Config {
+            timeout: Duration::from_secs(15),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

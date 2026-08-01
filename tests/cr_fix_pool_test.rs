@@ -1,3 +1,4 @@
+#![cfg(feature = "browser")]
 //! 验证单 Browser 多 Page 并发模型的正确性。
 //!
 //! 旧模型（多 Browser 进程）有索引移位和句柄别名 bug；新模型（单 Browser
