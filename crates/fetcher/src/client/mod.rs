@@ -62,6 +62,18 @@ mod tests {
         assert!(client.browser_pool().is_some());
     }
 
+    #[cfg(feature = "browser")]
+    #[test]
+    fn browser_pool_rejects_authenticated_proxy() {
+        let mut config = FetchClientConfig::default();
+        config.proxy = Some("http://user:pass@127.0.0.1:8080".into());
+        let err = match FetchClient::new(config) {
+            Ok(_) => panic!("认证代理应被拒绝"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("代理认证"), "错误应明确: {err}");
+    }
+
     #[tokio::test]
     async fn fetch_client_has_cookie_jar() {
         let config = FetchClientConfig::default();

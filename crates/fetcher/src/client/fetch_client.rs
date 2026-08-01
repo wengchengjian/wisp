@@ -36,7 +36,7 @@ impl FetchClient {
         let http_jar = Arc::new(HttpCookieJar::new());
         let http = Arc::new(Self::build_http_client(&config, http_jar.jar())?);
         #[cfg(feature = "browser")]
-        let browser_pool = Self::build_browser_pool(&config);
+        let browser_pool = Self::build_browser_pool(&config)?;
         let cookie_jar: Arc<dyn CookieJar> = http_jar;
         Ok(Self {
             http,
@@ -178,27 +178,34 @@ impl FetchClient {
     }
 
     #[cfg(feature = "browser")]
-    fn build_browser_pool(config: &FetchClientConfig) -> Option<Arc<BrowserPool>> {
+    fn build_browser_pool(config: &FetchClientConfig) -> Result<Option<Arc<BrowserPool>>> {
         if config.max_concurrent_pages == 0 {
-            return None;
+            return Ok(None);
         }
-        let proxy_config = config
-            .proxy
-            .as_ref()
-            .map(|p| wisp_core::config::ProxyConfig {
-                server: p.clone(),
-                username: None,
-                password: None,
-            });
+        let proxy_config = match &config.proxy {
+            Some(proxy) => {
+                let parsed = url::Url::parse(proxy)
+                    .map_err(|e| WispError::Config(format!("invalid proxy URL: {e}")))?;
+                if !parsed.username().is_empty() || parsed.password().is_some() {
+                    return Err(WispError::Config("浏览器模式暂不支持代理认证".into()));
+                }
+                Some(wisp_core::config::ProxyConfig {
+                    server: proxy.clone(),
+                    username: None,
+                    password: None,
+                })
+            }
+            None => None,
+        };
         let launch_options = LaunchOptions {
             headless: config.headless,
             executable_path: config.executable_path.clone(),
             proxy: proxy_config,
             ..Default::default()
         };
-        Some(BrowserPool::new(
+        Ok(Some(BrowserPool::new(
             config.max_concurrent_pages,
             launch_options,
-        ))
+        )))
     }
 }

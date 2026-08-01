@@ -58,7 +58,7 @@ impl Browser {
         let (user_data_path, temp_dir) = process::setup_user_data_dir(&options)?;
         let port_file = user_data_path.join("DevToolsActivePort");
         let _ = std::fs::remove_file(&port_file);
-        let chrome_args = process::build_chrome_args(&options, &user_data_path);
+        let chrome_args = process::build_chrome_args(&options, &user_data_path)?;
         let child = process::spawn_chrome_process(&executable, &chrome_args, options.headless)?;
         let ws_url = process::wait_for_devtools_url(&user_data_path).await?;
         tracing::info!("Chrome DevTools: {}", ws_url);
