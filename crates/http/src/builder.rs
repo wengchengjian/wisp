@@ -2,7 +2,6 @@
 
 use crate::{Client, Config};
 use std::time::Duration;
-use wreq::header::HeaderName;
 use wreq_util::Profile;
 
 use wisp_core::error::{NetworkError, Result, WispError};
@@ -69,12 +68,6 @@ impl ClientBuilder {
     /// 关闭 TLS 指纹模拟（用 wreq 默认行为，用于调试）
     pub fn no_emulation(mut self) -> Self {
         self.config.emulation = None;
-        self
-    }
-
-    /// 自定义 header 顺序（wreq 6.0.0-rc.29 未暴露 headers_order 方法，配置暂不生效）
-    pub fn header_order(mut self, order: Vec<HeaderName>) -> Self {
-        self.config.header_order = Some(order);
         self
     }
 
@@ -153,8 +146,6 @@ impl ClientBuilder {
             let resolver = crate::dns::DoHResolver::new(doh)?;
             builder = builder.dns_resolver(resolver);
         }
-        // 注：wreq 6.0.0-rc.29 ClientBuilder 未暴露 headers_order 方法，
-        // header_order 字段暂不应用，保留供未来版本支持后启用
 
         let http_client = builder.build().map_err(|e| {
             WispError::Network(NetworkError::Http(format!("client build error: {e}")))

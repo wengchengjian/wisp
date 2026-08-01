@@ -57,3 +57,15 @@ fn engine_builder_accepts_existing_fetch_client() {
         .unwrap();
     assert!(Arc::ptr_eq(&engine.fetch_client, &client));
 }
+
+#[test]
+fn engine_builder_rejects_zero_max_concurrent() {
+    let err = match Engine::infra().max_concurrent(0).build() {
+        Ok(_) => panic!("max_concurrent=0 应构建失败"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("max_concurrent"),
+        "错误应说明 max_concurrent: {err}"
+    );
+}
