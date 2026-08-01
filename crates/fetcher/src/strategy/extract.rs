@@ -8,7 +8,6 @@ use wisp_core::{Request, Response};
 ///
 /// ARCH: 从 FetchClient::extract_browser_response 提取为公共 helper，
 /// 供 DynamicStrategy / StealthStrategy 复用。
-#[allow(dead_code)] // PR2 后续 task 将由 FetchClient 接入
 pub(crate) async fn extract_browser_response(
     page: &Page,
     req: &Request,

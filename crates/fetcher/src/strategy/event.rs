@@ -45,7 +45,6 @@ fn response_status_from_event(event: &CdpEvent) -> Result<u16> {
 ///
 /// 特殊处理：若先收到 `Network.loadingFailed` (type=Document)，说明导航请求失败
 ///（如代理连接失败、DNS 解析失败），立即返回错误，不空等 5s 超时。
-#[allow(dead_code)] // PR2 后续 task 将由 FetchClient 接入
 pub(crate) async fn recv_navigation_status(
     rx: &mut tokio::sync::broadcast::Receiver<CdpEvent>,
     sid: &str,

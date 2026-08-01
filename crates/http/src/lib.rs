@@ -7,14 +7,12 @@ mod builder;
 mod client;
 mod config;
 mod dns;
-pub mod ua;
 
 pub use block::DomainBlocker;
 pub use builder::ClientBuilder;
 pub use client::Client;
 pub use config::Config;
 pub use dns::DoHResolver;
-pub use ua::UaRotator;
 
 #[cfg(test)]
 mod tests {
