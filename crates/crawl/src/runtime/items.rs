@@ -1,8 +1,8 @@
 //! Items 集合与 JSONL 流式写入器。
 
-use std::path::Path;
 use serde_json::Value;
-use wisp_core::error::{WispError, Result};
+use std::path::Path;
+use wisp_core::error::{Result, WispError};
 
 /// 爬取结果集合
 pub struct Items {
@@ -11,13 +11,21 @@ pub struct Items {
 
 impl Items {
     /// 创建 Items 集合。
-    pub fn new(items: Vec<Value>) -> Self { Self { items } }
+    pub fn new(items: Vec<Value>) -> Self {
+        Self { items }
+    }
     /// Item 数量。
-    pub fn len(&self) -> usize { self.items.len() }
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
     /// 是否为空。
-    pub fn is_empty(&self) -> bool { self.items.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
     /// 返回迭代器。
-    pub fn iter(&self) -> impl Iterator<Item = &Value> { self.items.iter() }
+    pub fn iter(&self) -> impl Iterator<Item = &Value> {
+        self.items.iter()
+    }
 
     /// 导出为 JSON 字符串（pretty）
     pub fn to_json(&self) -> Result<String> {
@@ -29,8 +37,9 @@ impl Items {
     pub fn to_jsonl(&self) -> Result<String> {
         let mut out = String::new();
         for item in &self.items {
-            let line = serde_json::to_string(item)
-                .map_err(|e| WispError::Parse(wisp_core::error::ParseError::Serialize(e.to_string())))?;
+            let line = serde_json::to_string(item).map_err(|e| {
+                WispError::Parse(wisp_core::error::ParseError::Serialize(e.to_string()))
+            })?;
             out.push_str(&line);
             out.push('\n');
         }
@@ -76,14 +85,17 @@ pub struct JsonlWriter {
 impl JsonlWriter {
     /// 创建 JSONL 写入器。
     pub fn new(path: &Path) -> Result<Self> {
-        Ok(Self { file: std::fs::File::create(path)? })
+        Ok(Self {
+            file: std::fs::File::create(path)?,
+        })
     }
 
     /// 写入单个 item。
     pub fn write(&mut self, item: &Value) -> Result<()> {
         use std::io::Write;
-        let line = serde_json::to_string(item)
-            .map_err(|e| WispError::Parse(wisp_core::error::ParseError::Serialize(e.to_string())))?;
+        let line = serde_json::to_string(item).map_err(|e| {
+            WispError::Parse(wisp_core::error::ParseError::Serialize(e.to_string()))
+        })?;
         writeln!(self.file, "{}", line)?;
         Ok(())
     }

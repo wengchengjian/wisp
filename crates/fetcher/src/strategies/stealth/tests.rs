@@ -1,0 +1,52 @@
+use super::*;
+
+#[test]
+fn test_from_config_default() {
+    let config = FetchClientConfig::default();
+    let cf_jar = Arc::new(CfCookieJar::new(&config.cf_data_dir, config.cf_cookie_ttl));
+    let strategy = StealthStrategy::from_config(&config, cf_jar);
+    assert_eq!(strategy.challenge_timeout, config.challenge_timeout);
+    assert_eq!(strategy.human_mode, config.human_mode);
+    assert_eq!(strategy.wait_for, config.wait_for);
+    assert_eq!(strategy.extra_wait_ms, config.extra_wait_ms);
+}
+
+#[test]
+fn test_from_config_custom() {
+    let config = FetchClientConfig {
+        human_mode: false,
+        challenge_timeout: Duration::from_secs(60),
+        wait_for: Some(".loaded".to_string()),
+        extra_wait_ms: 2000,
+        ..Default::default()
+    };
+    let cf_jar = Arc::new(CfCookieJar::new(&config.cf_data_dir, config.cf_cookie_ttl));
+    let strategy = StealthStrategy::from_config(&config, cf_jar);
+    assert!(!strategy.human_mode);
+    assert_eq!(strategy.challenge_timeout, Duration::from_secs(60));
+    assert_eq!(strategy.wait_for.as_deref(), Some(".loaded"));
+    assert_eq!(strategy.extra_wait_ms, 2000);
+}
+
+/// 集成测试：CF 挑战解决 + cookie 持久化。
+/// 运行方式：cargo test --lib fetcher::strategies::stealth -- --ignored
+#[tokio::test]
+#[ignore = "需要 CF 保护的站点环境"]
+async fn test_stealth_strategy_solves_cf() {
+    use wisp_browser::BrowserPool;
+    use wisp_core::config::LaunchOptions;
+    use wisp_core::Request;
+
+    let config = FetchClientConfig::default();
+    let cf_jar = Arc::new(CfCookieJar::new(&config.cf_data_dir, config.cf_cookie_ttl));
+    let strategy = StealthStrategy::from_config(&config, cf_jar);
+
+    let pool = BrowserPool::new(1, LaunchOptions::default());
+    let mut handle = pool.acquire().await.expect("acquire page");
+    let page = handle.page_mut();
+
+    // 替换为实际的 CF 保护站点
+    let req = Request::get("https://example.com/");
+    let resp = strategy.fetch(page, &req).await.expect("fetch 应成功");
+    assert_eq!(resp.status, 200);
+}

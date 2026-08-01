@@ -5,9 +5,7 @@ edition = "2021"
 
 [dependencies]
 wisp-core = { path = "../core" }
-wisp-storage = { path = "../storage" }
 woven-html = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
-chrono = { version = "0.4", features = ["serde"] }

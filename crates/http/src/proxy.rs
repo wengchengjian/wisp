@@ -23,7 +23,12 @@ impl fmt::Debug for ParsedProxy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // 脱敏：URL 和 password 可能包含凭据，不直接输出
         let masked_url = if self.username.is_some() {
-            format!("{}://***@{}:{}", self.url.split("://").next().unwrap_or("http"), self.host, self.port)
+            format!(
+                "{}://***@{}:{}",
+                self.url.split("://").next().unwrap_or("http"),
+                self.host,
+                self.port
+            )
         } else {
             self.url.clone()
         };
@@ -72,7 +77,10 @@ impl ParsedProxy {
 
 /// Convert a list of proxy strings to ParsedProxy list.
 pub fn parse_proxies(proxies: &[String]) -> Vec<ParsedProxy> {
-    proxies.iter().filter_map(|p| ParsedProxy::parse(p)).collect()
+    proxies
+        .iter()
+        .filter_map(|p| ParsedProxy::parse(p))
+        .collect()
 }
 
 #[cfg(test)]

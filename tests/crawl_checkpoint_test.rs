@@ -1,11 +1,11 @@
 //! Verify checkpoint save/load round-trip.
 
-use wisp::crawl::{CrawlState, Request, CrawlStats};
-use wisp::storage::{Store, MemoryStore};
 use std::collections::HashSet;
+use wisp::crawl::{CrawlState, CrawlStats, Request};
+use wisp::storage::MemoryStore;
 
-#[test]
-fn test_checkpoint_save_load_roundtrip() {
+#[tokio::test]
+async fn test_checkpoint_save_load_roundtrip() {
     let store = MemoryStore::default();
 
     let stats = CrawlStats {
@@ -19,9 +19,14 @@ fn test_checkpoint_save_load_roundtrip() {
     let state = CrawlState::from_stats("test-spider".to_string(), &stats, pending);
 
     let blob = bincode::serialize(&state).unwrap();
-    wisp::storage::save_checkpoint(&store, "test-spider", &blob).unwrap();
+    wisp::storage::save_checkpoint(&store, "test-spider", &blob)
+        .await
+        .unwrap();
 
-    let loaded = wisp::storage::load_checkpoint(&store, "test-spider").unwrap().expect("should be saved");
+    let loaded = wisp::storage::load_checkpoint(&store, "test-spider")
+        .await
+        .unwrap()
+        .expect("should be saved");
     let restored: CrawlState = bincode::deserialize(&loaded).unwrap();
 
     assert_eq!(restored.spider_name, "test-spider");
@@ -35,25 +40,41 @@ fn test_checkpoint_save_load_roundtrip() {
     // 验证 to_stats 往返
     let restored_stats = restored.to_stats();
     assert_eq!(restored_stats.pages_crawled, 42);
-    assert_eq!(restored_stats.duration, std::time::Duration::from_millis(5678));
+    assert_eq!(
+        restored_stats.duration,
+        std::time::Duration::from_millis(5678)
+    );
 }
 
-#[test]
-fn test_checkpoint_delete() {
+#[tokio::test]
+async fn test_checkpoint_delete() {
     let store = MemoryStore::default();
     let state = CrawlState::new("s2".to_string());
     let blob = bincode::serialize(&state).unwrap();
-    wisp::storage::save_checkpoint(&store, "s2", &blob).unwrap();
-    assert!(wisp::storage::load_checkpoint(&store, "s2").unwrap().is_some());
+    wisp::storage::save_checkpoint(&store, "s2", &blob)
+        .await
+        .unwrap();
+    assert!(wisp::storage::load_checkpoint(&store, "s2")
+        .await
+        .unwrap()
+        .is_some());
 
-    wisp::storage::delete_checkpoint(&store, "s2").unwrap();
-    assert!(wisp::storage::load_checkpoint(&store, "s2").unwrap().is_none());
+    wisp::storage::delete_checkpoint(&store, "s2")
+        .await
+        .unwrap();
+    assert!(wisp::storage::load_checkpoint(&store, "s2")
+        .await
+        .unwrap()
+        .is_none());
 }
 
-#[test]
-fn test_checkpoint_load_missing_returns_none() {
+#[tokio::test]
+async fn test_checkpoint_load_missing_returns_none() {
     let store = MemoryStore::default();
-    assert!(wisp::storage::load_checkpoint(&store, "nonexistent").unwrap().is_none());
+    assert!(wisp::storage::load_checkpoint(&store, "nonexistent")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -80,15 +101,22 @@ async fn checkpoint_restore_preserves_seen_urls() {
     // 模拟 save_checkpoint 写入：构造含 seen_urls 的 CrawlState
     let mut state = CrawlState::new("test_spider".into());
     state.pending_urls = vec![Request::get("https://example.com/pending")];
-    state.seen_urls = HashSet::from([
-        "https://example.com/already-crawled".to_string(),
-    ]);
+    state.seen_urls = HashSet::from(["https://example.com/already-crawled".to_string()]);
     let blob = bincode::serialize(&state).unwrap();
-    wisp::storage::save_checkpoint(&store, "test_spider", &blob).unwrap();
+    wisp::storage::save_checkpoint(&store, "test_spider", &blob)
+        .await
+        .unwrap();
 
     // 加载并验证 seen_urls 被持久化
-    let loaded = wisp::storage::load_checkpoint(&store, "test_spider").unwrap().unwrap();
+    let loaded = wisp::storage::load_checkpoint(&store, "test_spider")
+        .await
+        .unwrap()
+        .unwrap();
     let restored: CrawlState = bincode::deserialize(&loaded).unwrap();
-    assert!(restored.seen_urls.contains("https://example.com/already-crawled"),
-        "seen_urls 必须被持久化与恢复");
+    assert!(
+        restored
+            .seen_urls
+            .contains("https://example.com/already-crawled"),
+        "seen_urls 必须被持久化与恢复"
+    );
 }

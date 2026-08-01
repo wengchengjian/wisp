@@ -5,10 +5,8 @@
 use wisp::parser::Node;
 use wisp::text::Text;
 
-fn main() {
-    // === 1. Parser: HTML parsing + CSS selectors ===
-    println!("=== Parser Demo ===");
-    let html = r#"
+fn demo_html() -> &'static str {
+    r#"
     <html>
     <body>
         <div class="products">
@@ -32,49 +30,65 @@ fn main() {
             <p>Contact: sales@example.com | Visit https://example.com</p>
         </footer>
     </body>
-    </html>"#;
+    </html>"#
+}
 
+fn print_parser_demo(html: &str) {
     let doc = Node::from_html(html);
-
-    // CSS selectors
     let products = doc.select(".product");
     println!("Found {} products", products.len());
-
     for product in products.iter() {
-        let name = product.select_one(".name").map(|n| n.text()).unwrap_or_default();
-        let price = product.select_one(".price").map(|n| n.text()).unwrap_or_default();
-        let link = product.select_one("a").and_then(|a| a.attr("href")).unwrap_or_default();
+        let name = product
+            .select_one(".name")
+            .map(|n| n.text())
+            .unwrap_or_default();
+        let price = product
+            .select_one(".price")
+            .map(|n| n.text())
+            .unwrap_or_default();
+        let link = product
+            .select_one("a")
+            .and_then(|a| a.attr("href"))
+            .unwrap_or_default();
         println!("  {} - {} ({})", name, price, link);
     }
-
-    // Attribute access
     let first_id = doc.select_one(".product").and_then(|p| p.attr("data-id"));
     println!("First product ID: {:?}", first_id);
-
-    // Selector generation
     if let Some(el) = doc.select_one(".price") {
         println!("Generated selector: {}", el.generate_selector());
     }
+}
 
-    // === 2. Text processing ===
-    println!("\n=== Text Demo ===");
-    let footer_text = doc.select_one("footer p").map(|n| n.text()).unwrap_or_default();
+fn print_text_demo(html: &str) {
+    let doc = Node::from_html(html);
+    let footer_text = doc
+        .select_one("footer p")
+        .map(|n| n.text())
+        .unwrap_or_default();
     let text = Text(&footer_text);
     println!("Emails: {:?}", text.extract_emails());
     println!("URLs: {:?}", text.extract_urls());
     println!("Clean: {}", text.clean());
+}
 
-    // === 3. Fetch (async - shown as reference) ===
-    println!("\n=== Fetch (reference) ===");
+fn print_reference_demo() {
     println!("  let client = Client::builder().timeout(d).build()?;");
     println!("  let resp = client.get(url).await?;");
     println!("  let doc = resp.parse()?;  // Directly get a Node!");
-
-    // === 4. Crawl (async - shown as reference) ===
-    println!("\n=== Crawl (reference) ===");
     println!("  struct MySpider;");
     println!("  impl Spider for MySpider {{ ... }}");
     println!("  let stats = Engine::new(MySpider).run().await?;");
+}
 
+fn main() {
+    println!("=== Parser Demo ===");
+    let html = demo_html();
+    print_parser_demo(html);
+    println!("\n=== Text Demo ===");
+    print_text_demo(html);
+    println!("\n=== Fetch (reference) ===");
+    print_reference_demo();
+    println!("\n=== Crawl (reference) ===");
+    print_reference_demo();
     println!("\n=== Done! ===");
 }

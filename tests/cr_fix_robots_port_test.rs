@@ -5,8 +5,8 @@
 //! （端口 80）获取。本测试用本地 mock server 验证请求实际命中带端口的地址。
 //!
 //! 同时验证：fetch 失败时返回的空规则不被缓存（瞬态网络失败后下次重试）。
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::crawl::runtime::robots::RobotsCache;
@@ -26,7 +26,9 @@ async fn robots_fetched_from_correct_port() {
     let counter_c = counter.clone();
     tokio::spawn(async move {
         loop {
-            let Ok((mut sock, _)) = listener.accept().await else { return };
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
             let c = counter_c.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 512];
@@ -63,7 +65,9 @@ async fn fetch_failure_not_cached_so_retry_happens() {
     let counter_c = counter.clone();
     tokio::spawn(async move {
         loop {
-            let Ok((mut sock, _)) = listener.accept().await else { return };
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
             let c = counter_c.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 512];

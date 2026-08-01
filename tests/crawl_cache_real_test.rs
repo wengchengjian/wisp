@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use wisp::crawl::{Engine, Spider, Request, Response};
+use wisp::crawl::{Engine, Request, Response, Spider};
 use wisp::storage::{MemoryStore, Store};
 
 struct CacheSpider;
@@ -43,6 +43,7 @@ async fn test_development_mode_caches_response() {
 
     // 验证缓存已保存
     let cached = wisp::storage::load_response(&*store, "GET", "https://httpbin.org/get")
+        .await
         .unwrap();
     assert!(cached.is_some(), "响应应已缓存");
 

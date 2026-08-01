@@ -3,6 +3,11 @@ name = "wisp-crawl"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+browser = ["wisp-fetcher/browser"]
+stealth = ["browser", "wisp-fetcher/stealth"]
+
 [dependencies]
 wisp-core = { path = "../core" }
 wisp-fetcher = { path = "../fetcher" }

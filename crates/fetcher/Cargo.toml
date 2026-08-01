@@ -5,14 +5,14 @@ edition = "2021"
 
 [features]
 default = []
-browser = []
-stealth = ["browser"]
+browser = ["dep:wisp-browser"]
+stealth = ["browser", "dep:wisp-stealth"]
 
 [dependencies]
 wisp-core = { path = "../core" }
 wisp-http = { path = "../http" }
-wisp-browser = { path = "../browser" }
-wisp-stealth = { path = "../stealth" }
+wisp-browser = { path = "../browser", optional = true }
+wisp-stealth = { path = "../stealth", optional = true }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
