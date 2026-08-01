@@ -1,7 +1,5 @@
 //! Proxy pool management with rotation strategies.
 
-pub mod config_file;
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// How to pick the next proxy from the pool.
