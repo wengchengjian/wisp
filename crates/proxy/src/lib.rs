@@ -78,11 +78,6 @@ impl ProxyPool {
     pub fn is_empty(&self) -> bool {
         self.proxies.is_empty()
     }
-
-    /// Format a proxy URL as a Chrome `--proxy-server` argument value.
-    pub fn to_chrome_arg(proxy: &str) -> String {
-        proxy.to_string()
-    }
 }
 
 #[cfg(test)]

@@ -6,10 +6,6 @@
 //! - BrowserCookieJar: 通过 CDP Network.getCookies/setCookie
 //! - CfCookieJar: moka::Cache + 文件持久化（从 FetchClient 迁出）
 
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use url::Url;
-
 #[cfg(feature = "browser")]
 pub mod browser;
 #[cfg(feature = "stealth")]
@@ -21,6 +17,10 @@ pub use browser::BrowserCookieJar;
 #[cfg(feature = "stealth")]
 pub use cf::{CfCookieJar, CfSession};
 pub use http::HttpCookieJar;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use url::Url;
 
 /// Cookie 表示（统一格式，跨 HTTP/浏览器/CF）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,11 +73,25 @@ pub trait CookieJar: Send + Sync {
                 .join("; "),
         )
     }
+
+    /// 获取与 cookie 会话绑定的 User-Agent（如 CF 会话）。
+    ///
+    /// 默认返回 `None`；`CfCookieJar` 返回签发 cookie 时浏览器使用的实际 UA，
+    /// 供 HTTP 快速路径保持 cookie 与 UA 一致性。
+    async fn ua(&self, url: &Url) -> Option<String> {
+        let _ = url;
+        None
+    }
 }
 
 /// 测试用 MockCookieJar — 内存实现，记录所有操作。
 pub struct MockCookieJar {
     cookies: parking_lot::Mutex<Vec<Cookie>>,
+}
+
+/// 域名匹配：host 必须等于 domain 或以 `.domain` 结尾，避免后缀撞名。
+fn domain_matches(host: &str, domain: &str) -> bool {
+    host == domain || host.ends_with(&format!(".{domain}"))
 }
 
 impl MockCookieJar {
@@ -105,8 +119,8 @@ impl CookieJar for MockCookieJar {
             .lock()
             .iter()
             .filter(|c| {
-                // 简化匹配：domain 后缀匹配 + path 前缀匹配
-                host.ends_with(&c.domain) && path.starts_with(&c.path)
+                // 简化匹配：域名边界匹配 + path 前缀匹配
+                domain_matches(host, &c.domain) && path.starts_with(&c.path)
             })
             .cloned()
             .collect()
@@ -124,110 +138,9 @@ impl CookieJar for MockCookieJar {
     async fn clear(&self, url: &Url) {
         let host = url.host_str().unwrap_or("");
         let mut guard = self.cookies.lock();
-        guard.retain(|c| !host.ends_with(&c.domain));
+        guard.retain(|c| !domain_matches(host, &c.domain));
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use url::Url;
-
-    fn make_url(s: &str) -> Url {
-        Url::parse(s).expect("合法 URL")
-    }
-
-    fn make_cookie(name: &str, value: &str, domain: &str) -> Cookie {
-        Cookie {
-            name: name.into(),
-            value: value.into(),
-            domain: domain.into(),
-            path: "/".into(),
-            secure: false,
-            http_only: false,
-            same_site: Some("Lax".into()),
-            expires: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn mock_set_and_get_cookie() {
-        let jar = MockCookieJar::new();
-        let url = make_url("https://example.com/path");
-        jar.set(make_cookie("session", "abc123", "example.com"))
-            .await;
-
-        let cookies = jar.get(&url).await;
-        assert_eq!(cookies.len(), 1);
-        assert_eq!(cookies[0].name, "session");
-        assert_eq!(cookies[0].value, "abc123");
-    }
-
-    #[tokio::test]
-    async fn mock_set_replaces_same_name() {
-        let jar = MockCookieJar::new();
-        jar.set(make_cookie("session", "v1", "example.com")).await;
-        jar.set(make_cookie("session", "v2", "example.com")).await;
-
-        let url = make_url("https://example.com/");
-        let cookies = jar.get(&url).await;
-        assert_eq!(cookies.len(), 1, "同名 cookie 应被替换");
-        assert_eq!(cookies[0].value, "v2");
-    }
-
-    #[tokio::test]
-    async fn mock_clear_removes_matching_domain() {
-        let jar = MockCookieJar::new();
-        jar.set(make_cookie("a", "1", "example.com")).await;
-        jar.set(make_cookie("b", "2", "other.com")).await;
-
-        let url = make_url("https://example.com/");
-        jar.clear(&url).await;
-
-        let cookies = jar.get(&url).await;
-        assert!(cookies.is_empty(), "example.com 的 cookie 应被清除");
-    }
-
-    #[tokio::test]
-    async fn mock_header_returns_joined_string() {
-        let jar = MockCookieJar::new();
-        jar.set(make_cookie("a", "1", "example.com")).await;
-        jar.set(make_cookie("b", "2", "example.com")).await;
-
-        let url = make_url("https://example.com/");
-        let header = jar.header(&url).await;
-        assert!(header.is_some());
-        let header = header.expect("非空");
-        assert!(header.contains("a=1"));
-        assert!(header.contains("b=2"));
-        assert!(header.contains("; "));
-    }
-
-    #[tokio::test]
-    async fn mock_header_none_when_empty() {
-        let jar = MockCookieJar::new();
-        let url = make_url("https://example.com/");
-        let header = jar.header(&url).await;
-        assert!(header.is_none());
-    }
-
-    #[tokio::test]
-    async fn mock_domain_filter_excludes_other_domains() {
-        let jar = MockCookieJar::new();
-        jar.set(make_cookie("a", "1", "example.com")).await;
-        jar.set(make_cookie("b", "2", "other.com")).await;
-
-        let url = make_url("https://example.com/");
-        let cookies = jar.get(&url).await;
-        assert_eq!(cookies.len(), 1);
-        assert_eq!(cookies[0].name, "a");
-    }
-
-    #[test]
-    fn cookie_serialization_roundtrip() {
-        let c = make_cookie("test", "val", "example.com");
-        let json = serde_json::to_string(&c).expect("序列化");
-        let deserialized: Cookie = serde_json::from_str(&json).expect("反序列化");
-        assert_eq!(c, deserialized);
-    }
-}
+mod tests;

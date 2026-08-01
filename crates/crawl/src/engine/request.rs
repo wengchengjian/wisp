@@ -117,15 +117,6 @@ async fn emit_fetch_failure(ctx: &EngineContext, req: &Request, e: &wisp_core::e
         })
         .await;
 }
-///
-/// 返回 `Some(resp)` 表示请求阶段产出响应，需由调用方交给 `process_response` 处理；
-/// 返回 `None` 表示已处理完毕（Skip/Abort/错误已发送事件），无需后续。
-///
-/// Stages:
-/// 1. 控制状态 + Spider 钩子（基础设施）
-/// 2. 中间件请求链（域名/深度/robots/缓存/延迟/UA/代理 全部在此）
-/// 3. 域名信号量（并发控制）+ fetch
-#[tracing::instrument(level = "trace", skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
 /// 处理请求阶段：控制检查 → 中间件请求链 → 抓取。
 ///
 /// 返回 `Some(resp)` 表示请求阶段产出响应，需由调用方交给 `process_response` 处理；
@@ -136,12 +127,12 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
     let stats = ctx.state.stats_for(&req)?;
 
     if !is_allowed_domain(&spider, &req) {
-            stats.offsite.fetch_add(1, Ordering::SeqCst);
-            return None;
-        }
-        if req.depth > spider.max_depth() {
-            return None;
-        }
+        stats.offsite.fetch_add(1, Ordering::SeqCst);
+        return None;
+    }
+    if req.depth > spider.max_depth() {
+        return None;
+    }
     if !check_control_and_hook(ctx, &req, &spider).await {
         return None;
     }
