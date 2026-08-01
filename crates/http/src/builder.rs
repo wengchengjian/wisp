@@ -7,6 +7,13 @@ use wreq_util::Profile;
 
 use wisp_core::error::{NetworkError, Result, WispError};
 
+/// 判断代理 URL 是否属于 SOCKS 协议（wreq 需用 `Proxy::http` 而不是 `Proxy::all`）。
+fn is_socks_proxy(proxy_url: &str) -> bool {
+    url::Url::parse(proxy_url)
+        .map(|u| matches!(u.scheme(), "socks4" | "socks4a" | "socks5" | "socks5h"))
+        .unwrap_or(false)
+}
+
 /// Builder for Client.
 pub struct ClientBuilder {
     pub(crate) config: Config,
@@ -129,8 +136,12 @@ impl ClientBuilder {
             builder = builder.user_agent(ua);
         }
         if let Some(ref proxy_url) = self.config.proxy {
-            let proxy = wreq::Proxy::all(proxy_url)
-                .map_err(|e| WispError::Network(NetworkError::Http(format!("proxy error: {e}"))))?;
+            let proxy = if is_socks_proxy(proxy_url) {
+                wreq::Proxy::http(proxy_url)
+            } else {
+                wreq::Proxy::all(proxy_url)
+            }
+            .map_err(|e| WispError::Network(NetworkError::Http(format!("proxy error: {e}"))))?;
             builder = builder.proxy(proxy);
         }
         // 应用 TLS 指纹模拟（wreq 文档说明会覆盖现有 TLS/HTTP2 配置）
@@ -153,5 +164,20 @@ impl ClientBuilder {
             http: http_client,
             config: self.config,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn socks_scheme_detection() {
+        assert!(is_socks_proxy("socks5://127.0.0.1:1080"));
+        assert!(is_socks_proxy("socks4://127.0.0.1:1080"));
+        assert!(is_socks_proxy("socks4a://127.0.0.1:1080"));
+        assert!(is_socks_proxy("socks5h://127.0.0.1:1080"));
+        assert!(!is_socks_proxy("http://127.0.0.1:8080"));
+        assert!(!is_socks_proxy("not-a-url"));
     }
 }

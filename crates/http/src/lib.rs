@@ -7,7 +7,6 @@ mod builder;
 mod client;
 mod config;
 mod dns;
-pub mod proxy;
 pub mod ua;
 
 pub use block::DomainBlocker;
@@ -105,5 +104,17 @@ mod tests {
         let client = Client::builder().no_emulation().build().unwrap();
         let resp = client.get(&format!("{}/item", base), &[]).await.unwrap();
         assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn socks5_proxy_builds() {
+        let client = Client::builder().proxy("socks5://127.0.0.1:1080").build();
+        assert!(client.is_ok(), "socks5 应可构建: {:?}", client.err());
+    }
+
+    #[test]
+    fn socks4_proxy_builds() {
+        let client = Client::builder().proxy("socks4://127.0.0.1:1080").build();
+        assert!(client.is_ok(), "socks4 应可构建: {:?}", client.err());
     }
 }
