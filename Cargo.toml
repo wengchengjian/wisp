@@ -20,7 +20,7 @@ stealth = ["browser", "wisp-fetcher/stealth", "wisp-crawl/stealth", "dep:wisp-st
 # MCP 服务：启用 mcp 模块
 mcp = ["dep:wisp-mcp"]
 # 启用 SQLite 存储后端（默认禁用，使用 FileStore）
-sqlite = ["wisp-storage/sqlite"]
+sqlite = ["wisp-storage/sqlite", "wisp-mcp?/sqlite"]
 
 [dependencies]
 wisp-core = { path = "crates/core" }
