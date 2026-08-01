@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use wisp_core::error::{WispError, Result};
+use wisp_core::error::{Result, WispError};
 use wisp_core::utils::{status_text, url_to_filename};
 
 /// Output format enumeration.
@@ -24,15 +24,26 @@ pub enum OutputFormat {
 /// Convert HTML to Markdown using htmd.
 pub fn html_to_markdown(html: &str) -> Result<String> {
     let converter = htmd::HtmlToMarkdown::new();
-    converter.convert(html)
-        .map_err(|e| WispError::Parse(wisp_core::error::ParseError::Html(format!("html2markdown: {e}"))))
+    converter.convert(html).map_err(|e| {
+        WispError::Parse(wisp_core::error::ParseError::Html(format!(
+            "html2markdown: {e}"
+        )))
+    })
 }
 
 /// Build a WARC/1.1 response record.
-pub fn to_warc_record(url: &str, status: u16, headers: &HashMap<String, String>, body: &[u8]) -> String {
+pub fn to_warc_record(
+    url: &str,
+    status: u16,
+    headers: &HashMap<String, String>,
+    body: &[u8],
+) -> Vec<u8> {
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-    let http_headers: String = headers.iter()
-        .map(|(k, v)| format!("{}: {}\r\n", k, v))
+    let clean = |s: &str| s.replace(['\r', '\n'], " ");
+    let sanitized_url = clean(url);
+    let http_headers: String = headers
+        .iter()
+        .map(|(k, v)| format!("{}: {}\r\n", clean(k), clean(v)))
         .collect();
     let http_block = format!(
         "HTTP/1.1 {} {}\r\n{}\r\n",
@@ -43,24 +54,18 @@ pub fn to_warc_record(url: &str, status: u16, headers: &HashMap<String, String>,
     let http_block_bytes = http_block.as_bytes();
     let content_length = http_block_bytes.len() + body.len();
 
-    format!(
-        "WARC/1.1\r\n\
-         WARC-Type: response\r\n\
-         WARC-Target-URI: {}\r\n\
-         WARC-Date: {}\r\n\
-         Content-Type: application/http; msgtype=response\r\n\
-         Content-Length: {}\r\n\
-         \r\n\
-         {}{}",
-        url,
-        now,
-        content_length,
-        http_block,
-        String::from_utf8_lossy(body),
-    )
+    let mut out = Vec::with_capacity(256 + http_block_bytes.len() + body.len());
+    out.extend_from_slice(
+        format!(
+            "WARC/1.1\r\nWARC-Type: response\r\nWARC-Target-URI: {}\r\nWARC-Date: {}\r\nContent-Type: application/http; msgtype=response\r\nContent-Length: {}\r\n\r\n",
+            sanitized_url, now, content_length
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(http_block_bytes);
+    out.extend_from_slice(body);
+    out
 }
-
-
 
 /// Streaming WARC writer (appends records to a file).
 pub struct WarcWriter {
@@ -70,14 +75,23 @@ pub struct WarcWriter {
 impl WarcWriter {
     /// 创建 WARC 写入器。
     pub fn new(path: &Path) -> Result<Self> {
-        Ok(Self { file: std::fs::File::create(path)? })
+        Ok(Self {
+            file: std::fs::File::create(path)?,
+        })
     }
 
     /// 写入响应记录。
-    pub fn write_response(&mut self, url: &str, status: u16, headers: &HashMap<String, String>, body: &[u8]) -> Result<()> {
+    pub fn write_response(
+        &mut self,
+        url: &str,
+        status: u16,
+        headers: &HashMap<String, String>,
+        body: &[u8],
+    ) -> Result<()> {
         use std::io::Write;
         let record = to_warc_record(url, status, headers, body);
-        writeln!(self.file, "{}\r\n", record)?;
+        self.file.write_all(&record)?;
+        self.file.write_all(b"\r\n\r\n")?;
         Ok(())
     }
 
@@ -99,7 +113,10 @@ impl MarkdownWriter {
     /// 创建 Markdown 写入器。
     pub fn new(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
-        Ok(Self { dir: dir.to_path_buf(), counter: 0 })
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            counter: 0,
+        })
     }
 
     /// Convert HTML to Markdown and write to a file. Returns the output path.
@@ -113,8 +130,6 @@ impl MarkdownWriter {
         Ok(path)
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -132,10 +147,29 @@ mod tests {
     fn test_warc_record_format() {
         let headers = HashMap::from([("Content-Type".to_string(), "text/html".to_string())]);
         let record = to_warc_record("https://example.com", 200, &headers, b"<html>hi</html>");
+        let record = String::from_utf8(record).expect("ASCII record");
         assert!(record.starts_with("WARC/1.1\r\n"));
         assert!(record.contains("WARC-Target-URI: https://example.com"));
         assert!(record.contains("HTTP/1.1 200 OK"));
         assert!(record.contains("<html>hi</html>"));
+    }
+
+    #[test]
+    fn warc_record_preserves_binary_body() {
+        let body = [0u8, 255, 13, 10];
+        let record = to_warc_record("https://example.com", 200, &HashMap::new(), &body);
+        assert_eq!(&record[record.len() - body.len()..], &body);
+    }
+
+    #[test]
+    fn warc_record_sanitizes_crlf_in_headers() {
+        let headers = HashMap::from([(
+            "X-Bad".to_string(),
+            "a\r\nInjected: yes".to_string(),
+        )]);
+        let record = to_warc_record("https://example.com", 200, &headers, b"ok");
+        let text = String::from_utf8_lossy(&record);
+        assert!(!text.contains("\r\nInjected"), "header 注入必须被清洗");
     }
 
     #[test]
@@ -150,7 +184,9 @@ mod tests {
         let dir = std::env::temp_dir().join("wisp_test_md_output");
         let _ = std::fs::remove_dir_all(&dir);
         let mut writer = MarkdownWriter::new(&dir).unwrap();
-        let path = writer.write_page("https://example.com/test", "<h1>Hi</h1><p>Content</p>").unwrap();
+        let path = writer
+            .write_page("https://example.com/test", "<h1>Hi</h1><p>Content</p>")
+            .unwrap();
         assert!(path.exists());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("Hi"));
