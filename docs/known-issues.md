@@ -42,6 +42,12 @@
   offsite 统计真实计数；DoH 接入 wreq resolver；MCP 工具补 SSRF 校验；
   多 Spider checkpoint 恢复去重；sanitize_url/WARC/FileStore 路径安全修复；
   清理同名模块嵌套与未接线配置模块。
+- 半成品与冗余修复已完成：MCP stealth_fetch 复用共享 FetchClient/StealthStrategy；
+  crawl_site 真实跟随链接；adaptive_scrape db_path 生效；MCP --db 无 sqlite 时明确降级；
+  DomainBlocker 接入 HTTP/浏览器；socks4/socks5 真实分流；浏览器代理认证显式拒绝；
+  移除无效 header_order；max_concurrent(0) 构建报错；FetchClient Drop 优雅关闭浏览器池；
+  from_client 自动构造 strategy；checkpoint 统计全字段恢复；auto_rules/cf_domain_locks 有界；
+  清理 UaRotator/from_stats/user_data_path/过时标注。
 - 性能遗留处理：`blocked_reason` 改为 64KB 头部窗口 + ASCII case-insensitive 字节匹配（零分配）；
   header 转换预分配容量；`Page::content_text` 减少逐行分支；wreq 层完成调研并记录
 
