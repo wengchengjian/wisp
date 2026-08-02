@@ -17,12 +17,12 @@ use crate::error::{McpError, Result, WispError};
 ///
 /// # 示例
 ///
-/// ```ignore
-/// use crate::utils::ssrf::validate_url;
+/// ```
+/// use wisp_core::utils::ssrf::validate_url;
 ///
-/// validate_url("https://example.com")?;       // OK
-/// validate_url("http://127.0.0.1/")?;          // Err（环回）
-/// validate_url("ftp://example.com")?;          // Err（scheme 非法）
+/// assert!(validate_url("https://example.com").is_ok());
+/// assert!(validate_url("http://127.0.0.1/").is_err()); // Err（环回）
+/// assert!(validate_url("ftp://example.com").is_err()); // Err（scheme 非法）
 /// ```
 fn parse_safe_url(url: &str) -> Result<url::Url> {
     url::Url::parse(url.trim())

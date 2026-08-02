@@ -160,5 +160,9 @@ mod tests {
         let resp = strategy.fetch(page, &req).await.expect("fetch 应成功");
         assert_eq!(resp.status, 200);
         assert!(resp.body.len() > 0);
+        assert!(
+            resp.cookies.is_empty(),
+            "data: URL 不允许读取 cookie，应容错为空"
+        );
     }
 }

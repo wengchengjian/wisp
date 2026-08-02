@@ -16,7 +16,10 @@ impl SpiderBuilder {
     /// 自动解析 sitemap.xml，提取 `<loc>` URL，follow 到指定 label 的 handler。
     ///
     /// # 示例
-    /// ```ignore
+    /// ```
+    /// use wisp_crawl::SpiderBuilder;
+    /// use wisp_parser::ResponseExt;
+    ///
     /// let spider = SpiderBuilder::sitemap("my_spider", vec!["https://x.com/sitemap.xml".into()], "content")
     ///     .on("content", |resp| async move {
     ///         (vec![serde_json::json!({"title": resp.css("h1").text()})], vec![])

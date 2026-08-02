@@ -19,7 +19,9 @@ pub(crate) async fn extract_browser_response(
     let title = page.evaluate_as_string("document.title").await?;
     let final_url = page.evaluate_as_string("window.location.href").await?;
 
-    let cookies_raw = page.evaluate_as_string("document.cookie").await?;
+    let cookies_raw = page
+        .evaluate_as_string("(() => { try { return document.cookie; } catch { return ''; } })()")
+        .await?;
     let cookies: Vec<String> = cookies_raw
         .split(';')
         .map(|c| c.trim().to_string())

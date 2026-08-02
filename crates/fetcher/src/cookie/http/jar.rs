@@ -23,11 +23,17 @@ impl HttpCookieJar {
     /// 暴露内部 jar 供 wreq::Client::builder().cookie_provider() 使用。
     ///
     /// 用法：
-    /// ```ignore
+    /// ```
+    /// use std::sync::Arc;
+    /// use wisp_fetcher::cookie::HttpCookieJar;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let http_jar = Arc::new(HttpCookieJar::new());
     /// let client = wreq::Client::builder()
     ///     .cookie_provider(http_jar.jar())
     ///     .build()?;
+    /// # Ok(())
+    /// # }
     /// ```
     #[must_use]
     pub fn jar(&self) -> Arc<wreq::cookie::Jar> {
