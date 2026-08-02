@@ -14,11 +14,11 @@ impl<'a, T: PartialEq + std::hash::Hash + Eq> SequenceMatcher<'a, T> {
         let mut b2j: std::collections::HashMap<&'a T, Vec<usize>> =
             std::collections::HashMap::new();
         for (i, elt) in b.iter().enumerate() {
-            if let Some(count) = fullbcount.get(elt) {
-                // autojunk threshold: > len(b)/100 + 3
-                if *count <= b.len() / 100 + 3 {
-                    b2j.entry(elt).or_default().push(i);
-                }
+            // autojunk threshold: > len(b)/100 + 3
+            if let Some(count) = fullbcount.get(elt)
+                && *count <= b.len() / 100 + 3
+            {
+                b2j.entry(elt).or_default().push(i);
             }
         }
 

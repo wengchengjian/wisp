@@ -26,11 +26,10 @@ fn robots_section_for_line(line: &str) -> Option<bool> {
 }
 
 fn apply_robots_directive(rules: &mut RobotsRules, line: &str) {
-    if let Some(path) = line.strip_prefix("Disallow:") {
-        let path = path.trim();
-        if !path.is_empty() {
-            rules.disallowed.push(path.to_string());
-        }
+    if let Some(path) = line.strip_prefix("Disallow:").map(str::trim)
+        && !path.is_empty()
+    {
+        rules.disallowed.push(path.to_string());
         return;
     }
     if let Some(val) = line.strip_prefix("Crawl-delay:") {

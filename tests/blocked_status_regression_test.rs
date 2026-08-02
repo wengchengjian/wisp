@@ -14,7 +14,7 @@ use wisp::crawl::{Engine, SpiderBuilder};
 async fn run_retry_spider(base: String) -> wisp::crawl::CrawlStats {
     let spider = SpiderBuilder::new("blocked")
         .start_urls(vec![base])
-        .on("default", |_resp| async move { (vec![], vec![]) })
+        .on("default", async |_resp| (vec![], vec![]))
         .build();
 
     let engine = Engine::infra()

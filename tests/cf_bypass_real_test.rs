@@ -222,7 +222,7 @@ async fn test_engine_with_proxy_pool() {
 
     let spider = SpiderBuilder::new("proxy-crawl")
         .start_urls(vec!["https://quotes.toscrape.com/"])
-        .on("default", |resp| async move {
+        .on("default", async |resp| {
             let doc = resp.parse();
             let items: Vec<serde_json::Value> = doc
                 .select(".quote")

@@ -8,7 +8,7 @@ fn test_sitemap_builder_creates_spider() {
         vec!["https://example.com/sitemap.xml".into()],
         "content",
     )
-    .on("content", |_resp| async move {
+    .on("content", async |_resp| {
         (vec![serde_json::json!({"ok": true})], vec![])
     })
     .build();
@@ -23,7 +23,7 @@ async fn test_sitemap_parses_loc_urls() {
         vec!["https://example.com/sitemap.xml".into()],
         "content",
     )
-    .on("content", |_resp| async move { (vec![], vec![]) })
+    .on("content", async |_resp| (vec![], vec![]))
     .build();
 
     let sitemap_xml = r#"<?xml version="1.0" encoding="UTF-8"?>

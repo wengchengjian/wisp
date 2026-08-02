@@ -28,6 +28,9 @@
   8 项真实 Chrome 用例本机手动验证全部通过。
 - workspace 元数据与依赖收敛已完成：新增 `[workspace.package]`，剩余直写依赖收进 `[workspace.dependencies]`，
   各 crate 改为 workspace 继承并统一版本管理。
+- 语法现代化第一轮已完成：`#[allow]` 全部转 `#[expect]`，可安全改写的 `let_chains` 已压平，
+  async closures 用于无捕获/可静态 future 回调；`EventCallback` 支持 `event_listener` 注册 async closure。
+  gen blocks 因 stable 1.97 仍 experimental，本轮暂缓。
 **完成记录（2026-08-01）：**
 
 - async `Store` 重构已完成：`Store` trait 与全部自由函数 async 化，SQLite/FileStore 经
@@ -186,17 +189,13 @@
 - cargo-deny 已接 CI。
 
 ### P1：高性价比工程化
-1. 稳定语法渐进采用：
-   - `#[expect(...)]` 替换 `#[allow(...)]`，防止 lint 被悄悄放宽（低风险先做）。
-   - `let_chains` 压平 URL、robots、scheduler 的多层条件（低风险重构）。
-   - async closures 只在新 API 或明显样板处试点；`gen blocks` 用于 follow links / crawl events 流式产出试点；不批量改现有 trait object API。
-2. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
+1. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
 
 ### P2：按风险与 ROI 推进
-3. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
-4. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
-5. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
-6. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
+2. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
+3. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
+4. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
+5. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
 
 ### 明确不采纳
 - cargo-semver-checks / cargo-public-api：wisp 仍处快速 API 变动阶段，暂不做。

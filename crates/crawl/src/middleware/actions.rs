@@ -10,7 +10,7 @@ use crate::{Request, Response};
 /// `Refetch` 属于响应阶段动作，在请求阶段返回会破坏控制流，因此由类型排除。
 #[derive(Debug, Clone)]
 // `Respond(Response)` 是公开中间件动作，装箱会破坏 API 且缓存命中路径不需要优化枚举尺寸。
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub enum RequestMwAction {
     /// 继续传递给下一个中间件
     Continue,

@@ -242,23 +242,25 @@ impl FetchClient {
         })?;
         let mut handle = pool.acquire().await?;
 
-        if let Some(ref blocker) = self.config.domain_blocker {
-            if blocker.should_block(&req.url) {
-                return Err(WispError::Config(format!(
-                    "domain blocked by DomainBlocker: {}",
-                    wisp_core::utils::sanitize_url(&req.url)
-                )));
-            }
-            let urls = blocker.blocked_domains();
-            if !urls.is_empty() {
-                handle
-                    .page_mut()
-                    .cmd(
-                        "Network.setBlockedURLs",
-                        serde_json::json!({ "urls": urls }),
-                    )
-                    .await?;
-            }
+        if let Some(ref blocker) = self.config.domain_blocker
+            && blocker.should_block(&req.url)
+        {
+            return Err(WispError::Config(format!(
+                "domain blocked by DomainBlocker: {}",
+                wisp_core::utils::sanitize_url(&req.url)
+            )));
+        }
+        if let Some(ref blocker) = self.config.domain_blocker
+            && let urls = blocker.blocked_domains()
+            && !urls.is_empty()
+        {
+            handle
+                .page_mut()
+                .cmd(
+                    "Network.setBlockedURLs",
+                    serde_json::json!({ "urls": urls }),
+                )
+                .await?;
         }
 
         let work = strategy.fetch(handle.page_mut(), req);

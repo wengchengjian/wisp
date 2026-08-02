@@ -30,10 +30,10 @@ async fn test_callback_routes_default_when_no_callback() {
     // callback=None → "default" handler
     let spider = SpiderBuilder::new("route")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |_resp| async move {
+        .on("default", async |_resp| {
             (vec![json!({"stage": "list"})], vec![])
         })
-        .on("detail", |_resp| async move {
+        .on("detail", async |_resp| {
             (vec![json!({"stage": "detail"})], vec![])
         })
         .build();
@@ -50,10 +50,10 @@ async fn test_callback_routes_detail_label() {
     // callback="detail" → detail handler
     let spider = SpiderBuilder::new("route")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |_resp| async move {
+        .on("default", async |_resp| {
             (vec![json!({"stage": "list"})], vec![])
         })
-        .on("detail", |_resp| async move {
+        .on("detail", async |_resp| {
             (vec![json!({"stage": "detail"})], vec![])
         })
         .build();
@@ -72,7 +72,7 @@ async fn test_callback_routes_content_label_extracts_data() {
     // callback="content" → content handler 提取数据
     let spider = SpiderBuilder::new("route")
         .start_urls(vec!["https://example.com/"])
-        .on("content", |resp| async move {
+        .on("content", async |resp| {
             let title = resp.css("h1").text().join("");
             (vec![json!({"stage": "content", "title": title})], vec![])
         })
@@ -93,10 +93,10 @@ async fn test_callback_unknown_label_falls_back_to_default() {
     // callback="unknown" → 无匹配 handler → 回退到 "default"
     let spider = SpiderBuilder::new("route")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |_resp| async move {
+        .on("default", async |_resp| {
             (vec![json!({"fallback": true})], vec![])
         })
-        .on("detail", |_resp| async move {
+        .on("detail", async |_resp| {
             (vec![json!({"fallback": false})], vec![])
         })
         .build();
@@ -115,7 +115,7 @@ async fn test_callback_default_label_explicit_string() {
     // callback="default"（显式字符串）→ 等价于 None，走 default handler
     let spider = SpiderBuilder::new("route")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |_resp| async move {
+        .on("default", async |_resp| {
             (vec![json!({"hit": "default"})], vec![])
         })
         .build();
@@ -130,7 +130,7 @@ async fn test_callback_default_handler_serves_no_callback() {
     // 只注册 "default" handler，无 callback 时走 default handler
     let spider = SpiderBuilder::new("fallback")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |_resp| async move {
+        .on("default", async |_resp| {
             (vec![json!({"via": "default"})], vec![])
         })
         .build();
@@ -145,7 +145,7 @@ async fn test_callback_pipeline_produces_follows() {
     // 验证 default handler 产出带 callback label 的 follow 请求
     let spider = SpiderBuilder::new("pipeline")
         .start_urls(vec!["https://example.com/list"])
-        .on("default", |resp| async move {
+        .on("default", async |resp| {
             // 列表页：follow 到 "detail"
             let follows: Vec<_> = resp
                 .css("a")
@@ -154,7 +154,7 @@ async fn test_callback_pipeline_produces_follows() {
                 .collect();
             (vec![], follows)
         })
-        .on("detail", |_resp| async move {
+        .on("detail", async |_resp| {
             (vec![json!({"stage": "detail"})], vec![])
         })
         .until(MaxPages(100))
@@ -228,9 +228,7 @@ async fn test_callback_empty_handler_returns_empty() {
     // 只注册 on()，无 "default" handler，无 callback 匹配时返回空
     let spider = SpiderBuilder::new("empty")
         .start_urls(vec!["https://example.com/"])
-        .on("only", |_resp| async move {
-            (vec![json!({"hit": "only"})], vec![])
-        })
+        .on("only", async |_resp| (vec![json!({"hit": "only"})], vec![]))
         .build();
 
     // callback=None，无 "default" handler → 返回空

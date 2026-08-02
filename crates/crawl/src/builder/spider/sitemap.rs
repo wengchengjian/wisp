@@ -21,7 +21,7 @@ impl SpiderBuilder {
     /// use wisp_parser::ResponseExt;
     ///
     /// let spider = SpiderBuilder::sitemap("my_spider", vec!["https://x.com/sitemap.xml".into()], "content")
-    ///     .on("content", |resp| async move {
+    ///     .on("content", async |resp| {
     ///         (vec![serde_json::json!({"title": resp.css("h1").text()})], vec![])
     ///     })
     ///     .build();

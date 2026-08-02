@@ -70,7 +70,7 @@ use serde_json::json;
 
 let spider = SpiderBuilder::new("quotes")
     .start_urls(vec!["https://quotes.toscrape.com/"])
-    .on("default", |resp| async move {
+    .on("default", async |resp| {
         let items = resp.css(".quote").iter().map(|q| {
             json!({
                 "text": q.select_one(".text").map(|n| n.text()).unwrap_or_default(),
@@ -108,19 +108,19 @@ use wisp::{SpiderBuilder, parser::ResponseExt};
 
 let spider = SpiderBuilder::new("pipeline")
     .start_urls(vec!["https://example.com/list"])
-    .on("default", |resp| async move {
+    .on("default", async |resp| {
         let follows: Vec<_> = resp.css(".item a").iter()
             .filter_map(|a| resp.follow_with(&a.attr("href").unwrap_or_default(), "detail"))
             .collect();
         (vec![], follows)
     })
-    .on("detail", |resp| async move {
+    .on("detail", async |resp| {
         let follows: Vec<_> = resp.css("article a").iter()
             .filter_map(|a| resp.follow_with(&a.attr("href").unwrap_or_default(), "content"))
             .collect();
         (vec![], follows)
     })
-    .on("content", |resp| async move {
+    .on("content", async |resp| {
         (vec![json!({"title": resp.css("h1").text()})], vec![])
     })
     .build();
@@ -139,7 +139,7 @@ use wisp::parser::ResponseExt;
 
 let home = SpiderBuilder::new("home")
     .start_urls(vec!["https://example.com/list"])
-    .on("default", |resp| async move {
+    .on("default", async |resp| {
         let follows = resp.css(".item a").iter()
             .filter_map(|a| resp.follow_with(&a.attr("href").unwrap_or_default(), "detail"))
             .collect();
@@ -148,7 +148,7 @@ let home = SpiderBuilder::new("home")
     .build();
 
 let detail = SpiderBuilder::new("detail")
-    .on("detail", |resp| async move { (vec![], vec![]) })
+    .on("detail", async |resp| { (vec![], vec![]) })
     .until(MaxPages(10))
     .build();
 
@@ -164,6 +164,16 @@ let engine = Engine::infra()
     .ua_rotation(wisp::crawl::middleware::UaRotationMiddleware::desktop())
     .cookie_challenge(true)
     .pipeline(Arc::new(wisp::crawl::middleware::JsonlWriterPipeline::new("items.jsonl")))
+    .build()?;
+```
+
+## 事件监听
+
+```rust
+let engine = Engine::infra()
+    .event_listener(async |event| {
+        println!("{event:?}");
+    })
     .build()?;
 ```
 

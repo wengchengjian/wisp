@@ -44,6 +44,18 @@ async fn test_event_bus_with_listener() {
 }
 
 #[tokio::test]
+async fn test_event_bus_accepts_async_closure() {
+    let mut bus = EventBus::new();
+    bus.on(async |_event: EngineEvent| {});
+    assert!(bus.has_listeners());
+    bus.emit(EngineEvent::CrawlStarted {
+        spider: "test".into(),
+        start_urls: 1,
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn test_metrics_listener() {
     let metrics = Arc::new(Metrics::new());
     let mut bus = EventBus::new();

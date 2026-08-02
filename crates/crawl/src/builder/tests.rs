@@ -8,7 +8,7 @@ use wisp_parser::ResponseExt;
 fn test_spider_builder_basic() {
     let spider = SpiderBuilder::new("test")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |_resp| async move {
+        .on("default", async |_resp| {
             (vec![json!({ "ok": true })], vec![])
         })
         .build();
@@ -23,7 +23,7 @@ fn test_spider_builder_allowed_domains() {
     let spider = SpiderBuilder::new("test")
         .start_urls(vec!["https://example.com/"])
         .allowed_domains(vec!["example.com"])
-        .on("default", |_| async move { (vec![], vec![]) })
+        .on("default", async |_| (vec![], vec![]))
         .build();
 
     let domains = spider.allowed_domains();
@@ -34,7 +34,7 @@ fn test_spider_builder_allowed_domains() {
 fn test_spider_builder_max_depth() {
     let spider = SpiderBuilder::new("test")
         .max_depth(3)
-        .on("default", |_| async move { (vec![], vec![]) })
+        .on("default", async |_| (vec![], vec![]))
         .build();
     assert_eq!(spider.max_depth(), 3);
 }
@@ -51,7 +51,7 @@ fn test_spider_builder_no_handler_panics() {
 async fn test_closure_spider_default_handler() {
     let spider = SpiderBuilder::new("test")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |resp| async move {
+        .on("default", async |resp| {
             let doc = resp.parse();
             let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
             (vec![json!({ "title": title })], vec![])
@@ -77,7 +77,7 @@ async fn test_closure_spider_default_handler() {
 async fn test_closure_spider_async_handler() {
     let spider = SpiderBuilder::new("async-test")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |resp| async move {
+        .on("default", async |resp| {
             let doc = resp.parse();
             let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
             (vec![json!({ "text": text })], vec![])
@@ -101,7 +101,7 @@ async fn test_closure_spider_async_handler() {
 fn test_closure_spider_custom_is_blocked() {
     let spider = SpiderBuilder::new("test")
         .start_urls(Vec::<String>::new())
-        .on("default", |_| async move { (vec![], vec![]) })
+        .on("default", async |_| (vec![], vec![]))
         .is_blocked(|resp| resp.body.windows(7).any(|w| w == b"blocked"))
         .build();
 
@@ -131,13 +131,13 @@ async fn test_closure_spider_handle_routes_by_callback() {
     // 验证 handle() 根据 callback label 路由分发
     let spider = SpiderBuilder::new("routing")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |_resp| async move {
+        .on("default", async |_resp| {
             (vec![json!({ "handler": "default" })], vec![])
         })
-        .on("detail", |_resp| async move {
+        .on("detail", async |_resp| {
             (vec![json!({ "handler": "detail" })], vec![])
         })
-        .on("content", |resp| async move {
+        .on("content", async |resp| {
             let title = resp.css("h1").text().join("");
             (
                 vec![json!({ "handler": "content", "title": title })],
@@ -201,7 +201,7 @@ async fn test_closure_spider_handle_default_handler() {
     // 无 callback 时，handle() 路由到 "default" handler
     let spider = SpiderBuilder::new("fallback")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |_resp| async move {
+        .on("default", async |_resp| {
             (vec![json!({ "via": "default" })], vec![])
         })
         .build();

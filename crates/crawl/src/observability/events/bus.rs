@@ -1,6 +1,8 @@
 //! 事件总线：管理监听器并分发事件。
 
-use super::{EngineEvent, EventListener};
+use std::sync::Arc;
+
+use super::{EngineEvent, EventCallback, EventListener};
 
 /// 事件总线：管理监听器并分发事件。
 #[derive(Clone)]
@@ -17,8 +19,9 @@ impl EventBus {
     }
 
     /// 注册事件监听器。
-    pub fn on(&mut self, listener: EventListener) {
-        self.listeners.push(listener);
+    pub fn on(&mut self, listener: impl EventCallback + Send + Sync + 'static) {
+        let boxed: EventListener = Arc::new(move |event| listener.call(event));
+        self.listeners.push(boxed);
     }
 
     /// 发射事件（无 listener 时为 no-op）。

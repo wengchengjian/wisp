@@ -13,11 +13,10 @@ pub fn generate_css(node: &Node) -> String {
 
     // Use tag + class
     let tag = attrs.get("tag").map(|s| s.as_str()).unwrap_or("div");
-    if let Some(class) = attrs.get("class") {
-        let first_class = class.split_whitespace().next().unwrap_or("");
-        if !first_class.is_empty() {
-            return format!("{}.{}", tag, first_class);
-        }
+    if let Some(class) = attrs.get("class")
+        && let Some(first_class) = class.split_whitespace().next()
+    {
+        return format!("{}.{}", tag, first_class);
     }
 
     // Fallback: tag with attributes

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use super::Engine;
 use super::config::EngineConfig;
 use crate::middleware::{ItemPipeline, Middleware, UaRotationMiddleware};
-use crate::observability::events::{EventBus, EventListener};
+use crate::observability::events::{EventBus, EventCallback};
 use crate::runtime::autoscale::AutoscaledPool;
 use wisp_fetcher::FetchClient;
 use wisp_storage::Store;

@@ -82,6 +82,15 @@ fn engine_control_handle_and_shutdown_share_runtime_state() {
 }
 
 #[test]
+fn engine_builder_event_listener_accepts_async_closure() {
+    let engine = Engine::infra()
+        .event_listener(async |_event: crate::observability::events::EngineEvent| {})
+        .build()
+        .unwrap();
+    assert_eq!(engine.runtime.event_bus.listener_count(), 1);
+}
+
+#[test]
 fn engine_builder_rejects_zero_max_concurrent() {
     let err = match Engine::infra().max_concurrent(0).build() {
         Ok(_) => panic!("max_concurrent=0 应构建失败"),

@@ -13,7 +13,7 @@ use crate::Page;
 pub struct BrowserHandle {
     pub(super) page: Option<Page>,
     /// 通过 Drop 释放 permit（回退到 Semaphore），无需显式读取。
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(super) permit: OwnedSemaphorePermit,
 }
 

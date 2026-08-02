@@ -160,7 +160,7 @@ impl EngineBuilder {
     }
 
     /// 注册一个引擎事件监听器（等价于 `event_bus` + `bus.on(listener)`）。
-    pub fn event_listener(mut self, listener: EventListener) -> Self {
+    pub fn event_listener(mut self, listener: impl EventCallback + Send + Sync + 'static) -> Self {
         self.event_bus.on(listener);
         self
     }

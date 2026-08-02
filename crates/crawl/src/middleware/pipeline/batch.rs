@@ -19,7 +19,7 @@ type FlushFn = Box<dyn Fn(Vec<Value>) -> Pin<Box<dyn Future<Output = ()> + Send>
 /// ```rust,no_run
 /// use wisp_crawl::middleware::BatchItemPipeline;
 ///
-/// let pipeline = BatchItemPipeline::new(100, |items| async move {
+/// let pipeline = BatchItemPipeline::new(100, async |items| {
 ///     // 批量写入逻辑
 ///     println!("flushing {} items", items.len());
 /// });

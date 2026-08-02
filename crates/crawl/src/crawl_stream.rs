@@ -49,11 +49,9 @@ impl CrawlStream {
     /// 过滤出 item 流。
     pub fn items(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Value>>> {
         use futures::StreamExt;
-        Box::pin(self.inner.filter_map(|e| async move {
-            match e {
-                CrawlEvent::Item(v) => Some(v),
-                _ => None,
-            }
+        Box::pin(self.inner.filter_map(async |e| match e {
+            CrawlEvent::Item(v) => Some(v),
+            _ => None,
         }))
     }
     /// 获取完整事件流。

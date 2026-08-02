@@ -16,9 +16,7 @@ fn test_spider_builder_full_config() {
     let spider = SpiderBuilder::new("full-test")
         .start_urls(vec!["https://a.com/", "https://b.com/"])
         .allowed_domains(vec!["a.com", "b.com"])
-        .on("default", |_resp| async move {
-            (vec![json!({"ok": true})], vec![])
-        })
+        .on("default", async |_resp| (vec![json!({"ok": true})], vec![]))
         .build();
 
     assert_eq!(spider.name(), "full-test");
@@ -29,7 +27,7 @@ fn test_spider_builder_full_config() {
 async fn test_spider_builder_parse_with_follow() {
     let spider = SpiderBuilder::new("follow-test")
         .start_urls(vec!["https://example.com/"])
-        .on("default", |resp| async move {
+        .on("default", async |resp| {
             let doc = resp.parse();
             let items: Vec<Value> = doc
                 .select("h1")
@@ -111,7 +109,7 @@ async fn test_engine_builder_local_server() {
 
     let spider = SpiderBuilder::new("builder-test")
         .start_urls(vec![base_url])
-        .on("default", |resp| async move {
+        .on("default", async |resp| {
             let doc = resp.parse();
             let title = doc.select_one("h1").map(|n| n.text()).unwrap_or_default();
             (vec![json!({"title": title})], vec![])
@@ -174,7 +172,7 @@ async fn test_stream_with_builder() {
 
     let spider = SpiderBuilder::new("stream-builder")
         .start_urls(vec![base_url])
-        .on("default", |resp| async move {
+        .on("default", async |resp| {
             let doc = resp.parse();
             let text = doc.select_one("p").map(|n| n.text()).unwrap_or_default();
             (vec![json!({"text": text})], vec![])

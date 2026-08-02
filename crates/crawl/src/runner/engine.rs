@@ -76,7 +76,7 @@ impl Engine {
         let rx = tokio_stream::wrappers::ReceiverStream::new(rx);
         let s = stream::unfold(
             (driver, rx, false),
-            |(mut driver, mut rx, driver_done)| async move {
+            async |(mut driver, mut rx, driver_done)| {
                 if driver_done {
                     return rx.next().await.map(|e| (e, (driver, rx, true)));
                 }

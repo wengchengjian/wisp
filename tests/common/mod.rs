@@ -1,4 +1,8 @@
 //! Shared helpers for integration tests.
+#![expect(
+    dead_code,
+    reason = "shared test helper may be unused per integration binary"
+)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -35,7 +39,6 @@ async fn spawn_status_server_on(
 }
 
 /// Start a local HTTP server returning one fixed status and body.
-#[allow(dead_code)]
 pub async fn spawn_status_server(
     status: u16,
     reason: &'static str,
@@ -46,21 +49,18 @@ pub async fn spawn_status_server(
 }
 
 /// Start a local HTTP server returning a fixed HTML page with status 200.
-#[allow(dead_code)]
 pub async fn spawn_html_server(html: &'static str) -> String {
     spawn_status_server(200, "OK", html, "text/html; charset=utf-8").await
 }
 
 /// Same as [`spawn_html_server`] but exposes the URL through `localhost` so
 /// MCP SSRF checks can resolve it to the local test listener.
-#[allow(dead_code)]
 pub async fn spawn_localhost_html_server(html: &'static str) -> String {
     spawn_status_server_on("localhost", 200, "OK", html, "text/html; charset=utf-8").await
 }
 
 /// Start a server that returns `first` on the first request and `second` on
 /// later requests, useful for adaptive relocation tests over the same URL.
-#[allow(dead_code)]
 pub async fn spawn_localhost_mutable_html_server(
     first: &'static str,
     second: &'static str,
@@ -94,7 +94,6 @@ pub async fn spawn_localhost_mutable_html_server(
 }
 
 /// Start a server that redirects every request to `location`.
-#[allow(dead_code)]
 pub async fn spawn_redirect_server(location: String) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -121,7 +120,6 @@ pub async fn spawn_redirect_server(location: String) -> String {
 }
 
 /// Start a server that returns a body of the requested size.
-#[allow(dead_code)]
 pub async fn spawn_large_body_server(size: usize) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;

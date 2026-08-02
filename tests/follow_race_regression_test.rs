@@ -51,7 +51,7 @@ async fn engine_should_consume_follow_produced_by_single_start_url() {
     let base = spawn_two_page_server().await;
     let spider = SpiderBuilder::new("follow-race")
         .start_urls(vec![base.clone()])
-        .on("default", |resp| async move {
+        .on("default", async |resp| {
             let doc = resp.parse();
             let follows: Vec<wisp::Request> = doc
                 .select_one(".next a")

@@ -1,5 +1,6 @@
 //! 事件监听器类型与内置实现。
 
+use std::future::Future;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
@@ -8,6 +9,35 @@ use super::{EngineEvent, Metrics};
 
 /// 事件监听器签名。
 pub type EventListener = Arc<dyn Fn(EngineEvent) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// 可注册到 [`EventBus`] 的监听器。
+///
+/// `EventListener` 与 `Fn(EngineEvent) -> Future` 闭包都实现该 trait；
+/// 无捕获的 `async |event| {}` 可以直接传给 `EventBus::on`。
+pub trait EventCallback {
+    /// 处理单个事件。
+    fn call(&self, event: EngineEvent) -> BoxFuture<'static, ()>;
+}
+
+impl<F, Fut> EventCallback for F
+where
+    F: Fn(EngineEvent) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    fn call(&self, event: EngineEvent) -> BoxFuture<'static, ()> {
+        Box::pin(self(event))
+    }
+}
+
+impl<F, Fut> EventCallback for Arc<F>
+where
+    F: Fn(EngineEvent) -> Fut + Send + Sync + ?Sized,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    fn call(&self, event: EngineEvent) -> BoxFuture<'static, ()> {
+        Box::pin(self.as_ref()(event))
+    }
+}
 
 /// 便捷构造：日志监听器（tracing 输出）。
 pub fn logging_listener() -> EventListener {

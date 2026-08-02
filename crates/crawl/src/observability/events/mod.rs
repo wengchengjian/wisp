@@ -24,5 +24,5 @@ mod tests;
 
 pub use bus::EventBus;
 pub use event::EngineEvent;
-pub use listener::{EventListener, logging_listener, metrics_listener};
+pub use listener::{EventCallback, EventListener, logging_listener, metrics_listener};
 pub use metrics::Metrics;
