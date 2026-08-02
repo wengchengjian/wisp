@@ -2,8 +2,10 @@
 name = "wisp-proxy"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91.1"
+license = "Apache-2.0"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-rand = "0.10"
-tracing = "0.1"
+serde = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }

@@ -3,15 +3,16 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
-use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
-use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::TokioResolver;
+use hickory_resolver::config::{ConnectionConfig, NameServerConfig, ResolverConfig};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use wisp_core::error::{NetworkError, Result, WispError};
 use wreq::dns::{Addrs, Name, Resolve, Resolving};
 
 /// 使用 DoH 端点解析域名的 resolver。
 #[derive(Clone)]
 pub struct DoHResolver {
-    inner: Arc<TokioAsyncResolver>,
+    inner: Arc<TokioResolver>,
 }
 
 impl DoHResolver {
@@ -45,9 +46,18 @@ impl DoHResolver {
                 )))
             })?
             .ip();
-        let group = NameServerConfigGroup::from_ips_https(&[ip], port, host, false);
-        let config = ResolverConfig::from_parts(None, Vec::new(), group);
-        let inner = TokioAsyncResolver::tokio(config, ResolverOpts::default());
+        let mut connection = ConnectionConfig::https(
+            Arc::from(host.as_str()),
+            Some(Arc::from(parsed.path().to_string())),
+        );
+        connection.port = port;
+        let name_server = NameServerConfig::new(ip, true, vec![connection]);
+        let config = ResolverConfig::from_parts(None, Vec::new(), vec![name_server]);
+        let inner = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
+            .build()
+            .map_err(|e| {
+                WispError::Network(NetworkError::Http(format!("build DoH resolver: {e}")))
+            })?;
         Ok(Self {
             inner: Arc::new(inner),
         })

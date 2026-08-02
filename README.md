@@ -264,7 +264,7 @@ cargo nextest run --test real_scrape_test --run-ignored all
 
 ## Requirements
 
-- Rust 1.85+ (edition 2024)
+- Rust 1.91.1+ (edition 2024)
 - Chrome/Chromium (for Dynamic/Stealth modes)
 - Network access (for real tests; proxy `127.0.0.1:7897` supported)
 

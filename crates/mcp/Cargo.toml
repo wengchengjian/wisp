@@ -2,6 +2,8 @@
 name = "wisp-mcp"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91.1"
+license = "Apache-2.0"
 
 [features]
 default = ["browser"]
@@ -10,19 +12,19 @@ stealth = ["wisp-fetcher/stealth"]
 sqlite = ["wisp-storage/sqlite"]
 
 [dependencies]
-wisp-core = { path = "../core" }
-wisp-crawl = { path = "../crawl" }
-wisp-fetcher = { path = "../fetcher" }
-wisp-storage = { path = "../storage" }
-wisp-parser = { path = "../parser" }
-wisp-http = { path = "../http" }
-serde_json = "1"
-serde = { version = "1", features = ["derive"] }
-regex = "1"
-url = "2"
-tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
-wreq-util = "=3.0.0-rc.14"
+wisp-core = { workspace = true }
+wisp-crawl = { workspace = true }
+wisp-fetcher = { workspace = true }
+wisp-storage = { workspace = true }
+wisp-parser = { workspace = true }
+wisp-http = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+regex = { workspace = true }
+url = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+wreq-util = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

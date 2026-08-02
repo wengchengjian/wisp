@@ -2,10 +2,41 @@
 members = ["crates/core", "crates/storage", "crates/parser", "crates/proxy", "crates/http", "crates/browser", "crates/stealth", "crates/fetcher", "crates/crawl", "crates/mcp"]
 resolver = "2"
 
+[workspace.dependencies]
+wisp-core = { path = "crates/core", version = "0.1.0" }
+wisp-storage = { path = "crates/storage", version = "0.1.0" }
+wisp-parser = { path = "crates/parser", version = "0.1.0" }
+wisp-proxy = { path = "crates/proxy", version = "0.1.0" }
+wisp-http = { path = "crates/http", version = "0.1.0" }
+wisp-browser = { path = "crates/browser", version = "0.1.0" }
+wisp-stealth = { path = "crates/stealth", version = "0.1.0" }
+wisp-fetcher = { path = "crates/fetcher", version = "0.1.0" }
+wisp-crawl = { path = "crates/crawl", version = "0.1.0" }
+wisp-mcp = { path = "crates/mcp", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+url = "2"
+regex = "1"
+tracing = "0.1"
+rand = "0.10"
+futures = "0.3"
+async-trait = "0.1"
+bincode = "1.3.3"
+moka = { version = "0.12", features = ["future", "sync"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+tempfile = "3"
+dashmap = "6"
+wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
+wreq-util = "=3.0.0-rc.14"
+
 [package]
 name = "wisp"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91.1"
 description = "Lightweight undetected browser automation for Rust - built for scraping"
 license = "Apache-2.0"
 
@@ -23,39 +54,39 @@ mcp = ["dep:wisp-mcp"]
 sqlite = ["wisp-storage/sqlite", "wisp-mcp?/sqlite"]
 
 [dependencies]
-wisp-core = { path = "crates/core" }
-wisp-storage = { path = "crates/storage" }
-wisp-parser = { path = "crates/parser" }
-wisp-proxy = { path = "crates/proxy" }
-wisp-http = { path = "crates/http" }
-wisp-browser = { path = "crates/browser", optional = true }
-wisp-stealth = { path = "crates/stealth", optional = true }
-wisp-fetcher = { path = "crates/fetcher" }
-wisp-crawl = { path = "crates/crawl" }
-wisp-mcp = { path = "crates/mcp", optional = true }
-tokio = { version = "1", features = ["full"] }
-serde_json = "1"
+wisp-core = { workspace = true }
+wisp-storage = { workspace = true }
+wisp-parser = { workspace = true }
+wisp-proxy = { workspace = true }
+wisp-http = { workspace = true }
+wisp-browser = { workspace = true, optional = true }
+wisp-stealth = { workspace = true, optional = true }
+wisp-fetcher = { workspace = true }
+wisp-crawl = { workspace = true }
+wisp-mcp = { workspace = true, optional = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wreq-util = "=3.0.0-rc.14"
+wreq-util = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full", "test-util"] }
+tokio = { workspace = true, features = ["test-util"] }
 criterion = { version = "0.5", features = ["html_reports"] }
-async-trait = "0.1"
-futures = "0.3"
-bincode = "1.3.3"
-moka = { version = "0.12", features = ["future", "sync"] }
-tokio-stream = "0.1"
-parking_lot = "0.12"
-tempfile = "3"
-regex = "1"
-rand = "0.10"
-chrono = { version = "0.4", features = ["serde"] }
-dashmap = "6"
-serde = { version = "1", features = ["derive"] }
-tracing = "0.1"
-wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
+async-trait = { workspace = true }
+futures = { workspace = true }
+bincode = { workspace = true }
+moka = { workspace = true }
+tokio-stream = { workspace = true }
+parking_lot = { workspace = true }
+tempfile = { workspace = true }
+regex = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+wreq = { workspace = true }
 
 [[bench]]
 name = "bench"

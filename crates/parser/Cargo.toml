@@ -2,10 +2,12 @@
 name = "wisp-parser"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91.1"
+license = "Apache-2.0"
 
 [dependencies]
-wisp-core = { path = "../core" }
+wisp-core = { workspace = true }
 woven-html = "0.1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-regex = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }

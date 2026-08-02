@@ -2,13 +2,15 @@
 name = "wisp-core"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91.1"
+license = "Apache-2.0"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = "2"
-url = "2"
-regex = "1"
-tracing = "0.1"
-rand = "0.10"
+url = { workspace = true }
+regex = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
 encoding_rs = "0.8"
