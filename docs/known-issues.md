@@ -23,6 +23,9 @@
 - 真实网络/浏览器测试收口已完成一轮：`cf_bypass_real_test` 10/10、`real_scrape_test` 7/7 通过；
   修复 CF interactive Turnstile 被当作 JS Challenge 空转的问题（按 `_cf_chl_opt.cType` 提前识别），
   并移除 `challenge-platform` 作为挑战页/托管挑战标记的误判。
+- Dynamic/Stealth 浏览器并发与取消测试已完成：新增 `tests/browser_concurrency_cancel_test.rs`，
+  用本地延迟 server 验证 `max_concurrent_pages=2` 上限、Fetcher 取消、Engine abort/shutdown 后池可继续复用；
+  8 项真实 Chrome 用例本机手动验证全部通过。
 **完成记录（2026-08-01）：**
 
 - async `Store` 重构已完成：`Store` trait 与全部自由函数 async 化，SQLite/FileStore 经
@@ -180,22 +183,20 @@
 - 测试增强主体：proptest、insta、nextest 已落地；`cargo nextest run --workspace --all-features` 为默认测试命令。
 - cargo-deny 已接 CI。
 
-### P0：真实网络/浏览器收口剩余
-1. Dynamic/Stealth 并发与取消场景测试：补真实网络/浏览器收口的最后缺口，控制总时长。
 
 ### P1：高性价比工程化
-2. workspace 剩余收敛：增加 `[workspace.package]`，把仍直写版本的依赖收进 `[workspace.dependencies]`；不新增抽象。
-3. 稳定语法渐进采用：
+1. workspace 剩余收敛：增加 `[workspace.package]`，把仍直写版本的依赖收进 `[workspace.dependencies]`；不新增抽象。
+2. 稳定语法渐进采用：
    - `#[expect(...)]` 替换 `#[allow(...)]`，防止 lint 被悄悄放宽（低风险先做）。
    - `let_chains` 压平 URL、robots、scheduler 的多层条件（低风险重构）。
    - async closures 只在新 API 或明显样板处试点；`gen blocks` 用于 follow links / crawl events 流式产出试点；不批量改现有 trait object API。
-4. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
+3. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
 
 ### P2：按风险与 ROI 推进
-5. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
-6. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
-7. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
-8. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
+4. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
+5. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
+6. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
+7. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
 
 ### 明确不采纳
 - cargo-semver-checks / cargo-public-api：wisp 仍处快速 API 变动阶段，暂不做。

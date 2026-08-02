@@ -259,6 +259,9 @@ cargo test --test stop_condition_test --test multi_spider_test --test multi_spid
 
 # Real network/browser tests (requires internet, proxy 127.0.0.1:7897, Chrome)
 cargo nextest run --test cf_bypass_real_test --test real_scrape_test --run-ignored all --no-fail-fast
+
+# Chrome-only concurrency/cancel tests (no network required)
+cargo nextest run --test browser_concurrency_cancel_test --run-ignored all
 ```
 
 ## Requirements
