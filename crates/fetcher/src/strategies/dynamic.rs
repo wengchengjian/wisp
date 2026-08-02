@@ -81,7 +81,7 @@ async fn dynamic_wait_and_extract(
     extra_wait_ms: u64,
     timeout: Duration,
 ) -> Result<Response> {
-    if let Some(ref selector) = wait_for {
+    if let Some(selector) = wait_for {
         page.wait_for_selector(selector, timeout.as_millis() as u64)
             .await?;
     }

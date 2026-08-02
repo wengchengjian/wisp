@@ -5,7 +5,7 @@ resolver = "2"
 [package]
 name = "wisp"
 version = "0.1.0"
-edition = "  "
+edition = "2024"
 description = "Lightweight undetected browser automation for Rust - built for scraping"
 license = "Apache-2.0"
 
