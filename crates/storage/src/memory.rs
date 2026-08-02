@@ -1,8 +1,8 @@
 //! 内存存储后端。单 moka 实例，per-entry TTL 原生支持。
 
 use async_trait::async_trait;
-use moka::sync::Cache as MokaCache;
 use moka::Expiry;
+use moka::sync::Cache as MokaCache;
 use std::time::{Duration, Instant};
 
 use super::Store;

@@ -1,6 +1,6 @@
 //! Page / on_page / on_links API 集成测试。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wisp::crawl::{Page, Spider, SpiderBuilder};
 use wisp::{Request, Response};
 

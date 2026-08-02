@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::Arc;
-use wisp_parser::{Node, DEFAULT_TOLERANCE};
+use wisp_parser::{DEFAULT_TOLERANCE, Node};
 use wisp_storage::{MemoryStore, Store};
 
 fn make_doc() -> Node {

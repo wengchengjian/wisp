@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::{CrawlContext, Middleware, ResponseMwAction};
-use crate::auto::{self, ModeRuleEngine};
 use crate::Response;
+use crate::auto::{self, ModeRuleEngine};
 use wisp_fetcher::FetchMode;
 
 // === 模式升级类 ===

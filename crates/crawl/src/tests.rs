@@ -76,7 +76,8 @@ async fn spawn_html_server(html: &'static str) -> String {
                 let _ = socket.read(&mut buf).await;
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
+                    html.len(),
+                    html
                 );
                 let _ = socket.write_all(resp.as_bytes()).await;
             });

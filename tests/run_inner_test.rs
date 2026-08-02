@@ -12,16 +12,16 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::Value;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use wisp::crawl::events::{metrics_listener, EventBus, Metrics};
+use wisp::Engine;
+use wisp::crawl::events::{EventBus, Metrics, metrics_listener};
 use wisp::crawl::{CrawlEvent, MaxPagesByCallback, Request, Response, Spider, SpiderBuilder};
 use wisp::fetcher::FetchMode;
 use wisp::storage::MemoryStore;
-use wisp::Engine;
 
 fn fast_fetch_config() -> wisp::FetchClientConfig {
     wisp::FetchClientConfig {

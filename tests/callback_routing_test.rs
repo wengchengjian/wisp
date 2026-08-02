@@ -3,7 +3,7 @@
 //! 验证 ClosureSpider 的 `handle()` 方法根据 `resp.request.callback` 字段
 //! 路由到对应 handler 的逻辑。不依赖真实 HTTP 请求，直接构造 Response。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use wisp::crawl::stop::MaxPages;
 use wisp::crawl::{Request, Response, Spider, SpiderBuilder};
@@ -176,12 +176,16 @@ async fn test_callback_pipeline_produces_follows() {
         assert_eq!(f.callback.as_deref(), Some("detail"));
     }
     // 验证 follow 的 URL 正确解析为绝对路径
-    assert!(follows
-        .iter()
-        .any(|f| f.url == "https://example.com/detail/1"));
-    assert!(follows
-        .iter()
-        .any(|f| f.url == "https://example.com/detail/2"));
+    assert!(
+        follows
+            .iter()
+            .any(|f| f.url == "https://example.com/detail/1")
+    );
+    assert!(
+        follows
+            .iter()
+            .any(|f| f.url == "https://example.com/detail/2")
+    );
 
     // 用其中一个 follow 构造响应，验证 detail handler 被调用
     let detail_resp = make_resp(

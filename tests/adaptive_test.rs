@@ -1,11 +1,11 @@
 //! Adaptive relocation tests: capture snapshot, simulate site change, verify relocate finds the right element.
 
 use std::sync::Arc;
-use wisp::crawl::adaptive::{row_to_snapshot, snapshot_to_row};
 use wisp::crawl::AdaptiveTracker;
+use wisp::crawl::adaptive::{row_to_snapshot, snapshot_to_row};
 use wisp::parser::{
-    adaptive::{relocate_with_snapshot, ElementSnapshot, DEFAULT_TOLERANCE},
     Node,
+    adaptive::{DEFAULT_TOLERANCE, ElementSnapshot, relocate_with_snapshot},
 };
 use wisp::storage::{MemoryStore, Store};
 

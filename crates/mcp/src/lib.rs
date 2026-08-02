@@ -7,7 +7,7 @@ pub mod tools;
 mod protocol;
 mod server;
 
-pub use protocol::{Tool, TOOLS};
+pub use protocol::{TOOLS, Tool};
 pub use server::serve;
 
 #[cfg(test)]

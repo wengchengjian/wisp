@@ -3,13 +3,13 @@
 mod restore;
 mod snapshot;
 
-use super::dedup::{fingerprint, DedupStrategy};
+use super::dedup::{DedupStrategy, fingerprint};
 use super::queue::{HeapInner, PrioritizedRequest};
 use crate::Request;
 use dashmap::DashSet;
 use std::collections::{BinaryHeap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use tokio::sync::Mutex;
 
 /// Scheduler：seen 集合（DashSet，无锁）与 heap（独立 Mutex）分离。

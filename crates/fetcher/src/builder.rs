@@ -1,7 +1,7 @@
 //! Fetcher builder — 链式配置一次性请求客户端。
 
-use crate::client::FetchClientConfig;
 use crate::Fetcher;
+use crate::client::FetchClientConfig;
 use std::time::Duration;
 
 use wisp_core::error::Result;

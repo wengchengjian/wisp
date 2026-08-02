@@ -1,7 +1,7 @@
 //! P1-2: Scheduler seen/heap 分离，并发不死锁。
 
-use wisp::crawl::scheduler::{DedupStrategy, Scheduler};
 use wisp::crawl::Request;
+use wisp::crawl::scheduler::{DedupStrategy, Scheduler};
 
 #[tokio::test]
 async fn scheduler_concurrent_push_pop_dedup_correct() {

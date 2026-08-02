@@ -6,9 +6,9 @@
 //! finish before the follow request is consumed.
 
 use std::time::Duration;
+use wisp::FetchMode;
 use wisp::crawl::{Engine, SpiderBuilder};
 use wisp::parser::ResponseExt;
-use wisp::FetchMode;
 
 async fn spawn_two_page_server() -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

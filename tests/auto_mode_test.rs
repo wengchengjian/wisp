@@ -1,8 +1,8 @@
 //! Auto 模式测试：URL 泛化、规则引擎、拦截检测、Dynamic 升级中间件。
 
 use std::collections::HashMap;
-use wisp::crawl::auto::{generalize_url, is_blocked_response, ModeRuleEngine};
 use wisp::FetchMode;
+use wisp::crawl::auto::{ModeRuleEngine, generalize_url, is_blocked_response};
 
 // === URL 泛化测试 ===
 

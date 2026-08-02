@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use serde_json::json;
 use tokio::runtime::Runtime;
 use tracing_subscriber::prelude::*;

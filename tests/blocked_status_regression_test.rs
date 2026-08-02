@@ -8,8 +8,8 @@
 mod common;
 
 use std::time::Duration;
-use wisp::crawl::{Engine, SpiderBuilder};
 use wisp::FetchMode;
+use wisp::crawl::{Engine, SpiderBuilder};
 
 async fn run_retry_spider(base: String) -> wisp::crawl::CrawlStats {
     let spider = SpiderBuilder::new("blocked")

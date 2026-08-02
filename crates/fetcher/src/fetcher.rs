@@ -1,7 +1,7 @@
 //! Fetcher — 根据 FetchMode 委托给 FetchClient 的一次性请求入口。
 
-use crate::client::{FetchClient, FetchClientConfig};
 use crate::FetcherBuilder;
+use crate::client::{FetchClient, FetchClientConfig};
 use std::sync::Arc;
 
 use wisp_core::error::{Result, WispError};

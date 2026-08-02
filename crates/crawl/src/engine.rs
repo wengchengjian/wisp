@@ -13,14 +13,14 @@
 // 动态调整由 autoscale 负责。多域名公平性由用户通过 Request::priority 或 download_delay 管理。
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 use tracing::Instrument;
 
 use super::stats::SpiderStats;
 use super::{
-    auto, middleware, scheduler, CrawlEvent, CrawlState, CrawlStats, Request, Response, Spider,
+    CrawlEvent, CrawlState, CrawlStats, Request, Response, Spider, auto, middleware, scheduler,
 };
 use crate::observability::events::EngineEvent;
 use wisp_core::error::Result;
@@ -37,7 +37,7 @@ pub(crate) mod response;
 
 pub(crate) use checkpoint::{load_spider_checkpoint, persist_spider_checkpoint};
 pub use context::record_status;
-pub(crate) use context::{build_crawl_context_for, snapshot_stats_for, EngineContext, EngineState};
+pub(crate) use context::{EngineContext, EngineState, build_crawl_context_for, snapshot_stats_for};
 pub(crate) use fetch::fetch_dispatch;
 pub use fetch::{fetch_page, fetch_page_inner};
 pub(crate) use guard::InFlightGuard;

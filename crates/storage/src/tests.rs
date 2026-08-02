@@ -108,10 +108,12 @@ async fn response_ttl_expiry() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
-    assert!(load_response(&store, "GET", "https://expired.com")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        load_response(&store, "GET", "https://expired.com")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -188,8 +190,10 @@ async fn namespace_isolation() {
         load_checkpoint(&store, "mykey").await.unwrap().unwrap(),
         b"cp"
     );
-    assert!(load_element(&store, "http://x", "mykey")
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        load_element(&store, "http://x", "mykey")
+            .await
+            .unwrap()
+            .is_some()
+    );
 }

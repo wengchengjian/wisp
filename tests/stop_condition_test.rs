@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use wisp::crawl::{
-    pages_by_callback, FnStopCondition, MaxErrors, MaxItems, MaxPages, MaxPagesByCallback,
-    NeverStop, StopCondition, StopContext, Timeout,
+    FnStopCondition, MaxErrors, MaxItems, MaxPages, MaxPagesByCallback, NeverStop, StopCondition,
+    StopContext, Timeout, pages_by_callback,
 };
 
 fn ctx(pages: usize, items: usize, errors: usize, elapsed_secs: u64) -> StopContext {
@@ -49,13 +49,17 @@ fn test_uses_callback_pages_flag() {
     assert!(!MaxItems(10).uses_callback_pages());
     assert!(MaxPagesByCallback::new("detail", 10).uses_callback_pages());
     assert!(FnStopCondition(|_: &StopContext| true).uses_callback_pages());
-    assert!(MaxPages(10)
-        .and(MaxPagesByCallback::new("detail", 10))
-        .uses_callback_pages());
+    assert!(
+        MaxPages(10)
+            .and(MaxPagesByCallback::new("detail", 10))
+            .uses_callback_pages()
+    );
     assert!(!MaxPages(10).and(MaxItems(5)).uses_callback_pages());
-    assert!(MaxPagesByCallback::new("detail", 10)
-        .not()
-        .uses_callback_pages());
+    assert!(
+        MaxPagesByCallback::new("detail", 10)
+            .not()
+            .uses_callback_pages()
+    );
 }
 
 #[test]

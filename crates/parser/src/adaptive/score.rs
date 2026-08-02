@@ -1,10 +1,10 @@
 //! 元素相似度评分。
 
-use crate::difflib::SequenceMatcher;
 use crate::Node;
+use crate::difflib::SequenceMatcher;
 
-use super::helpers::{ancestor_path_of, node_tag_name, parent_attrs_of, sibling_tags_of};
 use super::ElementSnapshot;
+use super::helpers::{ancestor_path_of, node_tag_name, parent_attrs_of, sibling_tags_of};
 
 /// Default relocation tolerance (0.0 - 1.0). Matches Python Scrapling.
 pub const DEFAULT_TOLERANCE: f64 = 0.5;

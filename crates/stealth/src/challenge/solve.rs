@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use crate::turnstile;
 use crate::TurnstileConfig;
+use crate::turnstile;
 
 use super::{ChallengeSolver, ChallengeType};
 use wisp_browser::page::Page;

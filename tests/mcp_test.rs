@@ -9,11 +9,7 @@ fn wisp_bin() -> Option<PathBuf> {
     // 指向 wisp bin target 的绝对路径（兼容非默认 target 目录）。
     // 若测试未通过 cargo 运行（手动执行二进制），回退到 target/debug/wisp。
     let p = PathBuf::from(env!("CARGO_BIN_EXE_wisp"));
-    if p.exists() {
-        Some(p)
-    } else {
-        None
-    }
+    if p.exists() { Some(p) } else { None }
 }
 
 #[test]

@@ -5,9 +5,9 @@ use std::io::Read;
 
 use async_trait::async_trait;
 
+use super::FileStore;
 use super::path::path_for;
 use super::ttl::{pack_with_ttl, unpack_and_check};
-use super::FileStore;
 use crate::Store;
 use wisp_core::error::{Result, StorageError, WispError};
 
@@ -42,7 +42,7 @@ impl Store for FileStore {
                 Err(e) => {
                     return Err(WispError::Storage(StorageError::General(format!(
                         "open: {e}"
-                    ))))
+                    ))));
                 }
             };
             let mut buf = Vec::new();

@@ -34,8 +34,8 @@ fn test_from_config_custom() {
 #[ignore = "需要 CF 保护的站点环境"]
 async fn test_stealth_strategy_solves_cf() {
     use wisp_browser::BrowserPool;
-    use wisp_core::config::LaunchOptions;
     use wisp_core::Request;
+    use wisp_core::config::LaunchOptions;
 
     let config = FetchClientConfig::default();
     let cookie_jar: Arc<dyn CookieJar> = Arc::new(crate::cookie::MockCookieJar::new());

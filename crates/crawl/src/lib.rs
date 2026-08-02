@@ -36,11 +36,11 @@ pub use engine::{fetch_page, fetch_page_inner, record_status};
 pub use items::{Items, JsonlWriter};
 pub use page::Page;
 pub use runner::{Engine, EngineBuilder, EngineConfig};
-pub use spider::{RequestAction, Spider, BLOCKED_STATUS_CODES};
+pub use spider::{BLOCKED_STATUS_CODES, RequestAction, Spider};
 pub use state::CrawlState;
 pub use stop::{
-    pages_by_callback, FnStopCondition, MaxErrors, MaxItems, MaxPages, MaxPagesByCallback,
-    NeverStop, StopCondition, StopContext, Timeout,
+    FnStopCondition, MaxErrors, MaxItems, MaxPages, MaxPagesByCallback, NeverStop, StopCondition,
+    StopContext, Timeout, pages_by_callback,
 };
 
 pub use self::stats::SpiderStats;

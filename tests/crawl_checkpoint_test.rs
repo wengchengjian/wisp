@@ -68,27 +68,33 @@ async fn test_checkpoint_delete() {
     wisp::storage::save_checkpoint(&store, "s2", &blob)
         .await
         .unwrap();
-    assert!(wisp::storage::load_checkpoint(&store, "s2")
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        wisp::storage::load_checkpoint(&store, "s2")
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     wisp::storage::delete_checkpoint(&store, "s2")
         .await
         .unwrap();
-    assert!(wisp::storage::load_checkpoint(&store, "s2")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        wisp::storage::load_checkpoint(&store, "s2")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
 async fn test_checkpoint_load_missing_returns_none() {
     let store = MemoryStore::default();
-    assert!(wisp::storage::load_checkpoint(&store, "nonexistent")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        wisp::storage::load_checkpoint(&store, "nonexistent")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

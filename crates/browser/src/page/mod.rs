@@ -12,7 +12,7 @@ pub use evaluate::do_evaluate;
 pub use navigation::{do_goto, do_reload};
 pub use output::{do_screenshot, do_screenshot_bytes};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::cdp::CdpSession;

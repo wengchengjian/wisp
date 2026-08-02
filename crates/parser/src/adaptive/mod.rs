@@ -11,5 +11,5 @@ mod score;
 mod snapshot;
 
 pub use relocate::relocate_with_snapshot;
-pub use score::{similarity, DEFAULT_TOLERANCE};
+pub use score::{DEFAULT_TOLERANCE, similarity};
 pub use snapshot::ElementSnapshot;

@@ -10,7 +10,7 @@
 //! 零次 HTML 重解析。
 
 use std::time::Instant;
-use wisp::parser::{similarity, ElementSnapshot, Node};
+use wisp::parser::{ElementSnapshot, Node, similarity};
 
 #[test]
 fn test_similarity_uses_node_navigation_not_reparse() {

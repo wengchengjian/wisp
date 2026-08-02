@@ -2,9 +2,9 @@
 
 use serde_json::Value;
 
+use super::Client;
 use super::error::classify_request_error;
 use super::response::build_fetch_response;
-use super::Client;
 use wisp_core::error::{ParseError, Result, WispError};
 use wisp_core::{Method as FetchMethod, Request as FetchRequest, Response as FetchResponse};
 

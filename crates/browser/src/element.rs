@@ -1,7 +1,7 @@
 //! DOM 元素操作：点击、填充、等待、文本提取。
 
-use crate::page::do_evaluate as evaluate;
 use crate::page::Page;
+use crate::page::do_evaluate as evaluate;
 use wisp_core::error::{BrowserError, Result, WispError};
 
 /// 点击匹配选择器的元素。

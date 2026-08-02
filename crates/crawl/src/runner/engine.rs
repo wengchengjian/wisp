@@ -1,8 +1,8 @@
 //! Engine 基础设施主体。
 
 use futures::stream::{self, StreamExt};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 
 use super::config::EngineConfig;

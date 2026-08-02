@@ -3,7 +3,7 @@
 use serde_json::json;
 use std::sync::Arc;
 use wisp::crawl::Engine;
-use wisp::mcp::tools::{call_tool, ToolContext};
+use wisp::mcp::tools::{ToolContext, call_tool};
 use wisp::storage::Store;
 use wisp::{FetchClient, FetchClientConfig, MemoryStore};
 
@@ -57,7 +57,8 @@ async fn spawn_html_server(html: &'static str) -> String {
                 let _ = socket.read(&mut buf).await;
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
+                    html.len(),
+                    html
                 );
                 let _ = socket.write_all(resp.as_bytes()).await;
             });

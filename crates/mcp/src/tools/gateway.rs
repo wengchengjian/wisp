@@ -1,7 +1,7 @@
 //! MCP tool gateway: protocol parsing, validation, dispatch and output shaping.
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 #[cfg(feature = "stealth")]

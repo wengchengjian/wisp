@@ -1,12 +1,12 @@
 //! Engine lifecycle orchestration.
 
 use serde_json::Value;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 
 use super::Engine;
-use super::{build_final_stats, run_work_loop, RunGuard};
+use super::{RunGuard, build_final_stats, run_work_loop};
 use crate::engine;
 use crate::observability::events::EngineEvent;
 use crate::robots;

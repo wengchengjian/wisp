@@ -16,10 +16,10 @@
 //! ```
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{RwLock, watch};
 
 /// per-Engine 控制状态。
 ///
@@ -153,17 +153,20 @@ mod tests {
     async fn test_engine_control_pause_resume() {
         let ctrl = EngineControl::new();
         ctrl.pause("https://example.com/a").await;
-        assert!(ctrl
-            .paused_urls
-            .read()
-            .await
-            .contains("https://example.com/a"));
+        assert!(
+            ctrl.paused_urls
+                .read()
+                .await
+                .contains("https://example.com/a")
+        );
         ctrl.resume("https://example.com/a").await;
-        assert!(!ctrl
-            .paused_urls
-            .read()
-            .await
-            .contains("https://example.com/a"));
+        assert!(
+            !ctrl
+                .paused_urls
+                .read()
+                .await
+                .contains("https://example.com/a")
+        );
     }
 
     #[tokio::test]

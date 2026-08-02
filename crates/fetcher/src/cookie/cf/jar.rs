@@ -151,11 +151,7 @@ impl CookieJar for CfCookieJar {
     async fn ua(&self, url: &Url) -> Option<String> {
         let domain = url.host_str()?;
         let ua = self.get_session(domain)?.ua;
-        if ua.is_empty() {
-            None
-        } else {
-            Some(ua)
-        }
+        if ua.is_empty() { None } else { Some(ua) }
     }
 
     async fn set_session_ua(&self, domain: &str, ua: Option<&str>) {

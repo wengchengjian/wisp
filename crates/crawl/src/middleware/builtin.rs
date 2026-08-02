@@ -12,7 +12,7 @@ mod upgrade;
 
 pub use cache_robots_delay::{CacheMiddleware, DelayMiddleware, RobotsMiddleware};
 pub use challenge::CookieChallengeMiddleware;
-pub use defaults::{default_middlewares, DefaultMiddlewareConfig};
+pub use defaults::{DefaultMiddlewareConfig, default_middlewares};
 pub use request::{
     HeadersMiddleware, ProxyInjectionMiddleware, RetryMiddleware, UaRotationMiddleware,
 };

@@ -2,8 +2,8 @@ use super::*;
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::broadcast;
-use wisp_browser::cdp::CdpEvent;
 use wisp_browser::Page;
+use wisp_browser::cdp::CdpEvent;
 use wisp_core::error::{BrowserError, Result, WispError};
 use wisp_core::{Request, Response};
 

@@ -1,6 +1,6 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
 async fn test_event_bus_no_listeners() {

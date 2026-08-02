@@ -2,7 +2,7 @@
 
 use super::Handler;
 use crate::stop::StopCondition;
-use crate::{Request, Response, Spider, BLOCKED_STATUS_CODES};
+use crate::{BLOCKED_STATUS_CODES, Request, Response, Spider};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};

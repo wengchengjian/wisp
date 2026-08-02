@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::client::FetchClientConfig;
-use crate::strategy::{extract_browser_response, recv_navigation_status, BrowserFetchStrategy};
+use crate::strategy::{BrowserFetchStrategy, extract_browser_response, recv_navigation_status};
 use wisp_browser::Page;
 use wisp_core::error::{BrowserError, Result, WispError};
 use wisp_core::{Request, Response};
@@ -144,8 +144,8 @@ mod tests {
     #[ignore = "需要 Chrome 浏览器环境"]
     async fn test_dynamic_strategy_navigates() {
         use wisp_browser::BrowserPool;
-        use wisp_core::config::LaunchOptions;
         use wisp_core::Request;
+        use wisp_core::config::LaunchOptions;
 
         let pool = BrowserPool::new(1, LaunchOptions::default());
         let mut handle = pool.acquire().await.expect("acquire page");

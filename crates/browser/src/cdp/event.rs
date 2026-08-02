@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use serde_json::Value;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tungstenite::Message;
 
 use super::WsStream;

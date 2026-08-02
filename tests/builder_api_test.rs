@@ -3,7 +3,7 @@
 mod common;
 
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wisp::crawl::CrawlEvent;
 use wisp::crawl::{Engine, Request, Response, Spider, SpiderBuilder};
 use wisp::parser::Node;

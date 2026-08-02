@@ -41,14 +41,14 @@ pub use wisp_storage as storage;
 
 // === 统一入口 ===
 #[cfg(feature = "browser")]
+pub use fetcher::DynamicStrategy;
+#[cfg(feature = "stealth")]
+pub use fetcher::StealthStrategy;
+#[cfg(feature = "browser")]
 pub use fetcher::cookie::BrowserCookieJar;
 #[cfg(feature = "stealth")]
 pub use fetcher::cookie::{CfCookieJar, CfSession};
 pub use fetcher::cookie::{Cookie, CookieJar, HttpCookieJar};
-#[cfg(feature = "browser")]
-pub use fetcher::DynamicStrategy;
-#[cfg(feature = "stealth")]
-pub use fetcher::StealthStrategy;
 pub use fetcher::{FetchClient, FetchClientConfig, FetchMode, Fetcher, FetcherBuilder};
 pub use fetcher::{Method, Request, Response};
 #[cfg(feature = "stealth")]

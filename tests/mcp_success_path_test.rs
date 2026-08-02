@@ -5,7 +5,7 @@ mod common;
 use serde_json::json;
 use std::sync::Arc;
 use wisp::crawl::Engine;
-use wisp::mcp::tools::{call_tool, ToolContext};
+use wisp::mcp::tools::{ToolContext, call_tool};
 use wisp::storage::Store;
 use wisp::{FetchClient, FetchClientConfig, MemoryStore};
 

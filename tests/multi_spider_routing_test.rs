@@ -1,7 +1,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use wisp::crawl::stop::MaxPages;
 use wisp::crawl::Engine;
+use wisp::crawl::stop::MaxPages;
 use wisp::crawl::{Request, Spider, SpiderBuilder};
 use wisp::fetcher::FetchMode;
 

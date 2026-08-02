@@ -21,7 +21,9 @@ impl SqliteStore {
             )
             .unwrap_or(false);
         if has_old_table {
-            tracing::warn!("检测到旧 schema (element_snapshots/crawl_checkpoints/response_cache 三表)，与新版单表 kv 结构不兼容。旧数据已弃用，建议删除 db 文件重新开始。");
+            tracing::warn!(
+                "检测到旧 schema (element_snapshots/crawl_checkpoints/response_cache 三表)，与新版单表 kv 结构不兼容。旧数据已弃用，建议删除 db 文件重新开始。"
+            );
         }
 
         conn.execute_batch(SCHEMA_V1)

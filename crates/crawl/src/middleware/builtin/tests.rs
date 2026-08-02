@@ -1,7 +1,7 @@
 //! builtin middleware tests.
 
-use super::super::pipeline::FilterFieldsPipeline;
 use super::super::ItemPipeline;
+use super::super::pipeline::FilterFieldsPipeline;
 use super::*;
 use crate::{Request, Response};
 use wisp_core::error::WispError;

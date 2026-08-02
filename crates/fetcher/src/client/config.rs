@@ -4,8 +4,8 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use wisp_http::block::DomainBlocker;
 use wisp_http::Config as HttpConfig;
+use wisp_http::block::DomainBlocker;
 
 /// 统一请求客户端配置。
 #[derive(Debug, Clone)]

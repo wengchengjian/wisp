@@ -1,7 +1,7 @@
 //! 后台 autoscaler 采样循环。
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::AutoscaledPool;
 use crate::observability::events::EventBus;

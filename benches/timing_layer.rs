@@ -9,11 +9,11 @@ use dashmap::DashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing::span::Id;
-use tracing::Subscriber;
-use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
 
 #[derive(Clone)]
 pub struct TimingLayer {
@@ -59,7 +59,7 @@ impl TimingLayer {
             .iter()
             .map(|r| (r.key().clone(), *r.value()))
             .collect();
-        entries.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        entries.sort_by(|a, b| b.1.0.cmp(&a.1.0));
         let total = entries
             .iter()
             .find(|(name, _)| name == "process_request")

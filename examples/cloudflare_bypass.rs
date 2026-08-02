@@ -1,8 +1,8 @@
 //! Example: Bypass Cloudflare protection using Fetcher stealth mode.
 
 use std::time::Duration;
-use wisp::error::Result;
 use wisp::Fetcher;
+use wisp::error::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -1,7 +1,7 @@
 //! 运行守卫：防止同一 Engine 并发 run/run_stream。
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use wisp_core::error::Result;
 

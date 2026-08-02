@@ -1,10 +1,10 @@
 //! CDP 命令发送与响应等待。
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use futures::SinkExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tungstenite::Message;
 

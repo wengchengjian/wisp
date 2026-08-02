@@ -9,8 +9,7 @@ use super::locate::get_platform_id;
 use wisp_core::error::{BrowserError, Result, WispError};
 
 /// 下载 URL 模板
-const DOWNLOAD_URL_TEMPLATE: &str =
-    "https://storage.googleapis.com/chrome-for-testing-public/{version}/{platform}/chrome-{platform}.zip";
+const DOWNLOAD_URL_TEMPLATE: &str = "https://storage.googleapis.com/chrome-for-testing-public/{version}/{platform}/chrome-{platform}.zip";
 
 async fn download_to_temp(version: &str, platform: &str, install_root: &Path) -> Result<PathBuf> {
     let url = DOWNLOAD_URL_TEMPLATE

@@ -5,8 +5,8 @@ mod methods;
 
 use std::sync::Arc;
 
-use super::config::EngineConfig;
 use super::Engine;
+use super::config::EngineConfig;
 use crate::middleware::{ItemPipeline, Middleware, UaRotationMiddleware};
 use crate::observability::events::{EventBus, EventListener};
 use crate::runtime::autoscale::AutoscaledPool;

@@ -1,6 +1,6 @@
 //! Turnstile iframe 定位与点击。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 use super::config::TurnstileConfig;

@@ -1,6 +1,6 @@
 //! robots.txt per-domain cache：读写分离 + single-flight + negative TTL。
 
-use super::parser::{parse_robots_text, RobotsRules};
+use super::parser::{RobotsRules, parse_robots_text};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

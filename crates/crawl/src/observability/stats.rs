@@ -3,9 +3,9 @@
 use crate::CrawlState;
 use dashmap::DashMap;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// 单个 Spider 的运行时统计。引擎为每个 Spider 持有一个实例。

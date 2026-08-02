@@ -2,8 +2,8 @@
 
 use crate::Node;
 
-use super::score::similarity;
 use super::ElementSnapshot;
+use super::score::similarity;
 
 fn find_by_id(doc: &Node, saved: &ElementSnapshot, tolerance: f64) -> Option<Node> {
     let id = saved.attrs.get("id")?;

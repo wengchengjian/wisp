@@ -18,8 +18,8 @@ mod tests;
 
 pub use config::AutoscaleConfig;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use parking_lot::Mutex;

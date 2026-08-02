@@ -3,8 +3,8 @@
 use super::*;
 use crate::control;
 use crate::runner::runtime::EngineRuntime;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use wisp_core::error::Result;
 use wisp_fetcher::FetchClient;
 

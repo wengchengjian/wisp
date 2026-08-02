@@ -87,9 +87,11 @@ async fn browser_set_and_get_cookie_roundtrip() {
 
     let url = Url::parse("http://localhost/").expect("合法 URL");
     let cookies = jar.get(&url).await;
-    assert!(cookies
-        .iter()
-        .any(|c| c.name == "test_cookie" && c.value == "value123"));
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c.name == "test_cookie" && c.value == "value123")
+    );
 
     let _ = page.close().await;
     browser.close().await.expect("关闭浏览器");

@@ -1,7 +1,7 @@
 //! 并发池饱和度与错误率采样。
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::AutoscaledPool;
 use crate::observability::stats::SpiderStats;

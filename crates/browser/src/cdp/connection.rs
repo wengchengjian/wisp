@@ -1,12 +1,12 @@
 //! WebSocket 连接与 CdpSession 建立。
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use futures::StreamExt;
 use serde_json::Value;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tokio_tungstenite::connect_async;
 
 use super::event::spawn_event_reader;

@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use wisp_core::error::Result;
-use wisp_parser::{relocate_with_snapshot, ElementSnapshot, Node, DEFAULT_TOLERANCE};
-use wisp_storage::{load_element, save_element, Store};
+use wisp_parser::{DEFAULT_TOLERANCE, ElementSnapshot, Node, relocate_with_snapshot};
+use wisp_storage::{Store, load_element, save_element};
 
 use super::convert::{row_to_snapshot, snapshot_to_row};
 

@@ -128,8 +128,8 @@ async fn test_screenshot_creates_file() {
 /// Adaptive + crawl integration tests (no network required).
 mod adaptive_test {
     use std::sync::Arc;
-    use wisp::crawl::adaptive::row_to_snapshot;
     use wisp::crawl::AdaptiveTracker;
+    use wisp::crawl::adaptive::row_to_snapshot;
     use wisp::parser::Node;
     use wisp::storage::{MemoryStore, Store};
 
@@ -211,10 +211,12 @@ mod adaptive_test {
             .unwrap()
             .expect("snapshot should be saved");
         let snapshot = row_to_snapshot(saved);
-        assert!(snapshot
-            .ancestor_path
-            .iter()
-            .any(|p| p.contains("products")));
+        assert!(
+            snapshot
+                .ancestor_path
+                .iter()
+                .any(|p| p.contains("products"))
+        );
     }
 
     #[test]

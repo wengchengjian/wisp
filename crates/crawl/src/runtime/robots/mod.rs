@@ -9,4 +9,4 @@ mod parser;
 mod tests;
 
 pub use cache::RobotsCache;
-pub use parser::{parse_robots_text, RobotsRules};
+pub use parser::{RobotsRules, parse_robots_text};

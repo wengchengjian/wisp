@@ -1,8 +1,8 @@
 //! 调度决策与任务选取。
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::{NextWork, NextWorkResult};
 use crate::engine;

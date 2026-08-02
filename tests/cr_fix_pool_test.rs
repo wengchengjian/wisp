@@ -11,8 +11,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use wisp::browser::BrowserPool;
 use wisp::LaunchOptions;
+use wisp::browser::BrowserPool;
 
 /// 从 CHROME_PATH 环境变量构造 LaunchOptions（测试用）。
 fn launch_options() -> LaunchOptions {
