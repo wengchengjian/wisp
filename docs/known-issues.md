@@ -31,6 +31,9 @@
 - 语法现代化第一轮已完成：`#[allow]` 全部转 `#[expect]`，可安全改写的 `let_chains` 已压平，
   async closures 用于无捕获/可静态 future 回调；`EventCallback` 支持 `event_listener` 注册 async closure。
   gen blocks 因 stable 1.97 仍 experimental，本轮暂缓。
+- 真实 Engine 并发压力测试已完成：新增 `tests/engine_concurrency_stress_test.rs`，覆盖高并发上限、
+  Engine 复用、shutdown 后复用、多 Spider 共享队列；4 项本地 HTTP 压力用例全部通过。
+  loom/tokio-console 暂不采用。
 **完成记录（2026-08-01）：**
 
 - async `Store` 重构已完成：`Store` trait 与全部自由函数 async 化，SQLite/FileStore 经
@@ -188,14 +191,12 @@
 - 测试增强主体：proptest、insta、nextest 已落地；`cargo nextest run --workspace --all-features` 为默认测试命令。
 - cargo-deny 已接 CI。
 
-### P1：高性价比工程化
-1. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
 
 ### P2：按风险与 ROI 推进
-2. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
-3. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
-4. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
-5. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
+1. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
+2. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
+3. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
+4. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
 
 ### 明确不采纳
 - cargo-semver-checks / cargo-public-api：wisp 仍处快速 API 变动阶段，暂不做。
@@ -203,16 +204,6 @@
 - async fn in traits 无脑迁移：项目大量使用 dyn trait object，保留 async-trait；如要演进，再单独评估 trait-variant。
 
 ## 3. 剩余工作
-
-- 长函数/圈复杂度拆分第四批（静态扫描剩余约 28 个候选，多为测试内函数与极小高圈复杂 match）：
-  `cf_bypass_real_test` 诊断/参数扫描、`make_ctx_*` 测试构造、`default_middlewares_classifies_*` 等。
-
-- 长文件模块化下一批候选（10 个）：`crawl/src/auto/mod.rs`（约 200 行）、`crawl/src/runner/engine.rs`（约 190 行）、
-  `fetcher/src/cookie/http/mod.rs`（约 190 行）、`crawl/src/runtime/control.rs`（约 189 行）、
-  `fetcher/src/cookie/cf/mod.rs`（约 189 行）、`fetcher/src/fetcher.rs`（约 187 行）、
-  `crawl/src/scheduling/stop.rs`（约 181 行）、`core/src/utils/url.rs`（约 180 行）、
-  `core/src/encoding/mod.rs`（约 177 行）、`crawl/src/engine/fetch/dispatch.rs`（约 177 行）；
-  bench 与补丁脚本文件不列入生产拆分，下一批起阈值下调至约 177 行。
 
 - wreq 6.0.0-rc.29 无条件叠加 Retry/Redirect/Config/Timeout 层；已调研并记录，
   绕开需要换更底层构造（wreq connector/service 或 hyper），暂缓实施。
