@@ -2,14 +2,15 @@
 //!
 //! 运行方式：`cargo test --test crawl_e2e_real_test -- --ignored`
 //!
-//! 真实网络用例标注 `#[ignore]`；本地 503 重试用例默认运行。
+//! 真实网络用例标注 `#[ignore]`。
 //! 手动运行时需保证网络可访问以下站点：
 //! - httpbin.org — HTTP 测试服务（状态码、HTML 等）
 //! - quotes.toscrape.com — 专为爬虫练习设计的站点（分页、CSS 选择器）
 //! - example.com — 简单 HTML 页面（域名过滤测试）
 //!
-//! 覆盖 8 个场景：单页抓取 + CSS 提取 / 名言抓取 / 分页跟随 /
-//! allowed_domains 过滤 / 503 重试 / 流式事件 / JSONL 导出 / 缓存 replay。
+//! 覆盖 7 个场景：单页抓取 + CSS 提取 / 名言抓取 / 分页跟随 /
+//! allowed_domains 过滤 / 流式事件 / JSONL 导出 / 缓存 replay。
+//! 阻塞重试语义由 blocked_status_regression_test 覆盖。
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -20,7 +21,6 @@ use wisp::crawl::{CrawlEvent, CrawlStats, Engine, JsonlWriter, Request, Response
 use wisp::http::Client;
 use wisp::parser::ResponseExt;
 use wisp::storage::{MemoryStore, Store};
-use wisp::FetchMode;
 
 /// 探测 httpbin.org 是否可达且未被 Cloudflare 拦截。
 ///
@@ -245,85 +245,7 @@ async fn test_e2e_allowed_domains_filter() {
     );
 }
 
-// === 测试 5: 重试机制（503） ===
-
-async fn spawn_503_server() -> String {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
-                let _ = socket.read(&mut buf).await;
-                let body = "blocked";
-                let response = format!(
-                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-            });
-        }
-    });
-    format!("http://{addr}")
-}
-
-struct Retry503Spider {
-    base: String,
-}
-
-#[async_trait]
-impl Spider for Retry503Spider {
-    fn name(&self) -> &str {
-        "e2e-retry-503"
-    }
-    fn start_urls(&self) -> Vec<String> {
-        vec![self.base.clone()]
-    }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
-        (vec![], vec![])
-    }
-}
-
-#[tokio::test]
-async fn test_e2e_retry_on_blocked_status() {
-    let base = spawn_503_server().await;
-    let engine = Engine::infra()
-        .max_pages(1)
-        .obey_robots(false)
-        .fetch_mode(FetchMode::Http)
-        .max_retries(2)
-        .max_refetch_rounds(2)
-        .download_delay(std::time::Duration::from_millis(100))
-        .build()
-        .unwrap();
-    let (stats, _items) = engine.run(Retry503Spider { base }).await.unwrap();
-    assert_eq!(stats.pages_crawled, 0, "503 不应计入成功页");
-    assert_eq!(stats.errors, 0, "blocked refetch 不计入网络错误");
-    assert_eq!(
-        stats.retry_count, 0,
-        "503 走 BlockedRetry refetch，不增加网络错误 retry_count"
-    );
-    assert!(
-        stats.blocked_requests >= 3,
-        "blocked 请求应 >= 3 (初始 + 2 次重试), 实际: {}",
-        stats.blocked_requests
-    );
-    let count_503 = stats.status_code_counts.get(&503).copied().unwrap_or(0);
-    assert!(
-        count_503 >= 3,
-        "应有 >= 3 次 503 状态码, 实际: {}",
-        count_503
-    );
-}
-
-// === 测试 6: 流式事件 ===
+// === 测试 5: 流式事件 ===
 
 struct StreamQuotesSpider;
 
@@ -393,7 +315,7 @@ async fn test_e2e_streaming_events() {
     );
 }
 
-// === 测试 7: JSONL 流式导出 ===
+// === 测试 6: JSONL 流式导出 ===
 
 #[tokio::test]
 #[ignore = "requires network access to quotes.toscrape.com"]
@@ -430,7 +352,7 @@ async fn test_e2e_jsonl_export() {
     let _ = std::fs::remove_file(&path);
 }
 
-// === 测试 8: development_mode 缓存 replay ===
+// === 测试 7: development_mode 缓存 replay ===
 
 struct CacheSpider;
 

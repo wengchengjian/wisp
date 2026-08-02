@@ -1,5 +1,7 @@
 //! Builder pattern API tests (no network required).
 
+mod common;
+
 use futures::StreamExt;
 use serde_json::{json, Value};
 use wisp::crawl::CrawlEvent;
@@ -104,31 +106,8 @@ fn test_response_follow_with_callback() {
 
 #[tokio::test]
 async fn test_engine_builder_local_server() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    let html = "<html><body><h1>Builder Test</h1></body></html>";
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            let html = html;
-            tokio::spawn(async move {
-                let mut buf = [0u8; 1024];
-                let _ = socket.read(&mut buf).await;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-            });
-        }
-    });
-
-    let base_url = format!("http://{}", addr);
+    let base_url =
+        common::spawn_html_server("<html><body><h1>Builder Test</h1></body></html>").await;
 
     let spider = SpiderBuilder::new("builder-test")
         .start_urls(vec![base_url])
@@ -191,31 +170,7 @@ fn test_find_similar_basic() {
 
 #[tokio::test]
 async fn test_stream_with_builder() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    let html = "<html><body><p>Stream Item</p></body></html>";
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            let html = html;
-            tokio::spawn(async move {
-                let mut buf = [0u8; 1024];
-                let _ = socket.read(&mut buf).await;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-            });
-        }
-    });
-
-    let base_url = format!("http://{}", addr);
+    let base_url = common::spawn_html_server("<html><body><p>Stream Item</p></body></html>").await;
 
     let spider = SpiderBuilder::new("stream-builder")
         .start_urls(vec![base_url])

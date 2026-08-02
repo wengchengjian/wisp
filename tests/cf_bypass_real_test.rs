@@ -60,11 +60,20 @@ async fn test_tls_fingerprint_chrome() {
         .build()
         .unwrap();
 
-    let resp = client
-        .get("https://tls.peet.ws/api/all", &[])
-        .await
-        .unwrap();
-    assert_eq!(resp.status, 200, "tls.peet.ws 应返回 200");
+    let resp = match client.get("https://tls.peet.ws/api/all", &[]).await {
+        Ok(r) if r.status == 200 => r,
+        Ok(r) => {
+            eprintln!(
+                "SKIP: tls.peet.ws 返回 {}，跳过外部站点不稳定检查",
+                r.status
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!("SKIP: tls.peet.ws 不可达: {e}");
+            return;
+        }
+    };
 
     let json = resp.json().unwrap();
     // 验证 TLS 指纹 - peet.ws 返回的 ja3_text 或 ja4 应含 Chrome 特征
@@ -131,7 +140,7 @@ async fn test_stealth_cf_turnstile_bypass() {
     let result = Fetcher::stealth()
         .headless(true)
         .proxy(PROXY)
-        .challenge_timeout(Duration::from_secs(60))
+        .challenge_timeout(Duration::from_secs(30))
         .human_mode(true)
         .get("https://nopecha.com/demo/cloudflare")
         .await;
@@ -154,7 +163,7 @@ async fn test_stealth_cf_turnstile_bypass() {
             );
         }
         Err(e) => {
-            eprintln!("SKIP: Stealth 测试失败（可能无 Chrome）: {}", e);
+            panic!("Turnstile 挑战未在 30s 内成功: {e}");
         }
     }
 }
@@ -173,7 +182,7 @@ async fn test_stealth_cf_js_challenge() {
     let result = Fetcher::stealth()
         .headless(true)
         .proxy(PROXY)
-        .challenge_timeout(Duration::from_secs(45))
+        .challenge_timeout(Duration::from_secs(30))
         .human_mode(false)
         .get("https://nowsecure.nl/")
         .await;
@@ -185,13 +194,13 @@ async fn test_stealth_cf_js_challenge() {
 
             let title = resp.title().unwrap_or("");
             if title.contains("Just a moment") {
-                eprintln!("WARN: 仍停留在 CF 挑战页面（可能需要更长等待时间）");
+                panic!("JS Challenge 未在 30s 内成功，仍停留在 CF 挑战页");
             } else {
                 println!("PASS: 成功通过 CF JS Challenge");
             }
         }
         Err(e) => {
-            eprintln!("SKIP: {}", e);
+            panic!("JS Challenge 未在 30s 内成功: {e}");
         }
     }
 }
@@ -345,12 +354,12 @@ async fn test_banzhu_stealth_bypass() {
 
     println!("[Stealth] 目标: {}", BANZHU_TARGET_URL);
     println!("[Stealth] 代理: {}", PROXY);
-    println!("[Stealth] 挑战超时: 60s");
+    println!("[Stealth] 挑战超时: 30s");
 
     let result = Fetcher::stealth()
         .headless(true)
         .proxy(PROXY)
-        .challenge_timeout(Duration::from_secs(60))
+        .challenge_timeout(Duration::from_secs(30))
         .human_mode(true)
         .get(BANZHU_TARGET_URL)
         .await;
@@ -369,11 +378,7 @@ async fn test_banzhu_stealth_bypass() {
                 || html.contains("challenge-platform");
 
             if on_challenge {
-                eprintln!("[Stealth] FAIL: 仍停留在 CF 挑战页面");
-                eprintln!("[Stealth] Title: {:?}", resp.title);
-                // 输出前 500 字符帮助诊断
-                let preview: String = html.chars().take(500).collect();
-                eprintln!("[Stealth] Body preview: {}", preview);
+                panic!("Stealth 挑战未在 30s 内成功，仍停留在 CF 挑战页");
             } else if resp.status == 200 {
                 // 检查是否获取到真实内容
                 if html.contains("书库") || html.contains("小说") || html.contains("lastupdate")
@@ -385,12 +390,11 @@ async fn test_banzhu_stealth_bypass() {
                     println!("[Stealth] Body preview: {}", preview);
                 }
             } else {
-                eprintln!("[Stealth] FAIL: 状态码 {}", resp.status);
+                panic!("Stealth 挑战返回异常状态码 {}", resp.status);
             }
         }
         Err(e) => {
-            eprintln!("[Stealth] FAIL: {}", e);
-            eprintln!("[Stealth] 可能原因: Chrome 未安装 / 代理不可用 / CF 挑战超时");
+            panic!("Stealth 挑战未在 30s 内成功: {e}");
         }
     }
 }
@@ -653,42 +657,6 @@ async fn test_banzhu_cf_diagnostic() {
     println!("\n=== 诊断完成 ===");
 }
 
-/// 测试 Stealth 模式无代理直连（对比测试）
-#[tokio::test]
-#[ignore = "requires Chrome browser, no proxy needed"]
-async fn test_banzhu_stealth_no_proxy() {
-    println!("[Stealth-NoProxy] 目标: {}", BANZHU_TARGET_URL);
-    println!("[Stealth-NoProxy] 无代理直连");
-
-    let result = Fetcher::stealth()
-        .headless(true)
-        .challenge_timeout(Duration::from_secs(45))
-        .human_mode(true)
-        .get(BANZHU_TARGET_URL)
-        .await;
-
-    match result {
-        Ok(resp) => {
-            println!("[Stealth-NoProxy] Status: {}", resp.status);
-            println!("[Stealth-NoProxy] Title: {:?}", resp.title);
-            println!("[Stealth-NoProxy] Body length: {} bytes", resp.body.len());
-
-            let html = resp.text().unwrap_or_default();
-            let on_challenge =
-                html.contains("Just a moment") || html.contains("cf-challenge-running");
-
-            if on_challenge {
-                println!("[Stealth-NoProxy] 结果: 停留在 CF 挑战页（无代理预期结果）");
-            } else if resp.status == 200 {
-                println!("[Stealth-NoProxy] 结果: 成功获取页面（无代理也能过?）");
-            }
-        }
-        Err(e) => {
-            eprintln!("[Stealth-NoProxy] 失败: {}", e);
-        }
-    }
-}
-
 /// 测试非 headless 模式（可见浏览器）绕过 CF
 #[tokio::test]
 #[ignore = "requires network + proxy + Chrome browser, VISIBLE window"]
@@ -705,7 +673,7 @@ async fn test_banzhu_stealth_headed() {
     let result = Fetcher::stealth()
         .headless(false)
         .proxy(PROXY)
-        .challenge_timeout(Duration::from_secs(90))
+        .challenge_timeout(Duration::from_secs(30))
         .human_mode(false) // 禁用人类行为模拟，减少干扰
         .get(BANZHU_TARGET_URL)
         .await;
@@ -730,178 +698,14 @@ async fn test_banzhu_stealth_headed() {
                     println!("[PASS] 确认获取到真实内容");
                 }
             } else {
-                eprintln!("[FAIL] 状态: {}, 标题: {}", resp.status, title);
+                panic!(
+                    "Headed Stealth 挑战未成功: 状态 {}, 标题 {}",
+                    resp.status, title
+                );
             }
         }
         Err(e) => {
-            eprintln!("[FAIL] {}", e);
+            panic!("Headed Stealth 挑战未在 30s 内成功: {e}");
         }
     }
-}
-
-/// 测试纯等待模式（不点击，等待 CF 自动解决）
-#[tokio::test]
-#[ignore = "requires network + proxy + Chrome browser, VISIBLE window"]
-async fn test_banzhu_passive_wait() {
-    use wisp::{Browser, LaunchOptions};
-
-    if !proxy_available().await {
-        eprintln!("SKIP: 代理 {} 不可用", PROXY);
-        return;
-    }
-
-    println!("\n=== 纯等待测试 ===");
-    println!("目标: {}", BANZHU_TARGET_URL);
-    println!("策略: 只导航+等待，不发送任何 CDP 命令");
-
-    let browser = match Browser::launch(LaunchOptions {
-        headless: false,
-        proxy: Some(wisp::ProxyConfig {
-            server: PROXY.to_string(),
-            username: None,
-            password: None,
-        }),
-        ..Default::default()
-    })
-    .await
-    {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("浏览器启动失败: {}", e);
-            return;
-        }
-    };
-
-    let mut page = browser.new_page().await.expect("创建页面");
-
-    println!("[1] 导航...");
-    if let Err(e) = page.goto(BANZHU_TARGET_URL).await {
-        eprintln!("导航失败: {}", e);
-        let _ = browser.close().await;
-        return;
-    }
-
-    // 纯等待 30 秒，不做任何操作
-    println!("[2] 等待 30 秒（不发送任何 CDP 命令）...");
-    for i in 1..=6 {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        let title = page.title().await.unwrap_or_default();
-        println!("    {}s - Title: {}", i * 5, title);
-        if !title.contains("请稍候") && !title.contains("Just a moment") && !title.is_empty() {
-            println!("[3] 挑战已自动解决! Title: {}", title);
-            let html = page.content().await.unwrap_or_default();
-            if html.contains("小说") {
-                println!("[PASS] 获取到真实页面内容!");
-            }
-            let _ = page.close().await;
-            let _ = browser.close().await;
-            return;
-        }
-    }
-
-    println!("[3] 30 秒后仍在挑战页，尝试点击...");
-    // 等待后再用 Fetcher 的 solve 逻辑
-    tokio::time::sleep(Duration::from_secs(30)).await;
-    let title = page.title().await.unwrap_or_default();
-    println!("[4] 60s 后 Title: {}", title);
-
-    let _ = page.close().await;
-    let _ = browser.close().await;
-}
-
-/// 参数扫描测试：测试不同 TurnstileConfig 参数组合的速度
-#[tokio::test]
-#[ignore = "requires network + proxy + Chrome browser, VISIBLE window - parameter sweep"]
-async fn test_banzhu_param_sweep() {
-    use wisp::TurnstileConfig;
-
-    if !proxy_available().await {
-        eprintln!("SKIP: 代理 {} 不可用", PROXY);
-        return;
-    }
-
-    // 参数组合：(passive_wait_ms, mouse_steps, mouse_step_delay_ms, poll_interval_ms, click_hold_ms)
-    let configs: Vec<(&str, TurnstileConfig)> = vec![
-        ("默认", TurnstileConfig::default()),
-        (
-            "激进",
-            TurnstileConfig {
-                passive_wait_ms: 200,
-                click_interval_ms: 1500,
-                poll_interval_ms: 100,
-                mouse_steps: 3,
-                mouse_step_delay_ms: 5,
-                click_hold_ms: 30,
-                dom_depth: 10,
-            },
-        ),
-        (
-            "极速",
-            TurnstileConfig {
-                passive_wait_ms: 100,
-                click_interval_ms: 1000,
-                poll_interval_ms: 50,
-                mouse_steps: 2,
-                mouse_step_delay_ms: 3,
-                click_hold_ms: 20,
-                dom_depth: 8,
-            },
-        ),
-        (
-            "保守",
-            TurnstileConfig {
-                passive_wait_ms: 1000,
-                click_interval_ms: 3000,
-                poll_interval_ms: 300,
-                mouse_steps: 8,
-                mouse_step_delay_ms: 25,
-                click_hold_ms: 100,
-                dom_depth: 15,
-            },
-        ),
-    ];
-
-    println!("\n=== 参数扫描测试 ===");
-    println!("目标: {}", BANZHU_TARGET_URL);
-    println!("测试 {} 组参数\n", configs.len());
-
-    for (name, cfg) in &configs {
-        println!(
-            "--- [{}] passive={}ms, mouse={}x{}ms, poll={}ms, hold={}ms ---",
-            name,
-            cfg.passive_wait_ms,
-            cfg.mouse_steps,
-            cfg.mouse_step_delay_ms,
-            cfg.poll_interval_ms,
-            cfg.click_hold_ms
-        );
-
-        let result = Fetcher::stealth()
-            .headless(false)
-            .proxy(PROXY)
-            .challenge_timeout(Duration::from_secs(60))
-            .human_mode(false)
-            .turnstile_config(cfg.clone())
-            .get(BANZHU_TARGET_URL)
-            .await;
-
-        match result {
-            Ok(resp) => {
-                let title = resp.title().unwrap_or("");
-                if title.contains("小说") {
-                    println!("    ✅ PASS - Title: {}", title);
-                } else {
-                    println!("    ⚠️  Status: {}, Title: {}", resp.status, title);
-                }
-            }
-            Err(e) => {
-                println!("    ❌ FAIL - {}", e);
-            }
-        }
-
-        // 等待一下再测试下一组
-        tokio::time::sleep(Duration::from_secs(3)).await;
-    }
-
-    println!("\n=== 扫描完成 ===");
 }

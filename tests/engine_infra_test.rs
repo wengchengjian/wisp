@@ -10,6 +10,8 @@ use wisp::crawl::*;
 use wisp::fetcher::FetchMode;
 use wisp::parser::ResponseExt;
 
+mod common;
+
 /// 最小 Spider：handle 返回单个 item，不 follow。
 struct CountSpider {
     name: String,
@@ -89,30 +91,7 @@ async fn test_engine_control_isolation() {
 #[tokio::test]
 async fn test_engine_run_returns_items() {
     // 验证 run 返回 (stats, items)，items 被正确收集
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let html = "<p>item1</p><p>item2</p>";
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            tokio::spawn(async move {
-                let mut buf = [0u8; 1024];
-                let _ = socket.read(&mut buf).await;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(),
-                    html
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-            });
-        }
-    });
-    let base = format!("http://{}", addr);
+    let base = common::spawn_html_server("<p>item1</p><p>item2</p>").await;
 
     struct PSpider {
         url: String,

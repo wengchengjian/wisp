@@ -7,6 +7,8 @@
 //! - `test_multiple_runs_independent_stats`: 同一 Engine 多次 run，stats 独立。
 //! - `test_until_stops_one_spider_without_affecting_other`: per-spider until 隔离。
 
+mod common;
+
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,36 +32,11 @@ fn test_max_pages_condition() {
     assert!(cond.should_stop(&ctx));
 }
 
-/// 启动一个返回固定 HTML 的本地 HTTP 服务器，返回 base URL（如 `http://127.0.0.1:PORT`）。
-async fn spawn_html_server(html: &'static str) -> String {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            tokio::spawn(async move {
-                let mut buf = [0u8; 1024];
-                let _ = socket.read(&mut buf).await;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(), html
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-            });
-        }
-    });
-    format!("http://{}", addr)
-}
-
 #[tokio::test]
 async fn test_multiple_runs_independent_stats() {
     // 同一 Engine 多次 run 不同 Spider，各自独立 stats（替代原 patterns 路由测试）。
-    let server_a = spawn_html_server("<html><body>page A</body></html>").await;
-    let server_b = spawn_html_server("<html><body>page B</body></html>").await;
+    let server_a = common::spawn_html_server("<html><body>page A</body></html>").await;
+    let server_b = common::spawn_html_server("<html><body>page B</body></html>").await;
 
     struct SpiderA {
         url: String,
@@ -130,7 +107,7 @@ async fn test_multiple_runs_independent_stats() {
 async fn test_until_stops_one_spider_without_affecting_other() {
     // StoppingSpider 声明 MaxPages(1)，parse 时 follow 一个 URL。
     // until 应阻止 StoppingSpider 后续请求派发，但不影响同 Engine 下 NormalSpider 的 run。
-    let server = spawn_html_server("<html><body>page</body></html>").await;
+    let server = common::spawn_html_server("<html><body>page</body></html>").await;
 
     struct StoppingSpider {
         url: String,

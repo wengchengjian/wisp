@@ -1296,7 +1296,7 @@ git commit -m "refactor: process_request 拆分为 stage 函数 (P0-4)"
 Run: `cargo test --lib`
 Expected: 206+ 测试全部 PASS
 
-Run: `cargo test --test p0_autoscale_test --test p0_dashmap_test --test engine_infra_test --test crawl_concurrency_test --test multi_spider_test --test crawl_cache_real_test --test crawl_retry_real_test --test builder_api_test --test cr_fix_engine_test`
+Run: `cargo test --test p0_autoscale_test --test p0_dashmap_test --test engine_infra_test --test crawl_concurrency_test --test multi_spider_test --test crawl_cache_real_test --test blocked_status_regression_test --test builder_api_test --test cr_fix_engine_test`
 Expected: 全部 PASS
 
 - [x] **Step 2: 验证 autoscale 集成端到端**

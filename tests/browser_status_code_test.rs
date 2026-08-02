@@ -11,40 +11,21 @@
 //! 修复后：Network.enable 失败立即报错；recv_navigation_status 失败
 //! 立即报错；不再有 fallback。
 
+mod common;
+
 use std::path::PathBuf;
 use std::time::Duration;
 use wisp::fetcher::{FetchMode, Method, Request};
 use wisp::{FetchClient, FetchClientConfig};
 
-async fn spawn_status_server(status: u16, body: &'static str) -> String {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            tokio::spawn(async move {
-                let mut buf = [0u8; 1024];
-                let _ = socket.read(&mut buf).await;
-                let status_line = match status {
-                    200 => "200 OK",
-                    404 => "404 Not Found",
-                    500 => "500 Internal Server Error",
-                    429 => "429 Too Many Requests",
-                    _ => "200 OK",
-                };
-                let resp = format!(
-                    "HTTP/1.1 {status_line}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(), body
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
-            });
-        }
-    });
-    format!("http://{addr}")
+fn status_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        429 => "Too Many Requests",
+        _ => "OK",
+    }
 }
 
 fn fetch_client_config() -> FetchClientConfig {
@@ -89,7 +70,13 @@ async fn browser_fetch_captures_200_status() {
     };
     // 探测 Chrome 是否可用：访问 about:blank 不会触发 Network.responseReceived
     // 这里直接试一次真实请求，失败则 SKIP
-    let url = spawn_status_server(200, "<html><body>OK</body></html>").await;
+    let url = common::spawn_status_server(
+        200,
+        status_reason(200),
+        "<html><body>OK</body></html>",
+        "text/html; charset=utf-8",
+    )
+    .await;
     let status = fetch_status(&client, url).await;
     if status == 0 {
         eprintln!("SKIP: Chrome not available or fetch failed");
@@ -108,7 +95,13 @@ async fn browser_fetch_captures_404_status_not_fallback_to_200() {
             return;
         }
     };
-    let url = spawn_status_server(404, "<html><body>Not Found</body></html>").await;
+    let url = common::spawn_status_server(
+        404,
+        status_reason(404),
+        "<html><body>Not Found</body></html>",
+        "text/html; charset=utf-8",
+    )
+    .await;
     let status = fetch_status(&client, url).await;
     if status == 0 {
         eprintln!("SKIP: Chrome not available or fetch failed");
@@ -132,7 +125,13 @@ async fn browser_fetch_captures_500_status_not_fallback_to_200() {
             return;
         }
     };
-    let url = spawn_status_server(500, "<html><body>Server Error</body></html>").await;
+    let url = common::spawn_status_server(
+        500,
+        status_reason(500),
+        "<html><body>Server Error</body></html>",
+        "text/html; charset=utf-8",
+    )
+    .await;
     let status = fetch_status(&client, url).await;
     if status == 0 {
         eprintln!("SKIP: Chrome not available or fetch failed");
