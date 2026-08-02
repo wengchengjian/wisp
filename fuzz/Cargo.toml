@@ -1,0 +1,40 @@
+[package]
+name = "wisp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.wisp-core]
+path = "../crates/core"
+
+[dependencies.wisp-parser]
+path = "../crates/parser"
+
+[[bin]]
+name = "parser_html"
+path = "fuzz_targets/parser_html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "difflib"
+path = "fuzz_targets/difflib.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "core_url_encoding"
+path = "fuzz_targets/core_url_encoding.rs"
+test = false
+doc = false
+bench = false

@@ -13,7 +13,6 @@ stealth = ["browser", "wisp-fetcher/stealth"]
 [dependencies]
 wisp-core = { workspace = true }
 wisp-fetcher = { workspace = true }
-wisp-http = { workspace = true }
 wisp-parser = { workspace = true }
 wisp-storage = { workspace = true }
 wisp-proxy = { workspace = true }
@@ -27,7 +26,6 @@ tracing = { workspace = true }
 bincode = { workspace = true }
 regex = { workspace = true }
 aho-corasick = { workspace = true }
-moka = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }

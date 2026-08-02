@@ -9,8 +9,6 @@ license.workspace = true
 wisp-core = { workspace = true }
 woven-html = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-regex = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

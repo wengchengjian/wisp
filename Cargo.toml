@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/core", "crates/storage", "crates/parser", "crates/proxy", "crates/http", "crates/browser", "crates/stealth", "crates/fetcher", "crates/crawl", "crates/mcp"]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

@@ -3438,15 +3438,12 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "futures",
- "rand 0.10.2",
- "regex",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
  "tracing",
  "tungstenite",
- "url",
  "which",
  "wisp-core",
  "wreq",
@@ -3480,7 +3477,6 @@ dependencies = [
  "futures",
  "htmd",
  "insta",
- "moka",
  "parking_lot",
  "proptest",
  "regex",
@@ -3492,7 +3488,6 @@ dependencies = [
  "url",
  "wisp-core",
  "wisp-fetcher",
- "wisp-http",
  "wisp-parser",
  "wisp-proxy",
  "wisp-storage",
@@ -3527,7 +3522,6 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "hickory-resolver",
- "rand 0.10.2",
  "serde_json",
  "tokio",
  "tracing",
@@ -3541,17 +3535,14 @@ dependencies = [
 name = "wisp-mcp"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "url",
  "wisp-core",
  "wisp-crawl",
  "wisp-fetcher",
- "wisp-http",
  "wisp-parser",
  "wisp-storage",
  "wreq-util",
@@ -3562,9 +3553,7 @@ name = "wisp-parser"
 version = "0.1.0"
 dependencies = [
  "proptest",
- "regex",
  "serde",
- "serde_json",
  "wisp-core",
  "woven-html",
 ]
@@ -3575,14 +3564,12 @@ version = "0.1.0"
 dependencies = [
  "rand 0.10.2",
  "serde",
- "tracing",
 ]
 
 [[package]]
 name = "wisp-stealth"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "rand 0.10.2",
  "serde_json",
  "tokio",

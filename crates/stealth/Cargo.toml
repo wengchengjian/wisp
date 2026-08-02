@@ -12,4 +12,3 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }
-chrono = { workspace = true }

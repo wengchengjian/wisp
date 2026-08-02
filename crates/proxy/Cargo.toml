@@ -8,4 +8,3 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 rand = { workspace = true }
-tracing = { workspace = true }
