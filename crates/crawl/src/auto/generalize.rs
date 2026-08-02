@@ -50,7 +50,7 @@ fn generalize_mixed_segment(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c.is_ascii_digit() {
             // 跳过后续连续数字
-            while chars.peek().map_or(false, |c| c.is_ascii_digit()) {
+            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
                 chars.next();
             }
             result.push_str(r"\d+");

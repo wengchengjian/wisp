@@ -53,10 +53,11 @@ fn apply_request_rate(rules: &mut RobotsRules, val: &str) {
         .split_whitespace()
         .next()
         .unwrap_or("1");
-    if let (Ok(n), Ok(d)) = (n_str.parse::<f64>(), d_str.parse::<f64>()) {
-        if n > 0.0 && d > 0.0 {
-            rules.request_rate = Some(n / d);
-        }
+    if let (Ok(n), Ok(d)) = (n_str.parse::<f64>(), d_str.parse::<f64>())
+        && n > 0.0
+        && d > 0.0
+    {
+        rules.request_rate = Some(n / d);
     }
 }
 

@@ -79,7 +79,6 @@ impl Engine {
     }
 
     /// 内部运行逻辑：共享队列驱动多个 Spider。
-
     async fn finish_run(&self, ctx: &Arc<engine::EngineContext>) -> Result<Vec<CrawlStats>> {
         self.run_middleware_close(ctx).await;
         for spider in &ctx.state.spiders {

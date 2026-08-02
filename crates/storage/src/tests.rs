@@ -7,9 +7,11 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use wisp_core::error::Result;
 
+type MockData = HashMap<(String, String), (Vec<u8>, Option<Instant>)>;
+
 /// 测试用 MockStore：基于 HashMap，支持 TTL 检查。
 struct MockStore {
-    data: Mutex<HashMap<(String, String), (Vec<u8>, Option<Instant>)>>,
+    data: Mutex<MockData>,
 }
 
 impl MockStore {
@@ -32,10 +34,10 @@ impl Store for MockStore {
         let now = Instant::now();
         let g = self.data.lock();
         if let Some((v, exp)) = g.get(&(ns.into(), key.into())) {
-            if let Some(exp) = exp {
-                if now > *exp {
-                    return Ok(None);
-                }
+            if let Some(exp) = exp
+                && now > *exp
+            {
+                return Ok(None);
             }
             Ok(Some(v.clone()))
         } else {

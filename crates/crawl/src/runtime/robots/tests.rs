@@ -93,13 +93,17 @@ fn test_is_empty_rules() {
     assert!(!r.is_empty_rules());
 
     // 仅有 crawl_delay 不算空
-    let mut r = RobotsRules::default();
-    r.crawl_delay = Some(1.0);
+    let r = RobotsRules {
+        crawl_delay: Some(1.0),
+        ..Default::default()
+    };
     assert!(!r.is_empty_rules());
 
     // 仅有 request_rate 不算空
-    let mut r = RobotsRules::default();
-    r.request_rate = Some(0.5);
+    let r = RobotsRules {
+        request_rate: Some(0.5),
+        ..Default::default()
+    };
     assert!(!r.is_empty_rules());
 }
 

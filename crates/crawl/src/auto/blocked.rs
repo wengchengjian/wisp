@@ -37,13 +37,13 @@ pub(crate) fn blocked_body_reason(window: &[u8]) -> Option<&'static str> {
 fn starts_with_ci(haystack: &[u8], start: usize, needle: &[u8]) -> bool {
     haystack[start..]
         .get(..needle.len())
-        .map_or(false, |s| s.eq_ignore_ascii_case(needle))
+        .is_some_and(|s| s.eq_ignore_ascii_case(needle))
 }
 
 fn header_starts_with_ci(name: &str, prefix: &str) -> bool {
     name.as_bytes()
         .get(..prefix.len())
-        .map_or(false, |s| s.eq_ignore_ascii_case(prefix.as_bytes()))
+        .is_some_and(|s| s.eq_ignore_ascii_case(prefix.as_bytes()))
 }
 
 /// 返回拦截原因（用于诊断日志），未拦截则返回 None。

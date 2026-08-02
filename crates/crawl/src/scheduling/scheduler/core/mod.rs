@@ -127,3 +127,9 @@ impl Scheduler {
         self.pending.load(AtomicOrdering::Relaxed) == 0
     }
 }
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}

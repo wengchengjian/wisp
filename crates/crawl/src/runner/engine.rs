@@ -82,15 +82,9 @@ impl Engine {
                 }
                 tokio::select! {
                     biased;
-                    event = rx.next() => match event {
-                        Some(e) => Some((e, (driver, rx, false))),
-                        None => None,
-                    },
+                    event = rx.next() => event.map(|e| (e, (driver, rx, false))),
                     _ = &mut driver => {
-                        match rx.next().await {
-                            Some(e) => Some((e, (driver, rx, true))),
-                            None => None,
-                        }
+                        rx.next().await.map(|e| (e, (driver, rx, true)))
                     }
                 }
             },

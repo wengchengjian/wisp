@@ -5,7 +5,7 @@ pub(crate) fn extract_charset(content_type: &str) -> Option<String> {
     if let Some(idx) = lower.find("charset=") {
         let rest = &content_type[idx + 8..];
         // 跳过可能的引号
-        let rest = rest.trim_start_matches(|c| c == '"' || c == '\'');
+        let rest = rest.trim_start_matches(['"', '\'']);
         let charset: String = rest
             .chars()
             .take_while(|c| *c != ';' && *c != ' ' && *c != '"' && *c != '\'')

@@ -44,10 +44,9 @@ impl ItemPipeline for JsonlWriterPipeline {
             .create(true)
             .append(true)
             .open(&self.path)
+            && let Ok(line) = serde_json::to_string(&item)
         {
-            if let Ok(line) = serde_json::to_string(&item) {
-                let _ = writeln!(file, "{}", line);
-            }
+            let _ = writeln!(file, "{}", line);
         }
         Some(item)
     }

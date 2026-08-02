@@ -53,8 +53,8 @@ impl ProxyPool {
         let idx = match self.strategy {
             RotationStrategy::Sequential => {
                 let len = self.proxies.len();
-                let i = self.index.fetch_add(1, Ordering::Relaxed).wrapping_rem(len);
-                i
+
+                self.index.fetch_add(1, Ordering::Relaxed).wrapping_rem(len)
             }
             RotationStrategy::Random => {
                 use rand::rngs::{SmallRng, SysRng};

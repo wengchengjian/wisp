@@ -166,13 +166,12 @@ pub(crate) async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> Result
                     continue;
                 }
                 let action = run_error_middleware(ctx, &spider, &stats, req_ref, &e).await;
-                if matches!(action, middleware::ErrorAction::Retry) {
-                    if let Some(retried) =
+                if matches!(action, middleware::ErrorAction::Retry)
+                    && let Some(retried) =
                         emit_retry_request(ctx, &stats, req_ref, max_retries, &e).await
-                    {
-                        owned = Some(retried);
-                        continue;
-                    }
+                {
+                    owned = Some(retried);
+                    continue;
                 }
                 stats.errors.fetch_add(1, Ordering::SeqCst);
                 spider.on_error(req_ref, &e.to_string()).await;

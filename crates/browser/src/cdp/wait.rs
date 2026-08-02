@@ -15,7 +15,7 @@ impl CdpSession {
         loop {
             {
                 let events = self.events.lock().await;
-                if let Some(idx) = events.iter().position(|e| predicate(e)) {
+                if let Some(idx) = events.iter().position(&predicate) {
                     let event = events[idx].clone();
                     // 更新已消费偏移量（idx+1 之前的都算已消费）
                     let mut offset = self.consumed_offset.lock().await;

@@ -29,6 +29,12 @@ struct Inner {
     stats: DashMap<String, (Duration, usize)>,
 }
 
+impl Default for TimingLayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimingLayer {
     pub fn new() -> Self {
         Self {
@@ -59,7 +65,7 @@ impl TimingLayer {
             .iter()
             .map(|r| (r.key().clone(), *r.value()))
             .collect();
-        entries.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.1.0));
         let total = entries
             .iter()
             .find(|(name, _)| name == "process_request")

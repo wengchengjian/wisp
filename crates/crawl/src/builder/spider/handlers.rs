@@ -86,7 +86,7 @@ impl SpiderBuilder {
         let selectors: Vec<String> = selectors.iter().map(|s| s.to_string()).collect();
         self.on_page(label, move |mut page| {
             let selectors: Vec<&str> = selectors.iter().map(String::as_str).collect();
-            let text = (&clean)(page.content_text(&selectors));
+            let text = clean(page.content_text(&selectors));
             let mut item = match page.meta_owned() {
                 Value::Object(map) => Value::Object(map),
                 _ => Value::Object(serde_json::Map::new()),

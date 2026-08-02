@@ -8,6 +8,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+pub(crate) type BlockedFn = Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>;
+
 /// 由 SpiderBuilder 构建的闭包式 Spider。
 ///
 /// ND-031-ARCH：引擎配置字段已移除，ClosureSpider 只持有业务逻辑字段。
@@ -16,7 +18,7 @@ pub struct ClosureSpider {
     pub(crate) start_urls: Vec<String>,
     pub(crate) handlers: HashMap<String, Handler>,
     pub(crate) allowed_domains: HashSet<String>,
-    pub(crate) is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
+    pub(crate) is_blocked_fn: Option<BlockedFn>,
     pub(crate) until_cond: Arc<dyn StopCondition>,
     pub(crate) max_depth: u32,
 }

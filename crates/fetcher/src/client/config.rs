@@ -54,9 +54,11 @@ impl DerefMut for FetchClientConfig {
 }
 impl Default for FetchClientConfig {
     fn default() -> Self {
-        let mut http = HttpConfig::default();
         // 保持旧行为：不显式设置 UA 时由底层决定，而非注入 http::Config 默认 UA。
-        http.user_agent = None;
+        let http = HttpConfig {
+            user_agent: None,
+            ..Default::default()
+        };
         Self {
             http,
             headless: true,

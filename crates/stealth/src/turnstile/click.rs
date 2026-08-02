@@ -175,10 +175,10 @@ fn find_turnstile_node(node: &Value) -> Option<u32> {
             }
         }
     }
-    if let Some(content_doc) = node.get("contentDocument") {
-        if let Some(id) = find_turnstile_node(content_doc) {
-            return Some(id);
-        }
+    if let Some(content_doc) = node.get("contentDocument")
+        && let Some(id) = find_turnstile_node(content_doc)
+    {
+        return Some(id);
     }
     None
 }

@@ -53,7 +53,7 @@ fn is_allowed_domain(spider: &Arc<dyn Spider>, req: &Request) -> bool {
 /// 请求阶段中间件结果：继续抓取、直接响应（缓存）或停止。
 enum RequestStage {
     Continue,
-    Respond(Response),
+    Respond(Box<Response>),
     Stop,
 }
 
@@ -88,7 +88,7 @@ async fn run_request_middlewares(
                     from_cache: true,
                 })
                 .await;
-            RequestStage::Respond(cached_resp)
+            RequestStage::Respond(Box::new(cached_resp))
         }
         middleware::RequestMwAction::Continue | middleware::RequestMwAction::Modified => {
             RequestStage::Continue
@@ -139,7 +139,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
     if !ctx.state.middleware_chain.is_empty() {
         match run_request_middlewares(ctx, &spider, &stats, &mut req).await {
             RequestStage::Stop => return None,
-            RequestStage::Respond(resp) => return Some(resp),
+            RequestStage::Respond(resp) => return Some(*resp),
             RequestStage::Continue => {}
         }
     }

@@ -22,6 +22,8 @@ impl Engine {
         Ok(Arc::new(Mutex::new(rule_engine)))
     }
 
+    // 内部构建参数较多，拆结构体会扩大 Engine 内部配置面。
+    #[allow(clippy::too_many_arguments)]
     fn build_engine_state(
         &self,
         sched: Arc<scheduler::Scheduler>,
@@ -59,6 +61,8 @@ impl Engine {
         }
     }
 
+    // 内部构建参数较多，拆结构体会扩大 Engine 内部配置面。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_engine_context(
         &self,
         spiders: Vec<Arc<dyn Spider>>,

@@ -69,7 +69,7 @@ pub fn url_to_filename(url: &str, counter: usize) -> String {
 /// - 替换 `/` 和 `\` 为 `_`（防止路径分隔符穿越）
 /// - Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）加 `wisp_` 前缀
 fn sanitize_filename_component(s: &str) -> String {
-    let s = s.replace('/', "_").replace('\\', "_");
+    let s = s.replace(['/', '\\'], "_");
     // Windows 保留名检查（不区分大小写）
     let upper = s.to_uppercase();
     let is_reserved = matches!(

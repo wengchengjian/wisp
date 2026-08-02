@@ -12,7 +12,6 @@ pub fn decode(body: &[u8], content_type: &str) -> String {
 }
 
 /// 解码为可能借用原始 body 的字符串，UTF-8 页面可避免一次 String 复制。
-
 fn decode_utf8_cow<'a>(body: &'a [u8]) -> Cow<'a, str> {
     match std::str::from_utf8(body) {
         Ok(s) => Cow::Borrowed(s),

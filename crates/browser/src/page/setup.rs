@@ -11,15 +11,13 @@ impl Page {
             .session
             .execute_with_session("Page.getFrameTree", json!({}), Some(&self.session_id))
             .await
-        {
-            if let Some(id) = frame_tree
+            && let Some(id) = frame_tree
                 .get("frameTree")
                 .and_then(|ft| ft.get("frame"))
                 .and_then(|f| f.get("id"))
                 .and_then(|id| id.as_str())
-            {
-                self.frame_id = id.to_string();
-            }
+        {
+            self.frame_id = id.to_string();
         }
     }
 

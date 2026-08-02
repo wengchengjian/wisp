@@ -30,12 +30,7 @@ pub fn is_port_available(port: u16) -> bool {
 /// ```
 pub fn find_available_port(start_port: u16, max_attempts: u16) -> Option<u16> {
     let end_port = start_port.saturating_add(max_attempts);
-    for port in start_port..=end_port {
-        if is_port_available(port) {
-            return Some(port);
-        }
-    }
-    None
+    (start_port..=end_port).find(|&port| is_port_available(port))
 }
 
 /// 获取系统分配的随机可用端口。

@@ -84,11 +84,11 @@ impl Page {
                     continue;
                 }
                 let meta = meta_for(self, idx, a);
-                if let Some(req) = self.resp.follow_meta(&href, meta) {
-                    if predicate(&req.url) {
-                        pending.push(req.with_callback(callback));
-                        followed += 1;
-                    }
+                if let Some(req) = self.resp.follow_meta(&href, meta)
+                    && predicate(&req.url)
+                {
+                    pending.push(req.with_callback(callback));
+                    followed += 1;
                 }
             }
             break;

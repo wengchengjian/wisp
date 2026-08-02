@@ -25,9 +25,7 @@ static TIMING: OnceLock<Option<TimingLayer>> = OnceLock::new();
 fn timing() -> Option<&'static TimingLayer> {
     TIMING
         .get_or_init(|| {
-            if std::env::var_os("WISP_TIMING").is_none() {
-                return None;
-            }
+            std::env::var_os("WISP_TIMING")?;
             let layer = TimingLayer::new();
             let _ = tracing::subscriber::set_global_default(
                 tracing_subscriber::registry().with(layer.clone()),

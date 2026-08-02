@@ -37,14 +37,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resp = loop {
         let headers = cookie_headers(&cookies);
         let r = client.get("https://www.qishuxia.com/", &headers).await?;
-        if r.status == 403 {
-            if let Some(sc) = r.headers.get("set-cookie") {
-                let pair = sc.split(';').next().unwrap_or("").to_string();
-                if !pair.is_empty() && cookies.len() < 3 {
-                    println!("[Cookie挑战] 获取 cookie #{}: {}", cookies.len() + 1, pair);
-                    cookies.push(pair);
-                    continue;
-                }
+        if r.status == 403
+            && let Some(sc) = r.headers.get("set-cookie")
+        {
+            let pair = sc.split(';').next().unwrap_or("").to_string();
+            if !pair.is_empty() && cookies.len() < 3 {
+                println!("[Cookie挑战] 获取 cookie #{}: {}", cookies.len() + 1, pair);
+                cookies.push(pair);
+                continue;
             }
         }
         break r;

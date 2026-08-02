@@ -20,10 +20,10 @@ pub(crate) fn find_installed_browser(install_root: &Path) -> Result<Option<PathB
     for entry in std::fs::read_dir(install_root)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
-            if let Some(exe) = find_executable_in_dir(&path)? {
-                return Ok(Some(exe));
-            }
+        if path.is_dir()
+            && let Some(exe) = find_executable_in_dir(&path)?
+        {
+            return Ok(Some(exe));
         }
     }
     Ok(None)

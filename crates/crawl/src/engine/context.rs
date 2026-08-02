@@ -118,6 +118,5 @@ pub(crate) fn snapshot_stats_for(
         status_code_counts: status_codes,
         offsite_requests_count: stats.offsite.load(Ordering::SeqCst),
         cache_hits: stats.cache_hits.load(Ordering::SeqCst),
-        ..Default::default()
     }
 }

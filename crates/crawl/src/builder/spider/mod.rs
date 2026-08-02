@@ -3,6 +3,7 @@
 mod handlers;
 mod sitemap;
 
+use crate::builder::closure::BlockedFn;
 use crate::stop::StopCondition;
 use crate::{NeverStop, Request, Response};
 use futures::future::BoxFuture;
@@ -29,7 +30,7 @@ pub struct SpiderBuilder {
     start_urls: Vec<String>,
     handlers: HashMap<String, Handler>,
     allowed_domains: HashSet<String>,
-    is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
+    is_blocked_fn: Option<BlockedFn>,
     until_cond: Arc<dyn StopCondition>,
     max_depth: u32,
 }

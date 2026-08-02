@@ -146,3 +146,9 @@ impl RobotsCache {
         Some(parse_robots_text(&text))
     }
 }
+
+impl Default for RobotsCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}

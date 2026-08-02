@@ -121,5 +121,5 @@ pub(super) async fn next_work(
         .or_default()
         .push(req.clone());
 
-    NextWorkResult::Work(NextWork { spider, stats, req })
+    NextWorkResult::Work(Box::new(NextWork { spider, stats, req }))
 }

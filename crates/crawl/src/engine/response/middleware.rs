@@ -14,7 +14,7 @@ pub(super) async fn maybe_persist_checkpoint(
     };
     let interval = ctx.config.checkpoint_interval.max(1);
     let pages = stats.pages.load(Ordering::SeqCst);
-    if pages == 0 || pages % interval != 0 {
+    if pages == 0 || !pages.is_multiple_of(interval) {
         return;
     }
     let in_flight = ctx
@@ -47,7 +47,6 @@ pub(super) async fn maybe_persist_checkpoint(
 }
 
 /// 响应中间件链，支持最多 `max_refetch_rounds` 轮 Refetch。
-
 async fn refetch_or_error(
     ctx: &EngineContext,
     new_req: &Request,
@@ -111,16 +110,13 @@ pub(super) async fn apply_response_middlewares(
             }
             middleware::ResponseMwAction::Refetch(new_req) => {
                 refetch_depth += 1;
-                let Some(r) = refetch_or_error(
+                let r = refetch_or_error(
                     ctx,
                     &new_req,
                     ctx.config.max_refetch_rounds as u32,
                     refetch_depth,
                 )
-                .await
-                else {
-                    return None;
-                };
+                .await?;
                 resp = r;
             }
             middleware::ResponseMwAction::Continue | middleware::ResponseMwAction::Modified => {

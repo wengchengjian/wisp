@@ -3,7 +3,7 @@
 //!
 //! 旧模型（多 Browser 进程）有索引移位和句柄别名 bug；新模型（单 Browser
 //! + Semaphore）无索引概念，这些 bug 不可能发生。本文件验证新模型的核心
-//! 保证：并发 acquire 的 page 互相独立，permit 正确释放。
+//!   保证：并发 acquire 的 page 互相独立，permit 正确释放。
 //!
 //! `Browser::launch` 需要真实 Chrome，故本文件全部测试标记 `#[ignore]`，
 //! 仅在有 Chrome 的环境手动运行：`cargo test --test cr_fix_pool_test -- --ignored`。

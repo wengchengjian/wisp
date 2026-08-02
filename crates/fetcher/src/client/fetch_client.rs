@@ -124,13 +124,13 @@ impl FetchClient {
     }
 
     pub(crate) async fn fetch_http(&self, req: &Request) -> Result<Response> {
-        if let Some(ref blocker) = self.config.domain_blocker {
-            if blocker.should_block(&req.url) {
-                return Err(WispError::Config(format!(
-                    "domain blocked by DomainBlocker: {}",
-                    wisp_core::utils::sanitize_url(&req.url)
-                )));
-            }
+        if let Some(ref blocker) = self.config.domain_blocker
+            && blocker.should_block(&req.url)
+        {
+            return Err(WispError::Config(format!(
+                "domain blocked by DomainBlocker: {}",
+                wisp_core::utils::sanitize_url(&req.url)
+            )));
         }
         if let Some(proxy) = req.proxy.as_deref() {
             let client = self.proxy_client(proxy)?;
@@ -148,13 +148,13 @@ impl FetchClient {
         req: &Request,
         emulation: Profile,
     ) -> Result<Response> {
-        if let Some(ref blocker) = self.config.domain_blocker {
-            if blocker.should_block(&req.url) {
-                return Err(WispError::Config(format!(
-                    "domain blocked by DomainBlocker: {}",
-                    wisp_core::utils::sanitize_url(&req.url)
-                )));
-            }
+        if let Some(ref blocker) = self.config.domain_blocker
+            && blocker.should_block(&req.url)
+        {
+            return Err(WispError::Config(format!(
+                "domain blocked by DomainBlocker: {}",
+                wisp_core::utils::sanitize_url(&req.url)
+            )));
         }
         let mut http = self.config.http.clone();
         http.emulation = Some(emulation);
@@ -196,12 +196,12 @@ impl FetchClient {
 
     #[cfg(feature = "browser")]
     fn ensure_browser_proxy_allowed(&self, req: &Request) -> Result<()> {
-        if let Some(proxy) = req.proxy.as_deref() {
-            if self.config.proxy.as_deref() != Some(proxy) {
-                return Err(WispError::Config(format!(
-                    "browser mode does not support per-request proxy that differs from configured proxy: {proxy}"
-                )));
-            }
+        if let Some(proxy) = req.proxy.as_deref()
+            && self.config.proxy.as_deref() != Some(proxy)
+        {
+            return Err(WispError::Config(format!(
+                "browser mode does not support per-request proxy that differs from configured proxy: {proxy}"
+            )));
         }
         Ok(())
     }

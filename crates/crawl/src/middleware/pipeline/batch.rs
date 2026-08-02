@@ -8,6 +8,8 @@ use tokio::sync::Mutex;
 
 use crate::middleware::{CrawlContext, ItemPipeline};
 
+type FlushFn = Box<dyn Fn(Vec<Value>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 /// 通用批量处理 Pipeline：内部缓冲，满 batch_size 条自动调用 flush_fn 批量提交。
 ///
 /// 适用于数据库批量 INSERT、文件批量写入、API 批量上报等场景。
@@ -25,7 +27,7 @@ use crate::middleware::{CrawlContext, ItemPipeline};
 pub struct BatchItemPipeline {
     buffer: Mutex<Vec<Value>>,
     batch_size: usize,
-    flush_fn: Box<dyn Fn(Vec<Value>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+    flush_fn: FlushFn,
 }
 
 impl BatchItemPipeline {

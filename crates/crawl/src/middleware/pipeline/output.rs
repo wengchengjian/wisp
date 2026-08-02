@@ -50,10 +50,10 @@ impl OutputWriterPipeline {
     async fn write_jsonl_item(&self, item: &Value) {
         use std::io::Write;
         let mut guard = self.file.lock().await;
-        if let Some((ref mut file, _)) = *guard {
-            if let Ok(json) = serde_json::to_string(item) {
-                let _ = writeln!(file, "{}", json);
-            }
+        if let Some((ref mut file, _)) = *guard
+            && let Ok(json) = serde_json::to_string(item)
+        {
+            let _ = writeln!(file, "{}", json);
         }
     }
 
@@ -126,7 +126,7 @@ impl ItemPipeline for OutputWriterPipeline {
         use std::io::Write;
         if let Some((ref mut file, _)) = *self.file.lock().await {
             if self.format == OutputFormat::Json {
-                let _ = write!(file, "]\n");
+                let _ = writeln!(file, "]");
             }
             let _ = file.flush();
         }

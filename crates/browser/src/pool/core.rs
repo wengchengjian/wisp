@@ -64,10 +64,10 @@ impl BrowserPool {
     /// 快路径用 `try_lock` 避免阻塞；慢路径用 `lock` + double-check 防并发 launch。
     async fn get_or_launch_browser(&self) -> Result<Arc<Browser>> {
         // 快路径：已启动（try_lock 非阻塞）
-        if let Ok(guard) = self.browser.try_lock() {
-            if let Some(ref b) = *guard {
-                return Ok(Arc::clone(b));
-            }
+        if let Ok(guard) = self.browser.try_lock()
+            && let Some(ref b) = *guard
+        {
+            return Ok(Arc::clone(b));
         }
         // 慢路径：launch（mutex 串行化，防止并发 launch）
         let mut guard = self.browser.lock().await;
@@ -86,12 +86,12 @@ impl BrowserPool {
     /// 进程会随程序退出自然终止（`tokio::process::Child` drop 时 kill）。
     pub async fn shutdown(&self) {
         let mut guard = self.browser.lock().await;
-        if let Some(browser) = guard.take() {
-            if let Ok(b) = Arc::try_unwrap(browser) {
-                let _ = b.close().await;
-            }
-            // try_unwrap 失败（有在飞 handle）：忽略，进程随退出终止
+        if let Some(browser) = guard.take()
+            && let Ok(b) = Arc::try_unwrap(browser)
+        {
+            let _ = b.close().await;
         }
+        // try_unwrap 失败（有在飞 handle）：忽略，进程随退出终止
     }
 
     /// Browser 是否已启动。

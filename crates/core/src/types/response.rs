@@ -49,6 +49,8 @@ pub struct Response {
 impl Response {
     /// 从所有字段构建（内部使用，如 Engine 组装响应）。
     #[doc(hidden)]
+    // 9 参数属于内部组装 API，拆结构体会扩大公共 API 面。
+    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         status: u16,
         url: String,

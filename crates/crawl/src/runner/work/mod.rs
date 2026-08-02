@@ -20,7 +20,7 @@ struct NextWork {
 }
 
 enum NextWorkResult {
-    Work(NextWork),
+    Work(Box<NextWork>),
     Wait,
     Continue,
     Done,
@@ -44,7 +44,7 @@ pub(crate) async fn run_work_loop(
                     match scheduling::next_work(&ctx, autoscale.as_deref()).await {
                         NextWorkResult::Work(work) => {
                             let ctx = ctx.clone();
-                            return Some((work.run(ctx.clone()), ()));
+                            return Some(((*work).run(ctx.clone()), ()));
                         }
                         NextWorkResult::Wait => ctx.state.work_notify.notified().await,
                         NextWorkResult::Continue => continue,

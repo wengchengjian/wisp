@@ -38,5 +38,5 @@ async fn test_autoscaler_runs() {
     handle.abort();
     // 并发数应仍在合理范围内
     let current = pool.current_concurrency();
-    assert!(current >= 2 && current <= 8);
+    assert!((2..=8).contains(&current));
 }

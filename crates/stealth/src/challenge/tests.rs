@@ -18,7 +18,7 @@ fn test_challenge_type_equality() {
 #[test]
 fn test_challenge_type_clone_copy() {
     let ct = ChallengeType::Turnstile;
-    let cloned = ct.clone();
+    let cloned = ct;
     let copied = ct; // Copy
     assert_eq!(ct, cloned);
     assert_eq!(ct, copied);

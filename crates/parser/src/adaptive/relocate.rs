@@ -31,14 +31,12 @@ pub fn relocate_with_snapshot(doc: &Node, saved: &ElementSnapshot, tolerance: f6
     if let Some(node) = find_by_id(doc, saved, tolerance) {
         return Some(node);
     }
-    if let Some(class) = saved.attrs.get("class") {
-        if let Some(first) = class.split_whitespace().next() {
-            if !first.is_empty() {
-                if let Some(node) = best_by_selector(doc, &format!(".{first}"), saved, tolerance) {
-                    return Some(node);
-                }
-            }
-        }
+    if let Some(class) = saved.attrs.get("class")
+        && let Some(first) = class.split_whitespace().next()
+        && !first.is_empty()
+        && let Some(node) = best_by_selector(doc, &format!(".{first}"), saved, tolerance)
+    {
+        return Some(node);
     }
     best_by_selector(doc, &saved.tag, saved, tolerance)
 }

@@ -96,7 +96,7 @@ async fn test_e2e_fetch_single_page_httpbin() {
         stats.items_scraped
     );
     assert!(
-        stats.status_code_counts.get(&200).is_some(),
+        stats.status_code_counts.contains_key(&200),
         "应有 200 状态码统计: {:?}",
         stats.status_code_counts
     );
