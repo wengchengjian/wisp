@@ -2,6 +2,13 @@
 members = ["crates/core", "crates/storage", "crates/parser", "crates/proxy", "crates/http", "crates/browser", "crates/stealth", "crates/fetcher", "crates/crawl", "crates/mcp"]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.1"
+license = "Apache-2.0"
+description = "Lightweight undetected browser automation for Rust - built for scraping"
+
 [workspace.dependencies]
 wisp-core = { path = "crates/core", version = "0.1.0" }
 wisp-storage = { path = "crates/storage", version = "0.1.0" }
@@ -31,16 +38,31 @@ tempfile = "3"
 dashmap = "6"
 wreq = { version = "=6.0.0-rc.29", features = ["cookies", "stream"] }
 wreq-util = "=3.0.0-rc.14"
+aho-corasick = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+encoding_rs = "0.8"
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "https-ring", "webpki-roots"] }
+htmd = "0.5"
+rusqlite = { version = "0.39", features = ["bundled"] }
+thiserror = "2"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tungstenite = "0.30"
+which = "7"
+woven-html = "0.1"
+zip = "2"
 proptest = "1"
 insta = "1"
 
 [package]
 name = "wisp"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.91.1"
-description = "Lightweight undetected browser automation for Rust - built for scraping"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description.workspace = true
+license.workspace = true
 
 [features]
 default = ["http", "browser", "stealth", "mcp"]
@@ -68,13 +90,13 @@ wisp-crawl = { workspace = true }
 wisp-mcp = { workspace = true, optional = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
-clap = { version = "4", features = ["derive"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { workspace = true }
+tracing-subscriber = { workspace = true }
 wreq-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 bincode = { workspace = true }

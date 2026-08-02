@@ -1,9 +1,9 @@
 [package]
 name = "wisp-crawl"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.91.1"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [features]
 default = []
@@ -26,12 +26,12 @@ futures = { workspace = true }
 tracing = { workspace = true }
 bincode = { workspace = true }
 regex = { workspace = true }
-aho-corasick = "1"
+aho-corasick = { workspace = true }
 moka = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }
-htmd = "0.5"
+htmd = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]

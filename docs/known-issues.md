@@ -4,7 +4,7 @@
 > 每完成一项，从对应小节删除并补一行完成记录，避免堆积过期条目。
 
 **更新日期：** 2026-08-02
-**范围：** master `0161b1b`（覆盖率门槛 + 真实网络测试收口后）
+**范围：** master（持续更新）
 
 **完成记录（2026-08-02）：**
 - 分页 follow 竞态已修复：`NextWork` 创建时即计入 `global_in_flight`/`stats.in_flight` 并登记
@@ -26,6 +26,8 @@
 - Dynamic/Stealth 浏览器并发与取消测试已完成：新增 `tests/browser_concurrency_cancel_test.rs`，
   用本地延迟 server 验证 `max_concurrent_pages=2` 上限、Fetcher 取消、Engine abort/shutdown 后池可继续复用；
   8 项真实 Chrome 用例本机手动验证全部通过。
+- workspace 元数据与依赖收敛已完成：新增 `[workspace.package]`，剩余直写依赖收进 `[workspace.dependencies]`，
+  各 crate 改为 workspace 继承并统一版本管理。
 **完成记录（2026-08-01）：**
 
 - async `Store` 重构已完成：`Store` trait 与全部自由函数 async 化，SQLite/FileStore 经
@@ -179,24 +181,22 @@
 ### 已完成，不再列入
 - Rust 2024 / edition 2024 / stable 1.97.1：已到位；各 crate 已声明 `rust-version = "1.91.1"`。
 - CI 基础：`.github/workflows/ci.yml` 已包含 fmt、clippy `-D warnings`、doctest、nextest、cargo deny、llvm-cov 报告。
-- 依赖收敛主体：`[workspace.dependencies]` 已存在，常用依赖均以 `workspace = true` 引用。
+- workspace 元数据与依赖收敛：`[workspace.package]` + `[workspace.dependencies]` 已统一，公共 package 字段和依赖均以 workspace 继承。
 - 测试增强主体：proptest、insta、nextest 已落地；`cargo nextest run --workspace --all-features` 为默认测试命令。
 - cargo-deny 已接 CI。
 
-
 ### P1：高性价比工程化
-1. workspace 剩余收敛：增加 `[workspace.package]`，把仍直写版本的依赖收进 `[workspace.dependencies]`；不新增抽象。
-2. 稳定语法渐进采用：
+1. 稳定语法渐进采用：
    - `#[expect(...)]` 替换 `#[allow(...)]`，防止 lint 被悄悄放宽（低风险先做）。
    - `let_chains` 压平 URL、robots、scheduler 的多层条件（低风险重构）。
    - async closures 只在新 API 或明显样板处试点；`gen blocks` 用于 follow links / crawl events 流式产出试点；不批量改现有 trait object API。
-3. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
+2. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
 
 ### P2：按风险与 ROI 推进
-4. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
-5. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
-6. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
-7. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
+3. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
+4. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
+5. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
+6. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
 
 ### 明确不采纳
 - cargo-semver-checks / cargo-public-api：wisp 仍处快速 API 变动阶段，暂不做。
