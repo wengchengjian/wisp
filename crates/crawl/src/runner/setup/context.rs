@@ -17,29 +17,17 @@ use wisp_fetcher::FetchClient;
 impl Engine {
     pub(crate) fn build_rule_engine(&self) -> Result<Arc<Mutex<auto::ModeRuleEngine>>> {
         let mut rule_engine = auto::ModeRuleEngine::new();
-        for (pattern, mode) in &self.auto_rules {
+        for (pattern, mode) in &self.config.auto_rules {
             rule_engine.add_user_rule(pattern, *mode)?;
         }
         Ok(Arc::new(Mutex::new(rule_engine)))
     }
 
-    fn build_engine_config(
-        &self,
-        fetch_client: &Arc<FetchClient>,
-        fetch_mode: wisp_fetcher::FetchMode,
-        max_concurrent: usize,
-        obey_robots: bool,
-    ) -> engine::EngineConfig {
+    fn build_engine_config(&self, fetch_client: &Arc<FetchClient>) -> engine::EngineConfig {
         engine::EngineConfig {
+            user: self.config.clone(),
             client: fetch_client.clone(),
-            fetch_mode,
-            max_concurrent,
-            obey_robots,
-            engine_max_pages: self.max_pages,
-            max_refetch_rounds: self.max_refetch_rounds,
-            max_retries: self.max_retries,
-            checkpoint_store: self.checkpoint_store.clone(),
-            checkpoint_interval: self.checkpoint_interval,
+            checkpoint_store: self.runtime.checkpoint_store.clone(),
         }
     }
 
@@ -58,10 +46,9 @@ impl Engine {
             sched: sched.clone(),
             follow_tx,
             follow_rx: Arc::new(Mutex::new(follow_rx)),
-            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             control: self.control.clone(),
             work_notify: Arc::new(tokio::sync::Notify::new()),
-            event_bus: self.event_bus.clone(),
+            event_bus: self.runtime.event_bus.clone(),
             middleware_chain: self.build_middleware_chain(
                 fetch_client,
                 &rule_engine,
@@ -104,17 +91,11 @@ impl Engine {
         robots_cache: Arc<crate::runtime::robots::RobotsCache>,
         all_stats: Vec<Arc<SpiderStats>>,
     ) -> Arc<engine::EngineContext> {
-        let fetch_client = self.fetch_client.clone();
-        let fetch_mode = self.fetch_mode;
-        let max_concurrent = self.max_concurrent;
-        let obey_robots = self.obey_robots;
+        let fetch_client = self.runtime.fetch_client.clone();
+        let fetch_mode = self.config.fetch_mode;
+        let obey_robots = self.config.obey_robots;
         Arc::new(engine::EngineContext {
-            config: self.build_engine_config(
-                &fetch_client,
-                fetch_mode,
-                max_concurrent,
-                obey_robots,
-            ),
+            config: self.build_engine_config(&fetch_client),
             shared: self.build_engine_shared(
                 &fetch_client,
                 sched,

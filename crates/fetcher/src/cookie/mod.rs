@@ -10,12 +10,14 @@
 pub mod browser;
 #[cfg(feature = "stealth")]
 pub mod cf;
+mod composite;
 pub mod http;
 
 #[cfg(feature = "browser")]
 pub use browser::BrowserCookieJar;
 #[cfg(feature = "stealth")]
 pub use cf::{CfCookieJar, CfSession};
+pub use composite::CompositeCookieJar;
 pub use http::HttpCookieJar;
 
 use async_trait::async_trait;
@@ -41,6 +43,40 @@ pub struct Cookie {
     pub same_site: Option<String>,
     /// Unix 时间戳（秒），None 表示会话 cookie。
     pub expires: Option<f64>,
+}
+
+impl Cookie {
+    /// 从 CDP `Network.getCookies` 返回的 JSON 对象转换。
+    #[cfg(any(feature = "browser", feature = "stealth"))]
+    pub(crate) fn from_cdp_value(v: &serde_json::Value, default_domain: &str) -> Option<Self> {
+        Some(Self {
+            name: v.get("name")?.as_str()?.to_string(),
+            value: v.get("value")?.as_str()?.to_string(),
+            domain: v
+                .get("domain")
+                .and_then(|d| d.as_str())
+                .unwrap_or(default_domain)
+                .to_string(),
+            path: v
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("/")
+                .to_string(),
+            secure: v
+                .get("secure")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            http_only: v
+                .get("httpOnly")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            same_site: v
+                .get("sameSite")
+                .and_then(|s| s.as_str())
+                .map(std::string::ToString::to_string),
+            expires: v.get("expires").and_then(serde_json::Value::as_f64),
+        })
+    }
 }
 
 /// Cookie 存储 trait — 统一 HTTP/浏览器/CF 三处 cookie 状态。
@@ -81,6 +117,11 @@ pub trait CookieJar: Send + Sync {
     async fn ua(&self, url: &Url) -> Option<String> {
         let _ = url;
         None
+    }
+
+    /// 设置与某域名 cookie 会话绑定的 User-Agent（默认 no-op）。
+    async fn set_session_ua(&self, domain: &str, ua: Option<&str>) {
+        let _ = (domain, ua);
     }
 }
 

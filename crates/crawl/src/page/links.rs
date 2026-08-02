@@ -43,6 +43,28 @@ impl Page {
         limit: usize,
         meta_for: impl Fn(&Page, usize, &Node) -> Value,
     ) -> &mut Self {
+        self.follow_links_filtered_n(selectors, callback, limit, |_| true, meta_for)
+    }
+
+    /// 按选择器提取链接并用 URL predicate 过滤，符合条件才生成 follow 请求。
+    pub fn follow_links_filtered(
+        &mut self,
+        selectors: &[&str],
+        callback: &str,
+        predicate: impl Fn(&str) -> bool,
+        meta_for: impl Fn(&Page, usize, &Node) -> Value,
+    ) -> &mut Self {
+        self.follow_links_filtered_n(selectors, callback, usize::MAX, predicate, meta_for)
+    }
+
+    fn follow_links_filtered_n(
+        &mut self,
+        selectors: &[&str],
+        callback: &str,
+        limit: usize,
+        predicate: impl Fn(&str) -> bool,
+        meta_for: impl Fn(&Page, usize, &Node) -> Value,
+    ) -> &mut Self {
         let mut pending = Vec::new();
         for sel in selectors {
             let links = self.doc.select(sel);
@@ -61,9 +83,12 @@ impl Page {
                 if href.is_empty() || title.is_empty() {
                     continue;
                 }
-                if let Some(req) = self.resp.follow_meta(&href, meta_for(self, idx, a)) {
-                    pending.push(req.with_callback(callback));
-                    followed += 1;
+                let meta = meta_for(self, idx, a);
+                if let Some(req) = self.resp.follow_meta(&href, meta) {
+                    if predicate(&req.url) {
+                        pending.push(req.with_callback(callback));
+                        followed += 1;
+                    }
                 }
             }
             break;

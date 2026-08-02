@@ -1,6 +1,7 @@
 //! Engine 子模块：context。
 
 use super::*;
+use crate::runner::EngineConfig as UserEngineConfig;
 
 // === EngineContext: 打包所有共享状态 ===
 
@@ -17,20 +18,12 @@ pub(crate) struct EngineContext {
 
 /// 只读配置（从 Spider 提取，run 期间不变）。
 pub(crate) struct EngineConfig {
+    /// 唯一用户配置源。
+    pub user: UserEngineConfig,
+    /// 共享 FetchClient。
     pub client: Arc<wisp_fetcher::FetchClient>,
-    pub fetch_mode: FetchMode,
-    pub max_concurrent: usize,
-    pub obey_robots: bool,
-    pub engine_max_pages: usize,
-    pub max_refetch_rounds: usize,
-    /// 网络错误重试上限（fetch 失败后同步重试，由 engine 维护 retry_count）。
-    ///
-    /// 与 `max_refetch_rounds`（响应中间件 Refetch 上限）独立：
-    /// - `max_retries`：fetch_page 失败后，engine 在 fetch_dispatch 内同步重试的次数上限
-    /// - `max_refetch_rounds`：响应成功后，process_response 内 Refetch 循环的次数上限
-    pub max_retries: u32,
+    /// checkpoint 存储（可选）。
     pub checkpoint_store: Option<Arc<dyn wisp_storage::Store>>,
-    pub checkpoint_interval: usize,
 }
 
 /// 跨 task 共享的可变状态。
@@ -38,11 +31,6 @@ pub(crate) struct EngineShared {
     pub sched: Arc<scheduler::Scheduler>,
     pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Request>>>,
-    /// 代理 Client 缓存（key=proxy URL，避免每请求重建 Client）。
-    ///
-    /// ND-009-SEC：使用 moka::sync::Cache 限制最大条目数，防止攻击者注入大量
-    /// 不同 proxy URL 导致无界增长 OOM。默认上限 1024，超限时 LRU 淘汰。
-    pub proxy_clients: Arc<moka::sync::Cache<String, Arc<Client>>>,
     pub control: Arc<control::EngineControl>,
     pub work_notify: Arc<tokio::sync::Notify>,
     pub middleware_chain: Arc<middleware::MiddlewareChain>,
@@ -113,10 +101,10 @@ pub(crate) fn build_crawl_context_for(
 ) -> middleware::CrawlContext {
     middleware::CrawlContext {
         spider_name: spider.name().to_string(),
-        fetch_mode: ctx.config.fetch_mode,
-        max_concurrent: ctx.config.max_concurrent,
-        max_pages: ctx.config.engine_max_pages,
-        obey_robots: ctx.config.obey_robots,
+        fetch_mode: ctx.config.user.fetch_mode,
+        max_concurrent: ctx.config.user.max_concurrent,
+        max_pages: ctx.config.user.max_pages,
+        obey_robots: ctx.config.user.obey_robots,
         pages_crawled: stats.pages.load(Ordering::SeqCst),
         errors: stats.errors.load(Ordering::SeqCst),
     }

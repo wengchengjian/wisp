@@ -1,12 +1,13 @@
-//! Engine 公开配置快照。
+//! Engine 公开配置：builder 产出、Engine 持有的唯一配置源。
 
 use std::time::Duration;
 
 use wisp_fetcher::{FetchClientConfig, FetchMode};
 
-/// Engine 公开配置快照（ARCH: master 公开 `EngineConfig` 的轻量移植）。
+/// Engine 配置。
 ///
-/// 只读视图，由 [`Engine::config`] 生成；内部实现仍以 Engine 字段为事实源。
+/// 运行时资源（FetchClient、store、autoscale、event bus、middleware、pipeline）
+/// 不进入本结构，由 `EngineRuntime` 持有。
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// 共享 FetchClient 传输配置（HTTP/浏览器/代理等单一事实源）。
@@ -41,4 +42,27 @@ pub struct EngineConfig {
     pub checkpoint_enabled: bool,
     /// checkpoint 保存间隔（页数）。
     pub checkpoint_interval: usize,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            transport: FetchClientConfig::default(),
+            max_concurrent: 8,
+            max_pages: 1000,
+            fetch_mode: FetchMode::Auto,
+            obey_robots: true,
+            max_retries: 3,
+            max_refetch_rounds: 5,
+            download_delay: Duration::ZERO,
+            headers: Vec::new(),
+            ua_rotation: false,
+            cookie_challenge: false,
+            dynamic_upgrade: false,
+            auto_rules: Vec::new(),
+            cache_enabled: false,
+            checkpoint_enabled: false,
+            checkpoint_interval: 100,
+        }
+    }
 }

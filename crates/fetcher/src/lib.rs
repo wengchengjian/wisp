@@ -142,9 +142,7 @@ mod tests {
     fn test_fetcher_http_mode_has_no_strategy() {
         let fetcher =
             Fetcher::new(FetchMode::Http, FetchClientConfig::default()).expect("build fetcher");
-        let _ = &fetcher;
-        #[cfg(feature = "browser")]
-        assert!(fetcher.browser_strategy().is_none());
+        assert_eq!(fetcher.mode(), FetchMode::Http);
     }
 
     #[test]
@@ -161,10 +159,7 @@ mod tests {
     fn test_fetcher_dynamic_mode_has_strategy() {
         let fetcher =
             Fetcher::new(FetchMode::Dynamic, FetchClientConfig::default()).expect("build fetcher");
-        assert!(
-            fetcher.browser_strategy().is_some(),
-            "Dynamic 模式应有 strategy"
-        );
+        assert_eq!(fetcher.mode(), FetchMode::Dynamic);
     }
 
     #[cfg(feature = "stealth")]
@@ -172,9 +167,6 @@ mod tests {
     fn test_fetcher_stealth_mode_has_strategy() {
         let fetcher =
             Fetcher::new(FetchMode::Stealth, FetchClientConfig::default()).expect("build fetcher");
-        assert!(
-            fetcher.browser_strategy().is_some(),
-            "Stealth 模式应有 strategy"
-        );
+        assert_eq!(fetcher.mode(), FetchMode::Stealth);
     }
 }

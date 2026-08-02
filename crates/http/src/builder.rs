@@ -31,6 +31,11 @@ impl ClientBuilder {
             config: Config::default(),
         }
     }
+    /// 从完整配置创建构建器。
+    #[must_use]
+    pub fn from_config(config: Config) -> Self {
+        Self { config }
+    }
     /// 设置请求超时。
     pub fn timeout(mut self, d: Duration) -> Self {
         self.config.timeout = d;
@@ -170,5 +175,18 @@ mod tests {
         assert!(is_socks_proxy("socks5h://127.0.0.1:1080"));
         assert!(!is_socks_proxy("http://127.0.0.1:8080"));
         assert!(!is_socks_proxy("not-a-url"));
+    }
+
+    #[test]
+    fn from_config_preserves_dns_over_https() {
+        let config = Config {
+            dns_over_https: Some("https://1.1.1.1/dns-query".into()),
+            ..Default::default()
+        };
+        let client = Client::from_config(config).expect("build client");
+        assert_eq!(
+            client.config_ref().dns_over_https.as_deref(),
+            Some("https://1.1.1.1/dns-query")
+        );
     }
 }

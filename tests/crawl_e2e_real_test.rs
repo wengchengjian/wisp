@@ -448,7 +448,7 @@ async fn test_e2e_development_mode_cache_replay() {
 
     // 第二次运行：命中缓存
     let (stats2, _) = engine.run(CacheSpider).await.unwrap();
-    assert_eq!(stats2.pages_crawled, 1, "第二次应抓取 1 页");
+    assert_eq!(stats2.pages_crawled, 0, "缓存命中不应计入 pages_crawled");
     assert_eq!(
         stats2.cache_hits, 1,
         "第二次应命中缓存, 实际: {}",

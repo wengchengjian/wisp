@@ -31,6 +31,7 @@ pub struct SpiderBuilder {
     allowed_domains: HashSet<String>,
     is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
     until_cond: Arc<dyn StopCondition>,
+    max_depth: u32,
 }
 
 impl SpiderBuilder {
@@ -43,6 +44,7 @@ impl SpiderBuilder {
             allowed_domains: HashSet::new(),
             is_blocked_fn: None,
             until_cond: Arc::new(NeverStop),
+            max_depth: u32::MAX,
         }
     }
 
@@ -55,6 +57,12 @@ impl SpiderBuilder {
     /// 设置允许的域名集合。
     pub fn allowed_domains(mut self, domains: Vec<impl Into<String>>) -> Self {
         self.allowed_domains = domains.into_iter().map(|d| d.into()).collect();
+        self
+    }
+
+    /// 设置最大爬取深度（由 Engine 统一执行）。
+    pub fn max_depth(mut self, max_depth: u32) -> Self {
+        self.max_depth = max_depth;
         self
     }
 
@@ -107,6 +115,7 @@ impl SpiderBuilder {
             allowed_domains: self.allowed_domains,
             is_blocked_fn: self.is_blocked_fn,
             until_cond: self.until_cond,
+            max_depth: self.max_depth,
         }
     }
 }

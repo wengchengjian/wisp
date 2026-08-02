@@ -31,6 +31,15 @@ fn test_spider_builder_allowed_domains() {
 }
 
 #[test]
+fn test_spider_builder_max_depth() {
+    let spider = SpiderBuilder::new("test")
+        .max_depth(3)
+        .on("default", |_| async move { (vec![], vec![]) })
+        .build();
+    assert_eq!(spider.max_depth(), 3);
+}
+
+#[test]
 #[should_panic(expected = "必须至少注册一个 handler")]
 fn test_spider_builder_no_handler_panics() {
     let _spider = SpiderBuilder::new("test")

@@ -1,36 +1,27 @@
 //! MCP stealth_fetch 工具：复用共享 FetchClient + StealthStrategy。
 
 #[cfg(feature = "stealth")]
-use serde_json::{json, Value};
+use super::types::{StealthFetchArgs, StealthFetchResult, ToolContext};
 #[cfg(feature = "stealth")]
-use std::sync::Arc;
+use wisp_core::error::Result;
 #[cfg(feature = "stealth")]
-use wisp_core::error::{McpError, Result, WispError};
-#[cfg(feature = "stealth")]
-use wisp_core::Request;
-#[cfg(feature = "stealth")]
-use wisp_fetcher::{cookie::CfCookieJar, FetchClient, StealthStrategy};
+use wisp_core::{FetchMode, Request};
 
 #[cfg(feature = "stealth")]
-pub async fn stealth_fetch(args: Value, fetch_client: &Arc<FetchClient>) -> Result<Value> {
-    let url = args
-        .get("url")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| WispError::Mcp(McpError::General("missing 'url'".into())))?;
-    wisp_core::utils::validate_url(url)?;
-    let config = fetch_client.config();
-    let cf_jar = Arc::new(CfCookieJar::new(&config.cf_data_dir, config.cf_cookie_ttl));
-    let strategy = StealthStrategy::from_config(config, cf_jar);
-    let req = Request::get(url);
-    let resp = fetch_client
-        .fetch_browser(&req, &strategy)
-        .await
-        .map_err(|e| WispError::Mcp(McpError::General(format!("stealth fetch: {e}"))))?;
+pub async fn stealth_fetch(
+    args: StealthFetchArgs,
+    ctx: &ToolContext<'_>,
+) -> Result<StealthFetchResult> {
+    wisp_core::utils::validate_url(&args.url)?;
+    let resp = ctx
+        .fetch_client
+        .fetch(&Request::get(&args.url), FetchMode::Stealth)
+        .await?;
     let html = String::from_utf8_lossy(&resp.body).to_string();
-    Ok(json!({
-        "url": resp.url,
-        "title": resp.title,
-        "html": html,
-        "bytes": resp.body.len()
-    }))
+    Ok(StealthFetchResult {
+        url: resp.url,
+        title: resp.title,
+        html,
+        bytes: resp.body.len(),
+    })
 }

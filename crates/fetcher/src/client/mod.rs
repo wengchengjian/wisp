@@ -87,6 +87,71 @@ mod tests {
         drop(client);
     }
 
+    #[test]
+    fn fetch_client_wires_doh_into_http_client() {
+        let config = FetchClientConfig {
+            http: wisp_http::Config {
+                dns_over_https: Some("https://1.1.1.1/dns-query".into()),
+                ..Default::default()
+            },
+            max_concurrent_pages: 0,
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+        assert_eq!(
+            client.http().config_ref().dns_over_https.as_deref(),
+            Some("https://1.1.1.1/dns-query")
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_auto_mode() {
+        let config = FetchClientConfig {
+            max_concurrent_pages: 0,
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+        let req = wisp_core::Request::get("https://example.com/");
+        let err = client
+            .fetch(&req, wisp_core::FetchMode::Auto)
+            .await
+            .expect_err("Auto 应由 crawl Engine 处理");
+        assert!(err.to_string().contains("Auto"));
+    }
+
+    #[cfg(feature = "browser")]
+    #[tokio::test]
+    async fn fetch_dynamic_without_pool_returns_error() {
+        let config = FetchClientConfig {
+            max_concurrent_pages: 0,
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+        let req = wisp_core::Request::get("https://example.com/");
+        let err = client
+            .fetch(&req, wisp_core::FetchMode::Dynamic)
+            .await
+            .expect_err("无 browser pool 应返回错误");
+        assert!(err.to_string().contains("browser pool"));
+    }
+
+    #[cfg(feature = "browser")]
+    #[tokio::test]
+    async fn fetch_dynamic_rejects_per_request_proxy() {
+        let config = FetchClientConfig {
+            max_concurrent_pages: 0,
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+        let req =
+            wisp_core::Request::get("https://example.com/").with_proxy("http://127.0.0.1:8080");
+        let err = client
+            .fetch(&req, wisp_core::FetchMode::Dynamic)
+            .await
+            .expect_err("浏览器模式不应接受不一致 per-request proxy");
+        assert!(err.to_string().contains("per-request proxy"));
+    }
+
     #[tokio::test]
     async fn fetch_client_has_cookie_jar() {
         let config = FetchClientConfig::default();
@@ -111,6 +176,35 @@ mod tests {
         let cookies = jar.get(&url).await;
         assert_eq!(cookies.len(), 1);
         assert_eq!(cookies[0].name, "test");
+    }
+
+    #[cfg(feature = "stealth")]
+    #[tokio::test]
+    async fn fetch_client_cookie_jar_round_trips_cf_session_ua() {
+        let config = FetchClientConfig {
+            max_concurrent_pages: 0,
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+        let jar = client.cookie_jar();
+        use crate::cookie::Cookie;
+        use url::Url;
+        let cookie = Cookie {
+            name: "cf_clearance".into(),
+            value: "cf-token".into(),
+            domain: "cf.example.com".into(),
+            path: "/".into(),
+            secure: true,
+            http_only: true,
+            same_site: Some("Lax".into()),
+            expires: None,
+        };
+        jar.set(cookie).await;
+        jar.set_session_ua("cf.example.com", Some("test-ua")).await;
+        let url = Url::parse("https://cf.example.com/").expect("合法 URL");
+        let header = jar.header(&url).await.expect("应能构造 Cookie 头");
+        assert!(header.contains("cf_clearance=cf-token"));
+        assert_eq!(jar.ua(&url).await.as_deref(), Some("test-ua"));
     }
 
     #[test]

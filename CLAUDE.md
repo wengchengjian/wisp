@@ -9,100 +9,16 @@ cargo build            # lib + bins
 cargo build --release
 ```
 
-## 语言
-- 默认使用中文思考和回复
+## Agent skills
 
-## 代码风格
+### Issue tracker
 
-- 变量命名 snake_case
-- 提交信息用中文
+Issues for this repo live in GitHub Issues and are operated through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
-## 编写代码前必须先加载以下技能
+### Triage labels
 
-### Rust相关
+The five canonical triage labels are `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
 
-- 编写rust代码参考rust-best-practices技能，异步代码参考rust-async-patterns技能
-- 编写tauri代码参考tauri-v2技能
+### Domain docs
 
-### 前端相关
-
-- 编写vue代码参考vue-best-practices技能
-- 编写typescript参考typescript-advanced-types技能
-
-## 开发流程
-- 从不向后兼容，只考虑最优解
-
-- 新功能或复杂任务先进入 Plan 模式，不要直接写代码
-  
-- 编码时优先 TDD（先写测试再写实现）
-  
-- 遇到 Bug 用 systematic-debugging 技能，不盲目试错
-  
-- 完成后必须运行验证（测试/手动确认），通过后才能声称完成
-  
-- 提交前用 code-review 审查变更
-
-## 四个原则
-
-### 编码前思考
-
-**不要假设。不要隐藏困惑。呈现权衡。**
-
-LLM 经常默默选择一种解释然后执行。这个原则强制明确推理：
-
-- **明确说明假设** — 如果不确定，询问而不是猜测
-- **呈现多种解释** — 当存在歧义时，不要默默选择
-- **适时提出异议** — 如果存在更简单的方法，说出来
-- **困惑时停下来** — 指出不清楚的地方并要求澄清
-
-### 简洁优先
-
-**用最少的代码解决问题。不要过度推测。**
-
-对抗过度工程的倾向：
-
-- 不要添加要求之外的功能
-- 不要为一次性代码创建抽象
-- 不要添加未要求的"灵活性"或"可配置性"
-- 不要为不可能发生的场景做错误处理
-- 如果 200 行代码可以写成 50 行，重写它
-
-**检验标准：** 资深工程师会觉得这过于复杂吗？如果是，简化。
-
-### 精准修改
-
-**只碰必须碰的。只清理自己造成的混乱。**
-
-编辑现有代码时：
-
-- 不要"改进"相邻的代码、注释或格式
-- 不要重构没坏的东西
-- 匹配现有风格，即使你更倾向于不同的写法
-- 如果注意到无关的死代码，提一下 —— 不要删除它
-
-当你的改动产生孤儿代码时：
-
-- 删除因你的改动而变得无用的导入/变量/函数
-- 不要删除预先存在的死代码，除非被要求
-
-**检验标准：** 每一行修改都应该能直接追溯到用户的请求。
-
-### 目标驱动执行
-
-**定义成功标准。循环验证直到达成。**
-
-将指令式任务转化为可验证的目标：
-
-| 不要这样做... | 转化为... |
-| --- | --- |
-| "添加验证" | "为无效输入编写测试，然后让它们通过" |
-| "修复 bug" | "编写重现 bug 的测试，然后让它通过" |
-| "重构 X" | "确保重构前后测试都能通过" |
-
-对于多步骤任务，说明一个简短的计划：
-
-```
-1. [步骤] → 验证: [检查]
-2. [步骤] → 验证: [检查]
-3. [步骤] → 验证: [检查]
-```
+Single-context: read root `CONTEXT.md` and `docs/adr/` before working in an area. See `docs/agents/domain.md`.

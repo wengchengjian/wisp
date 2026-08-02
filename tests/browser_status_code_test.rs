@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 use std::time::Duration;
-use wisp::fetcher::{Method, Request};
+use wisp::fetcher::{FetchMode, Method, Request};
 use wisp::{FetchClient, FetchClientConfig};
 
 async fn spawn_status_server(status: u16, body: &'static str) -> String {
@@ -68,8 +68,7 @@ async fn fetch_status(client: &FetchClient, url: String) -> u16 {
         method: Method::Get,
         ..Default::default()
     };
-    let strategy = wisp::fetcher::DynamicStrategy::from_config(client.config());
-    match client.fetch_browser(&req, &strategy).await {
+    match client.fetch(&req, FetchMode::Dynamic).await {
         Ok(resp) => resp.status,
         Err(e) => {
             eprintln!("fetch_browser failed: {e:?}");

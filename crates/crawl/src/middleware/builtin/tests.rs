@@ -6,7 +6,6 @@ use super::*;
 use crate::{Request, Response};
 use wisp_core::error::WispError;
 use wisp_fetcher::FetchMode;
-use wisp_http::Client;
 
 use crate::auto::ModeRuleEngine;
 use crate::middleware::MiddlewareChain;
@@ -361,17 +360,18 @@ async fn blocked_retry_skips_for_200() {
 
 // === default_middlewares 分类逻辑测试 ===
 
-/// 构造测试用 HTTP Client（从 FetchClient 提取，复用 engine 测试模式）。
-fn make_http_client() -> Arc<Client> {
-    wisp_fetcher::FetchClient::new(wisp_fetcher::FetchClientConfig::default())
-        .expect("build fetch client")
-        .http_arc()
+/// 构造测试用共享 FetchClient。
+fn make_fetch_client() -> Arc<wisp_fetcher::FetchClient> {
+    Arc::new(
+        wisp_fetcher::FetchClient::new(wisp_fetcher::FetchClientConfig::default())
+            .expect("build fetch client"),
+    )
 }
 
 /// 验证默认中间件按 fetch_mode + 配置正确分类注入。
 #[test]
 fn default_middlewares_classifies_by_mode_and_config() {
-    let http_client = make_http_client();
+    let http_client = make_fetch_client();
     let robots_cache = Arc::new(RobotsCache::new());
     let rule_engine = Arc::new(Mutex::new(ModeRuleEngine::new()));
 
@@ -469,7 +469,7 @@ fn default_middlewares_classifies_by_mode_and_config() {
 /// 验证默认链的实际名称，便于 profiling 时核对中间件清单。
 #[test]
 fn default_middlewares_names_match_config() {
-    let http_client = make_http_client();
+    let http_client = make_fetch_client();
     let robots_cache = Arc::new(RobotsCache::new());
     let rule_engine = Arc::new(Mutex::new(ModeRuleEngine::new()));
     let mws = default_middlewares(DefaultMiddlewareConfig {

@@ -32,7 +32,9 @@ pub(crate) async fn run_work_loop(
 ) {
     let buffer_ceiling = autoscale
         .as_ref()
-        .map_or(ctx.config.max_concurrent, |pool| pool.max_concurrency());
+        .map_or(ctx.config.user.max_concurrent, |pool| {
+            pool.max_concurrency()
+        });
     let stream = {
         let ctx = ctx.clone();
         let autoscale = autoscale.clone();

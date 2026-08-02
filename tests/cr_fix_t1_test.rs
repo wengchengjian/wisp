@@ -3,20 +3,34 @@
 use serde_json::json;
 use std::sync::Arc;
 use wisp::crawl::Engine;
-use wisp::mcp::tools::crawl_site;
+use wisp::mcp::tools::{call_tool, ToolContext};
 use wisp::storage::Store;
+use wisp::{FetchClient, FetchClientConfig, MemoryStore};
 
 #[tokio::test]
 async fn test_crawl_site_uses_start_urls() {
     let server = spawn_html_server("<p>item1</p><p>item2</p>").await;
     // Task 5：crawl_site 复用共享 Engine（HTTP/缓存/代理池）
     let engine = Engine::infra().max_pages(100).build().unwrap();
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    let client = Arc::new(
+        FetchClient::new(FetchClientConfig {
+            max_concurrent_pages: 0,
+            ..Default::default()
+        })
+        .expect("build fetch client"),
+    );
+    let ctx = ToolContext {
+        store: &store,
+        engine: &engine,
+        fetch_client: &client,
+    };
     let args = json!({
         "start_urls": [server],
         "css_selector": "p",
         "max_pages": 1
     });
-    let result = crawl_site(args, &engine)
+    let result = call_tool("crawl_site", args, &ctx)
         .await
         .expect("crawl_site should succeed");
     assert_eq!(

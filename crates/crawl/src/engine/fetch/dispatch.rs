@@ -7,7 +7,7 @@ use super::*;
 
 /// Auto 模式连接层失败且规则引擎尚未学习 Stealth 时，触发首次升级。
 async fn should_auto_upgrade(ctx: &EngineContext, req: &Request) -> bool {
-    if ctx.config.fetch_mode != FetchMode::Auto
+    if ctx.config.user.fetch_mode != FetchMode::Auto
         || req.fetch_mode_override.is_some()
         || req.retry_count != 0
     {
@@ -142,19 +142,16 @@ pub(crate) async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> Result
     let spider = ctx.state.spider_for(req).ok_or_else(|| {
         wisp_core::error::WispError::Engine("request has no matching spider".into())
     })?;
-    let max_retries = ctx.config.max_retries;
+    let max_retries = ctx.config.user.max_retries;
     let mut owned: Option<Request> = None;
 
     loop {
         let req_ref = owned.as_ref().unwrap_or(req);
-        let proxy = req_ref.proxy.clone();
         match fetch_page(
             &ctx.config.client,
             req_ref,
-            proxy.as_deref(),
-            ctx.config.fetch_mode,
+            ctx.config.user.fetch_mode,
             &ctx.shared.rule_engine,
-            &ctx.shared.proxy_clients,
             &ctx.shared.cf_domain_locks,
         )
         .await

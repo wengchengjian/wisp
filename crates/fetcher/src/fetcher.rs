@@ -7,15 +7,6 @@ use std::sync::Arc;
 use wisp_core::error::{Result, WispError};
 use wisp_core::{FetchMode, Request, Response};
 
-#[cfg(feature = "stealth")]
-use crate::cookie::CfCookieJar;
-#[cfg(feature = "browser")]
-use crate::strategies::DynamicStrategy;
-#[cfg(feature = "stealth")]
-use crate::strategies::StealthStrategy;
-#[cfg(feature = "browser")]
-use crate::strategy::BrowserFetchStrategy;
-
 /// Fetcher — FetchClient 的薄包装，用于一次性请求场景。
 ///
 /// 持有 `Arc<FetchClient>`，所有请求委托给 FetchClient。
@@ -23,10 +14,6 @@ use crate::strategy::BrowserFetchStrategy;
 pub struct Fetcher {
     client: Arc<FetchClient>,
     mode: FetchMode,
-    /// 浏览器模式下的 strategy（Http/Auto 为 None）。
-    /// ARCH: 由 Fetcher::new 根据 mode 自动构造。
-    #[cfg(feature = "browser")]
-    browser_strategy: Option<Arc<dyn BrowserFetchStrategy>>,
 }
 
 impl Fetcher {
@@ -49,7 +36,6 @@ impl Fetcher {
     }
 
     /// 从已有 FetchClient 创建 Fetcher。
-    /// 自动构造 Dynamic/Stealth strategy，与 `Fetcher::new` 行为一致。
     pub fn from_client(client: Arc<FetchClient>, mode: FetchMode) -> Result<Self> {
         if mode == FetchMode::Auto {
             return Err(WispError::Config(
@@ -57,25 +43,7 @@ impl Fetcher {
                     .into(),
             ));
         }
-        #[cfg(feature = "browser")]
-        {
-            let browser_strategy = Self::build_strategy(mode, client.config())?;
-            Ok(Self {
-                client,
-                mode,
-                browser_strategy,
-            })
-        }
-        #[cfg(not(feature = "browser"))]
-        {
-            match mode {
-                FetchMode::Http => Ok(Self { client, mode }),
-                FetchMode::Dynamic | FetchMode::Stealth => Err(WispError::Config(format!(
-                    "{mode:?} mode requires 'browser' feature"
-                ))),
-                FetchMode::Auto => unreachable!("Auto 已在函数开头拒绝"),
-            }
-        }
+        Ok(Self { client, mode })
     }
 
     /// 从配置创建 Fetcher。
@@ -87,67 +55,8 @@ impl Fetcher {
                     .into(),
             ));
         }
-        let client = Arc::new(FetchClient::new(config.clone())?);
-        #[cfg(feature = "browser")]
-        {
-            let browser_strategy = Self::build_strategy(mode, &config)?;
-            Ok(Self {
-                client,
-                mode,
-                browser_strategy,
-            })
-        }
-        #[cfg(not(feature = "browser"))]
-        {
-            // 非 browser feature 下，Dynamic/Stealth 模式不可用
-            match mode {
-                FetchMode::Http => Ok(Self { client, mode }),
-                FetchMode::Auto => unreachable!("Auto 已在函数开头拒绝"),
-                FetchMode::Dynamic | FetchMode::Stealth => Err(WispError::Config(format!(
-                    "{mode:?} mode requires 'browser' feature"
-                ))),
-            }
-        }
-    }
-
-    /// 根据 mode 构造 browser_strategy。
-    #[cfg(feature = "browser")]
-    fn build_strategy(
-        mode: FetchMode,
-        config: &FetchClientConfig,
-    ) -> Result<Option<Arc<dyn BrowserFetchStrategy>>> {
-        match mode {
-            FetchMode::Http => Ok(None),
-            FetchMode::Auto => Err(WispError::Config(
-                "Auto mode is owned by wisp_crawl Engine".into(),
-            )),
-            FetchMode::Dynamic => Self::build_dynamic_strategy(config),
-            FetchMode::Stealth => Self::build_stealth_strategy(config),
-        }
-    }
-
-    #[cfg(feature = "browser")]
-    fn build_dynamic_strategy(
-        config: &FetchClientConfig,
-    ) -> Result<Option<Arc<dyn BrowserFetchStrategy>>> {
-        Ok(Some(Arc::new(DynamicStrategy::from_config(config))))
-    }
-
-    #[cfg(feature = "stealth")]
-    fn build_stealth_strategy(
-        config: &FetchClientConfig,
-    ) -> Result<Option<Arc<dyn BrowserFetchStrategy>>> {
-        let cf_jar = Arc::new(CfCookieJar::new(&config.cf_data_dir, config.cf_cookie_ttl));
-        Ok(Some(Arc::new(StealthStrategy::from_config(config, cf_jar))))
-    }
-
-    #[cfg(all(feature = "browser", not(feature = "stealth")))]
-    fn build_stealth_strategy(
-        _: &FetchClientConfig,
-    ) -> Result<Option<Arc<dyn BrowserFetchStrategy>>> {
-        Err(WispError::Config(
-            "Stealth mode requires 'stealth' feature".into(),
-        ))
+        let client = Arc::new(FetchClient::new(config)?);
+        Ok(Self { client, mode })
     }
 
     /// 获取当前模式。
@@ -168,13 +77,6 @@ impl Fetcher {
         self.client.config()
     }
 
-    /// 获取浏览器策略引用（如有）。
-    #[must_use]
-    #[cfg(feature = "browser")]
-    pub fn browser_strategy(&self) -> Option<&Arc<dyn BrowserFetchStrategy>> {
-        self.browser_strategy.as_ref()
-    }
-
     /// GET 请求。
     ///
     /// # Errors
@@ -193,32 +95,7 @@ impl Fetcher {
 
     /// 发送请求（根据模式委托给 FetchClient）。
     pub async fn fetch(&self, req: Request) -> Result<Response> {
-        match self.mode {
-            FetchMode::Http => self.client.fetch_http(&req).await,
-            FetchMode::Auto => Err(WispError::Config(
-                "Auto mode is owned by wisp_crawl Engine; use Http/Dynamic/Stealth explicitly"
-                    .into(),
-            )),
-            FetchMode::Dynamic | FetchMode::Stealth => {
-                #[cfg(feature = "browser")]
-                {
-                    let strategy = self.browser_strategy.as_ref().ok_or_else(|| {
-                        WispError::Config(format!(
-                            "{:?} mode requires browser_strategy, use Fetcher::new() instead of from_client()",
-                            self.mode
-                        ))
-                    })?;
-                    self.client.fetch_browser(&req, strategy.as_ref()).await
-                }
-                #[cfg(not(feature = "browser"))]
-                {
-                    Err(WispError::Config(format!(
-                        "{:?} mode requires 'browser' feature",
-                        self.mode
-                    )))
-                }
-            }
-        }
+        self.client.fetch(&req, self.mode).await
     }
 }
 
@@ -246,9 +123,29 @@ mod tests {
     fn from_client_dynamic_builds_strategy() {
         let client = Arc::new(FetchClient::new(FetchClientConfig::default()).unwrap());
         let fetcher = Fetcher::from_client(client, FetchMode::Dynamic).unwrap();
+        assert_eq!(fetcher.mode(), FetchMode::Dynamic);
+    }
+
+    #[cfg(feature = "stealth")]
+    #[test]
+    fn stealth_builder_forces_headed_offscreen_even_when_user_requests_headless() {
+        let fetcher = Fetcher::stealth().headless(true).build().unwrap();
+        assert!(fetcher.config().force_headed_offscreen);
         assert!(
-            fetcher.browser_strategy().is_some(),
-            "from_client 应自动构造 Dynamic strategy"
+            fetcher.config().headless,
+            "用户配置保留，运行层才临时覆盖为 headed"
         );
+    }
+
+    #[cfg(feature = "browser")]
+    #[test]
+    fn dynamic_builder_keeps_user_headless_choice() {
+        let headless = Fetcher::dynamic().headless(true).build().unwrap();
+        assert!(!headless.config().force_headed_offscreen);
+        assert!(headless.config().headless);
+
+        let headed = Fetcher::dynamic().headless(false).build().unwrap();
+        assert!(!headed.config().force_headed_offscreen);
+        assert!(!headed.config().headless);
     }
 }

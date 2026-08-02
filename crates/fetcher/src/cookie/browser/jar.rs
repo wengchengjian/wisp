@@ -47,27 +47,7 @@ impl BrowserCookieJar {
 
     /// 从 CDP Network.getCookies 返回的 JSON 转 Cookie。
     pub(super) fn value_to_cookie(v: &Value, default_domain: &str) -> Option<Cookie> {
-        Some(Cookie {
-            name: v.get("name")?.as_str()?.to_string(),
-            value: v.get("value")?.as_str()?.to_string(),
-            domain: v
-                .get("domain")
-                .and_then(|d| d.as_str())
-                .unwrap_or(default_domain)
-                .to_string(),
-            path: v
-                .get("path")
-                .and_then(|p| p.as_str())
-                .unwrap_or("/")
-                .to_string(),
-            secure: v.get("secure").and_then(Value::as_bool).unwrap_or(false),
-            http_only: v.get("httpOnly").and_then(Value::as_bool).unwrap_or(false),
-            same_site: v
-                .get("sameSite")
-                .and_then(|s| s.as_str())
-                .map(std::string::ToString::to_string),
-            expires: v.get("expires").and_then(Value::as_f64),
-        })
+        Cookie::from_cdp_value(v, default_domain)
     }
 }
 

@@ -49,7 +49,7 @@ pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
         },
         Tool {
             name: "crawl_site",
-            description: "爬取站点，返回 JSONL。用内置 SimpleSpider 按 CSS 选择器提取。",
+            description: "爬取站点，返回 JSONL。用内置 SpiderBuilder 按 CSS 选择器提取。",
             input_schema: json!({
                 "type": "object",
                 "properties": {

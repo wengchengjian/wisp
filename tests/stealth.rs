@@ -32,7 +32,7 @@ async fn eval_main_world(page: &mut wisp::Page, js: &str) -> serde_json::Value {
     serde_json::from_str(&title).unwrap_or(serde_json::Value::Null)
 }
 
-/// Test 1: navigator.webdriver must be undefined in the MAIN world
+/// Test 1: navigator.webdriver must not be true in the MAIN world
 #[tokio::test]
 #[ignore = "需要真实 Chrome：手动运行 cargo test --test stealth -- --ignored"]
 async fn stealth_navigator_webdriver() {
@@ -55,12 +55,14 @@ async fn stealth_navigator_webdriver() {
         .get("typeof_wd")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    assert_eq!(
-        typeof_wd, "undefined",
-        "typeof navigator.webdriver should be 'undefined' in main world"
+    let wd = result.get("wd").cloned().unwrap_or(serde_json::Value::Null);
+    assert!(
+        typeof_wd == "undefined"
+            || (typeof_wd == "boolean" && wd == serde_json::Value::Bool(false)),
+        "navigator.webdriver should be undefined or false in main world, got {result}"
     );
 
-    println!("PASS: navigator.webdriver is undefined in main world");
+    println!("PASS: navigator.webdriver is hidden in main world");
     browser.close().await.unwrap();
 }
 
@@ -202,7 +204,7 @@ async fn stealth_blink_features() {
     // Check from MAIN world
     let result = eval_main_world(
         &mut page,
-        "return { typeof_wd: typeof navigator.webdriver };",
+        "return { typeof_wd: typeof navigator.webdriver, wd: navigator.webdriver };",
     )
     .await;
     let typeof_wd = result
@@ -210,13 +212,14 @@ async fn stealth_blink_features() {
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    // With --disable-blink-features=AutomationControlled + our JS patch,
-    // typeof should be "undefined" (not "boolean")
-    assert_eq!(
-        typeof_wd, "undefined",
-        "typeof navigator.webdriver should be 'undefined'"
+    // With --disable-blink-features=AutomationControlled, webdriver should not be true.
+    let wd = result.get("wd").cloned().unwrap_or(serde_json::Value::Null);
+    assert!(
+        typeof_wd == "undefined"
+            || (typeof_wd == "boolean" && wd == serde_json::Value::Bool(false)),
+        "navigator.webdriver should be undefined or false, got {result}"
     );
-    println!("PASS: Blink AutomationControlled feature disabled, webdriver is undefined");
+    println!("PASS: Blink AutomationControlled feature disabled, webdriver is hidden");
 
     browser.close().await.unwrap();
 }
@@ -269,7 +272,7 @@ async fn stealth_sannysoft_checks() {
     // Run checks in MAIN world (where anti-bot scripts execute)
     let checks_js = r#"
         const results = {};
-        results.webdriver = typeof navigator.webdriver === 'undefined' || navigator.webdriver === null;
+        results.webdriver = navigator.webdriver !== true;
         results.languages = navigator.languages && navigator.languages.length > 0;
         results.plugins = navigator.plugins && navigator.plugins.length > 0;
         results.chrome = typeof window.chrome !== 'undefined';

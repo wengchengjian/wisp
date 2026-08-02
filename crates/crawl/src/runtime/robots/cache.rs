@@ -5,7 +5,8 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use wisp_http::Client;
+use wisp_core::Request;
+use wisp_fetcher::{FetchClient, FetchMode};
 
 /// 缓存条目：fetch 成功的规则或 fetch 失败的 negative 标记。
 #[derive(Clone)]
@@ -50,7 +51,7 @@ impl RobotsCache {
     }
 
     /// Check if a URL is allowed by robots.txt.
-    pub async fn is_allowed(&self, client: &Client, url: &str) -> bool {
+    pub async fn is_allowed(&self, client: &FetchClient, url: &str) -> bool {
         let rules = self.rules_for(client, url).await;
         let path = url::Url::parse(url)
             .map(|p| p.path().to_string())
@@ -59,7 +60,7 @@ impl RobotsCache {
     }
 
     /// 获取 URL 对应域名的 Crawl-delay（秒）
-    pub async fn crawl_delay(&self, client: &Client, url: &str) -> Option<f64> {
+    pub async fn crawl_delay(&self, client: &FetchClient, url: &str) -> Option<f64> {
         self.rules_for(client, url).await.crawl_delay
     }
 
@@ -92,7 +93,7 @@ impl RobotsCache {
         })
     }
 
-    async fn fetch_and_cache_rules(&self, client: &Client, domain: &str) -> RobotsRules {
+    async fn fetch_and_cache_rules(&self, client: &FetchClient, domain: &str) -> RobotsRules {
         match self.fetch_robots(client, domain).await {
             Some(rules) => {
                 self.cache
@@ -115,7 +116,7 @@ impl RobotsCache {
     /// 1. 无锁读 cache（hit → 直接返回，零 I/O）
     /// 2. cache miss / Failed 过期 → per-domain single-flight 锁
     /// 3. double-check → fetch → 写缓存（Rules 或 Failed+TTL）
-    pub async fn rules_for(&self, client: &Client, url: &str) -> RobotsRules {
+    pub async fn rules_for(&self, client: &FetchClient, url: &str) -> RobotsRules {
         let Some(domain) = Self::domain_for(url) else {
             return RobotsRules::default();
         };
@@ -135,9 +136,12 @@ impl RobotsCache {
     }
 
     /// fetch robots.txt。成功返回 `Some(rules)`（可能空规则），失败返回 `None`。
-    async fn fetch_robots(&self, client: &Client, domain: &str) -> Option<RobotsRules> {
+    async fn fetch_robots(&self, client: &FetchClient, domain: &str) -> Option<RobotsRules> {
         let robots_url = format!("{}/robots.txt", domain);
-        let resp = client.get(&robots_url, &[]).await.ok()?;
+        let resp = client
+            .fetch(&Request::get(&robots_url), FetchMode::Http)
+            .await
+            .ok()?;
         let text = resp.text().ok()?;
         Some(parse_robots_text(&text))
     }

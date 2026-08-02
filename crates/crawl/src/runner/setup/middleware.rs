@@ -20,22 +20,22 @@ impl Engine {
         let defaults = middleware::builtin::default_middlewares(
             middleware::builtin::DefaultMiddlewareConfig {
                 fetch_mode,
-                delay: self.download_delay,
-                headers: self.headers.clone(),
-                ua_middleware: self.ua_middleware.clone(),
-                cookie_challenge: self.cookie_challenge,
-                dynamic_upgrade: self.dynamic_upgrade,
+                delay: self.config.download_delay,
+                headers: self.config.headers.clone(),
+                ua_middleware: self.runtime.ua_middleware.clone(),
+                cookie_challenge: self.config.cookie_challenge,
+                dynamic_upgrade: self.config.dynamic_upgrade,
                 obey_robots,
-                cache_store: self.cache_store.clone(),
-                http_client: fetch_client.http_arc(),
+                cache_store: self.runtime.cache_store.clone(),
+                http_client: fetch_client.clone(),
                 robots_cache: robots_cache.clone(),
                 rule_engine: rule_engine.clone(),
             },
         );
         let mut chain = middleware::MiddlewareChain::new();
-        chain.middlewares = self.custom_middlewares.clone();
+        chain.middlewares = self.runtime.custom_middlewares.clone();
         chain.middlewares.extend(defaults);
-        chain.pipelines = self.pipelines.clone();
+        chain.pipelines = self.runtime.pipelines.clone();
         chain.sort();
         Arc::new(chain)
     }

@@ -74,15 +74,8 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
         None => return,
     };
     let stats = ctx.state.stats_for(&resp.request).expect("spider stats");
-
-    if !resp.from_cache {
-        stats.pages.fetch_add(1, Ordering::SeqCst);
-        let callback = resp.request.callback.as_deref().unwrap_or("default");
-        stats.record_callback_page(callback);
-    }
-    maybe_persist_checkpoint(ctx, &spider, &stats).await;
-
     let page_url = resp.url.clone();
+
     let resp = if ctx.shared.middleware_chain.is_empty() {
         Some(resp)
     } else {
@@ -91,6 +84,13 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let Some(resp) = resp else {
         return;
     };
+
+    if !resp.from_cache {
+        stats.pages.fetch_add(1, Ordering::SeqCst);
+        let callback = resp.request.callback.as_deref().unwrap_or("default");
+        stats.record_callback_page(callback);
+    }
+    maybe_persist_checkpoint(ctx, &spider, &stats).await;
 
     let (items, follows) = handle_spider_page(ctx, &spider, resp).await;
     process_page_items(ctx, &spider, &stats, &page_url, items).await;

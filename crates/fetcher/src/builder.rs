@@ -16,10 +16,11 @@ pub struct FetcherBuilder {
 
 impl FetcherBuilder {
     pub(crate) fn new(mode: FetchMode) -> Self {
-        Self {
-            mode,
-            config: FetchClientConfig::default(),
+        let mut config = FetchClientConfig::default();
+        if matches!(mode, FetchMode::Stealth) {
+            config.force_headed_offscreen = true;
         }
+        Self { mode, config }
     }
 
     /// 设置代理。
@@ -37,6 +38,7 @@ impl FetcherBuilder {
     }
 
     /// 设置 headless 模式（浏览器模式）。
+    /// Stealth 模式会临时使用 headed + offscreen 真实渲染，其他模式按此值执行。
     #[must_use]
     pub fn headless(mut self, v: bool) -> Self {
         self.config.headless = v;

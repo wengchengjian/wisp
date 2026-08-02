@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::Arc;
-use wisp_http::Client;
+use wisp_fetcher::{FetchClient, FetchClientConfig};
 
 #[test]
 fn test_robots_rules_default() {
@@ -134,7 +134,11 @@ async fn test_negative_cache_on_fetch_failure() {
         }
     });
 
-    let client = Client::new().unwrap();
+    let client = FetchClient::new(FetchClientConfig {
+        max_concurrent_pages: 0,
+        ..Default::default()
+    })
+    .unwrap();
     // TTL 100ms，测试不用等太久
     let cache = RobotsCache::with_negative_ttl(Duration::from_millis(100));
     let url = format!("http://{}/page", addr);
@@ -198,7 +202,11 @@ async fn test_successful_fetch_caches_rules() {
         }
     });
 
-    let client = Client::new().unwrap();
+    let client = FetchClient::new(FetchClientConfig {
+        max_concurrent_pages: 0,
+        ..Default::default()
+    })
+    .unwrap();
     let cache = RobotsCache::with_negative_ttl(Duration::from_secs(60));
     let url = format!("http://{}/page", addr);
 

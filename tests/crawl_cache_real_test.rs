@@ -49,6 +49,6 @@ async fn test_development_mode_caches_response() {
 
     // 第二次运行：命中缓存（同一 engine 复用，新 spider 实例）
     let (stats2, _) = engine.run(CacheSpider).await.unwrap();
-    assert_eq!(stats2.pages_crawled, 1);
+    assert_eq!(stats2.pages_crawled, 0, "缓存命中不应计入 pages_crawled");
     assert_eq!(stats2.cache_hits, 1, "第二次应命中缓存");
 }

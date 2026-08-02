@@ -65,8 +65,7 @@ async fn scheduling_decision(
         .iter()
         .map(|s| s.pages.load(Ordering::SeqCst))
         .sum();
-    if total_pages + ctx.state.global_in_flight.load(Ordering::SeqCst)
-        >= ctx.config.engine_max_pages
+    if total_pages + ctx.state.global_in_flight.load(Ordering::SeqCst) >= ctx.config.user.max_pages
     {
         return Some(done_or_wait(
             ctx.state.global_in_flight.load(Ordering::SeqCst),
@@ -74,7 +73,7 @@ async fn scheduling_decision(
     }
     let limit = match autoscale {
         Some(pool) => pool.current_concurrency(),
-        None => ctx.config.max_concurrent,
+        None => ctx.config.user.max_concurrent,
     };
     if ctx.state.global_in_flight.load(Ordering::SeqCst) >= limit {
         return Some(NextWorkResult::Wait);
@@ -90,7 +89,7 @@ pub(super) async fn next_work(
         return result;
     }
     let queue_size = ctx.shared.sched.len().await;
-    let req = match ctx.shared.sched.pop().await {
+    let mut req = match ctx.shared.sched.pop().await {
         Some(req) => req,
         None => return done_or_wait(ctx.state.global_in_flight.load(Ordering::SeqCst)),
     };
@@ -110,5 +109,18 @@ pub(super) async fn next_work(
         );
         return NextWorkResult::Continue;
     }
+
+    let spider_name = spider.name().to_string();
+    req.spider = Some(spider_name.clone());
+    ctx.state.global_in_flight.fetch_add(1, Ordering::SeqCst);
+    stats.in_flight.fetch_add(1, Ordering::SeqCst);
+    ctx.state
+        .in_flight_requests
+        .lock()
+        .await
+        .entry(spider_name)
+        .or_default()
+        .push(req.clone());
+
     NextWorkResult::Work(NextWork { spider, stats, req })
 }

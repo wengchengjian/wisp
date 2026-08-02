@@ -28,7 +28,6 @@ use crate::observability::events::EventBus;
 use wisp_core::error::Result;
 use wisp_core::utils::sanitize_url;
 use wisp_fetcher::FetchMode;
-use wisp_http::Client;
 
 // === 子模块 ===
 pub(crate) mod checkpoint;

@@ -11,15 +11,19 @@ fn engine_builder_transport_config() {
         .cookie_challenge(true)
         .build()
         .unwrap();
-    assert_eq!(engine.headers.len(), 1);
-    assert!(engine.ua_middleware.is_some());
-    assert!(engine.cookie_challenge);
-    assert!(!engine.dynamic_upgrade, "默认不开启 DynamicUpgrade 扫描");
+    assert_eq!(engine.config.headers.len(), 1);
+    assert!(engine.runtime.ua_middleware.is_some());
+    assert!(engine.config.cookie_challenge);
+    assert!(
+        !engine.config.dynamic_upgrade,
+        "默认不开启 DynamicUpgrade 扫描"
+    );
     assert!(
         Engine::infra()
             .dynamic_upgrade(true)
             .build()
             .unwrap()
+            .config
             .dynamic_upgrade
     );
 }
@@ -55,7 +59,15 @@ fn engine_builder_accepts_existing_fetch_client() {
         .fetch_client(Arc::clone(&client))
         .build()
         .unwrap();
-    assert!(Arc::ptr_eq(&engine.fetch_client, &client));
+    assert!(Arc::ptr_eq(&engine.runtime.fetch_client, &client));
+    assert_eq!(
+        engine.config.transport.max_concurrent_pages,
+        client.config().max_concurrent_pages
+    );
+    assert_eq!(
+        engine.config.transport.http.timeout,
+        client.config().http.timeout
+    );
 }
 
 #[test]

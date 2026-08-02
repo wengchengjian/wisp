@@ -154,18 +154,12 @@ pub(super) async fn handle_tools_call(
         .ok_or_else(|| WispError::Mcp(McpError::General("missing params".into())))?;
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
-    #[cfg(not(feature = "stealth"))]
-    let _ = fetch_client;
-
-    let result = match name {
-        "fetch_page" => tools::fetch_page(args).await,
-        "extract_css" => tools::extract_css(args).await,
-        "crawl_site" => tools::crawl_site(args, engine).await,
-        "adaptive_scrape" => tools::adaptive_scrape(args, store).await,
-        #[cfg(feature = "stealth")]
-        "stealth_fetch" => tools::stealth_fetch(args, fetch_client).await,
-        _ => Err(WispError::Mcp(McpError::UnknownTool(name.into()))),
-    }?;
+    let ctx = tools::ToolContext {
+        store,
+        engine,
+        fetch_client,
+    };
+    let result = tools::call_tool(name, args, &ctx).await?;
 
     Ok(json!({
         "content": [{

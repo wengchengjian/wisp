@@ -18,6 +18,7 @@ pub struct ClosureSpider {
     pub(crate) allowed_domains: HashSet<String>,
     pub(crate) is_blocked_fn: Option<Box<dyn Fn(&Response) -> bool + Send + Sync + 'static>>,
     pub(crate) until_cond: Arc<dyn StopCondition>,
+    pub(crate) max_depth: u32,
 }
 
 #[async_trait]
@@ -30,6 +31,10 @@ impl Spider for ClosureSpider {
     }
     fn allowed_domains(&self) -> HashSet<String> {
         self.allowed_domains.clone()
+    }
+
+    fn max_depth(&self) -> u32 {
+        self.max_depth
     }
 
     /// callback 路由：根据 `resp.request.callback` 查表分发。

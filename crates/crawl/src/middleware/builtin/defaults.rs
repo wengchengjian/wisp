@@ -8,8 +8,8 @@ use tokio::sync::Mutex;
 use super::Middleware;
 use crate::auto::ModeRuleEngine;
 use crate::runtime::robots::RobotsCache;
+use wisp_fetcher::FetchClient;
 use wisp_fetcher::FetchMode;
-use wisp_http::Client;
 use wisp_storage::Store;
 
 // === 默认中间件注入 ===
@@ -35,7 +35,7 @@ pub struct DefaultMiddlewareConfig {
     /// 响应缓存存储（Some 时注入 CacheMiddleware，默认 TTL 5 分钟）
     pub cache_store: Option<Arc<dyn Store>>,
     /// HTTP 客户端（RobotsMiddleware 拉取 robots.txt 用）
-    pub http_client: Arc<Client>,
+    pub http_client: Arc<FetchClient>,
     /// robots 缓存（跨请求共享 robots 规则，内部 DashMap 无锁读）
     pub robots_cache: Arc<RobotsCache>,
     /// Auto 模式规则引擎（StealthUpgradeMiddleware 学习模式用）

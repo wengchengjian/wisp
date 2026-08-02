@@ -3,10 +3,25 @@
 > 维护方式：本文档记录当前 `master` 上已验证仍存在的问题、待办决策和后续计划入口。
 > 每完成一项，从对应小节删除并补一行完成记录，避免堆积过期条目。
 
-**更新日期：** 2026-08-01
+**更新日期：** 2026-08-02
 **范围：** master `430c37d`（crate 拆分 + arch-refactor 整合后）
 
+**完成记录（2026-08-02）：**
+- 分页 follow 竞态已修复：`NextWork` 创建时即计入 `global_in_flight`/`stats.in_flight` 并登记
+  `in_flight_requests`，避免 `unfold + buffer_unordered` 预填充阶段误判队列空为 Done。
+  新增 `tests/follow_race_regression_test.rs` 覆盖单起始 URL 分页；真实 quotes 10 页和 books 3 页均通过。
+- 被封锁响应计入成功页已修复：`process_response` 改为响应中间件链通过后再递增 `pages_crawled`/callback 计数，
+  `BlockedRetryMiddleware` 重试耗尽时不再误计成功页。新增 `tests/blocked_status_regression_test.rs`；
+  真实 403 重试测试通过，e2e 503 仍受 httpbin 外部不稳定影响需单独复查 blocked 统计。
+- 缓存回放测试断言已对齐：缓存命中不增加 `pages_crawled`，`crawl_cache_real_test` 和
+  `crawl_e2e_real_test` 的 cache replay 断言改为第二次 `pages_crawled=0`，真实回放测试通过。
+- Stealth webdriver 测试已对齐实现：`navigator.webdriver` 接受 `undefined` 或 `false`，
+  不再强制 `undefined`；真实 Chrome 下 `tests/stealth.rs` 6 项全部通过。
+- CF Turnstile 真实绕过已修复：headless 下 Turnstile iframe 内容为空，点击无效；Stealth builder
+  现在自动使用 headed + offscreen 真实渲染。新增本地 widget 回归测试，真实 NopeCHA demo 返回
+  “NopeCHA - CAPTCHA Demo”页面并通过挑战页断言。
 **完成记录（2026-08-01）：**
+
 - async `Store` 重构已完成：`Store` trait 与全部自由函数 async 化，SQLite/FileStore 经
   `spawn_blocking` 移出同步 I/O，`parser/adaptive`、`crawl` 缓存/checkpoint、`mcp` 调用点已迁移。
 - feature gates 完整下钻已完成：`wisp-browser/wisp-stealth/wisp-mcp` 改为可选依赖并

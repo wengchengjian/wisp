@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn test_from_config_default() {
     let config = FetchClientConfig::default();
-    let cf_jar = Arc::new(CfCookieJar::new(&config.cf_data_dir, config.cf_cookie_ttl));
-    let strategy = StealthStrategy::from_config(&config, cf_jar);
+    let cookie_jar: Arc<dyn CookieJar> = Arc::new(crate::cookie::MockCookieJar::new());
+    let strategy = StealthStrategy::from_config(&config, cookie_jar);
     assert_eq!(strategy.challenge_timeout, config.challenge_timeout);
     assert_eq!(strategy.human_mode, config.human_mode);
     assert_eq!(strategy.wait_for, config.wait_for);
@@ -20,8 +20,8 @@ fn test_from_config_custom() {
         extra_wait_ms: 2000,
         ..Default::default()
     };
-    let cf_jar = Arc::new(CfCookieJar::new(&config.cf_data_dir, config.cf_cookie_ttl));
-    let strategy = StealthStrategy::from_config(&config, cf_jar);
+    let cookie_jar: Arc<dyn CookieJar> = Arc::new(crate::cookie::MockCookieJar::new());
+    let strategy = StealthStrategy::from_config(&config, cookie_jar);
     assert!(!strategy.human_mode);
     assert_eq!(strategy.challenge_timeout, Duration::from_secs(60));
     assert_eq!(strategy.wait_for.as_deref(), Some(".loaded"));
@@ -38,8 +38,8 @@ async fn test_stealth_strategy_solves_cf() {
     use wisp_core::Request;
 
     let config = FetchClientConfig::default();
-    let cf_jar = Arc::new(CfCookieJar::new(&config.cf_data_dir, config.cf_cookie_ttl));
-    let strategy = StealthStrategy::from_config(&config, cf_jar);
+    let cookie_jar: Arc<dyn CookieJar> = Arc::new(crate::cookie::MockCookieJar::new());
+    let strategy = StealthStrategy::from_config(&config, cookie_jar);
 
     let pool = BrowserPool::new(1, LaunchOptions::default());
     let mut handle = pool.acquire().await.expect("acquire page");

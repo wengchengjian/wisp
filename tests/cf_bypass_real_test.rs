@@ -145,8 +145,12 @@ async fn test_stealth_cf_turnstile_bypass() {
             let html = resp.text().unwrap_or_default();
             // 成功绕过：不应看到 CF 挑战页面
             assert!(
-                !html.contains("Just a moment") && !html.contains("cf-challenge-running"),
-                "应绕过 CF 挑战，但页面仍含挑战标记"
+                !html.contains("Just a moment")
+                    && !html.contains("cf-challenge-running")
+                    && !html.contains("正在进行安全验证")
+                    && !html.contains("cf-turnstile-response"),
+                "应绕过 CF 挑战，但页面仍含挑战标记: title={:?}",
+                resp.title
             );
         }
         Err(e) => {

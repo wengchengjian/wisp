@@ -12,7 +12,7 @@ pub(super) async fn maybe_persist_checkpoint(
     let Some(store) = &ctx.config.checkpoint_store else {
         return;
     };
-    let interval = ctx.config.checkpoint_interval.max(1);
+    let interval = ctx.config.user.checkpoint_interval.max(1);
     let pages = stats.pages.load(Ordering::SeqCst);
     if pages == 0 || pages % interval != 0 {
         return;
@@ -114,7 +114,7 @@ pub(super) async fn apply_response_middlewares(
                 let Some(r) = refetch_or_error(
                     ctx,
                     &new_req,
-                    ctx.config.max_refetch_rounds as u32,
+                    ctx.config.user.max_refetch_rounds as u32,
                     refetch_depth,
                 )
                 .await

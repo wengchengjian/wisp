@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::crawl::runtime::robots::RobotsCache;
-use wisp::http::Client;
+use wisp::{FetchClient, FetchClientConfig};
 
 /// 两个测试都用随机端口起 mock server，`dead_port = port + 1` 可能与另一个
 /// 测试的监听端口相撞，串行化避免并发端口冲突。
@@ -43,8 +43,12 @@ async fn robots_fetched_from_correct_port() {
 
     // 用带非默认端口的 URL 触发 rules_for
     let url = format!("http://127.0.0.1:{}/page", port);
-    let client = Client::new().unwrap();
-    let mut cache = RobotsCache::new();
+    let client = FetchClient::new(FetchClientConfig {
+        max_concurrent_pages: 0,
+        ..Default::default()
+    })
+    .unwrap();
+    let cache = RobotsCache::new();
     let allowed = cache.is_allowed(&client, &url).await;
     assert_eq!(
         counter.load(Ordering::SeqCst),
@@ -79,8 +83,12 @@ async fn fetch_failure_not_cached_so_retry_happens() {
         }
     });
 
-    let client = Client::new().unwrap();
-    let mut cache = RobotsCache::new();
+    let client = FetchClient::new(FetchClientConfig {
+        max_concurrent_pages: 0,
+        ..Default::default()
+    })
+    .unwrap();
+    let cache = RobotsCache::new();
 
     // 第一次：指向无人监听的端口，fetch 应失败返回空规则（且不缓存）
     let dead_port = port.wrapping_add(1);

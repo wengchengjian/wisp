@@ -14,6 +14,9 @@ pub struct FetchClientConfig {
     pub http: HttpConfig,
     /// 浏览器 headless 模式
     pub headless: bool,
+    /// Stealth 模式使用真实渲染（headed + offscreen），Turnstile iframe 在 headless 下不加载。
+    /// 仅 Stealth builder 自动启用；其他模式保持 false，headless 按用户配置执行。
+    pub force_headed_offscreen: bool,
     /// 浏览器可执行文件路径（None = 自动搜索 Chrome/Chromium/Edge）
     pub executable_path: Option<std::path::PathBuf>,
     /// 人类行为模拟（Stealth 模式）
@@ -57,6 +60,7 @@ impl Default for FetchClientConfig {
         Self {
             http,
             headless: true,
+            force_headed_offscreen: false,
             executable_path: None,
             human_mode: true,
             challenge_timeout: Duration::from_secs(30),

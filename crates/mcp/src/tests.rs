@@ -1,4 +1,5 @@
 use super::server::{handle_initialize, handle_tools_call, handle_tools_list};
+use crate::tools::ToolContext;
 use serde_json::json;
 use std::sync::Arc;
 use wisp_core::error::{McpError, WispError};
@@ -14,6 +15,18 @@ fn test_fetch_client() -> Arc<FetchClient> {
         })
         .expect("build test fetch client"),
     )
+}
+
+fn test_context<'a>(
+    store: &'a Arc<dyn Store>,
+    engine: &'a Engine,
+    fetch_client: &'a Arc<FetchClient>,
+) -> ToolContext<'a> {
+    ToolContext {
+        store,
+        engine,
+        fetch_client,
+    }
 }
 
 #[test]
@@ -66,14 +79,30 @@ async fn test_handle_tools_call_unknown_tool() {
 #[tokio::test]
 async fn stealth_fetch_requires_url() {
     let client = test_fetch_client();
-    let result = crate::tools::stealth_fetch(json!({}), &client).await;
+    let store: Arc<dyn Store> = Arc::new(wisp_storage::MemoryStore::default());
+    let engine = Engine::infra()
+        .max_pages(100)
+        .obey_robots(false)
+        .build()
+        .unwrap();
+    let ctx = test_context(&store, &engine, &client);
+    let result = crate::tools::call_tool("stealth_fetch", json!({}), &ctx).await;
     let err = result.expect_err("缺少 url 应报错");
     assert!(err.to_string().contains("url"), "错误应说明缺少 url: {err}");
 }
 
 #[tokio::test]
 async fn fetch_page_rejects_private_ip() {
-    let result = crate::tools::fetch_page(json!({ "url": "http://127.0.0.1/" })).await;
+    let store: Arc<dyn Store> = Arc::new(wisp_storage::MemoryStore::default());
+    let engine = Engine::infra()
+        .max_pages(100)
+        .obey_robots(false)
+        .build()
+        .unwrap();
+    let client = test_fetch_client();
+    let ctx = test_context(&store, &engine, &client);
+    let result =
+        crate::tools::call_tool("fetch_page", json!({ "url": "http://127.0.0.1/" }), &ctx).await;
     let err = result.expect_err("MCP fetch_page 应拒绝内网地址");
     assert!(
         err.to_string().contains("拒绝"),
@@ -84,9 +113,17 @@ async fn fetch_page_rejects_private_ip() {
 #[tokio::test]
 async fn adaptive_scrape_rejects_private_ip() {
     let store: Arc<dyn Store> = Arc::new(wisp_storage::MemoryStore::default());
-    let result = crate::tools::adaptive_scrape(
+    let engine = Engine::infra()
+        .max_pages(100)
+        .obey_robots(false)
+        .build()
+        .unwrap();
+    let client = test_fetch_client();
+    let ctx = test_context(&store, &engine, &client);
+    let result = crate::tools::call_tool(
+        "adaptive_scrape",
         json!({ "url": "http://127.0.0.1/", "selector": "p", "key": "k" }),
-        &store,
+        &ctx,
     )
     .await;
     let err = result.expect_err("MCP adaptive_scrape 应拒绝内网地址");

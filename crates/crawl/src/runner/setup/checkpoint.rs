@@ -36,7 +36,7 @@ impl Engine {
         sched: &Arc<scheduler::Scheduler>,
         all_stats: &[Arc<SpiderStats>],
     ) {
-        let Some(store) = &self.checkpoint_store else {
+        let Some(store) = &self.runtime.checkpoint_store else {
             return;
         };
         let mut states: Vec<CrawlState> = Vec::new();

@@ -47,17 +47,17 @@ impl Engine {
         ctx: &Arc<engine::EngineContext>,
         all_stats: &[Arc<SpiderStats>],
     ) -> Option<tokio::task::JoinHandle<()>> {
-        let pool = self.autoscale.clone()?;
+        let pool = self.runtime.autoscale.clone()?;
         pool.set_work_notify(Arc::clone(&ctx.shared.work_notify));
         let stats = all_stats.to_vec();
-        let event_bus = self.event_bus.clone();
+        let event_bus = self.runtime.event_bus.clone();
         Some(tokio::spawn(async move {
             pool.run_autoscaler(stats, Some(event_bus)).await;
         }))
     }
 
     async fn cleanup_checkpoints(&self, ctx: &Arc<engine::EngineContext>) {
-        let Some(store) = &self.checkpoint_store else {
+        let Some(store) = &self.runtime.checkpoint_store else {
             return;
         };
         for spider in &ctx.state.spiders {
@@ -69,7 +69,8 @@ impl Engine {
 
     async fn emit_finished_events(&self, final_stats: &[CrawlStats]) {
         for stats in final_stats {
-            self.event_bus
+            self.runtime
+                .event_bus
                 .emit(EngineEvent::CrawlFinished {
                     stats: stats.clone(),
                 })
@@ -134,7 +135,7 @@ impl Engine {
 
         self.run_middleware_init(&ctx).await;
         let autoscaler_handle = self.spawn_autoscaler(&ctx, &all_stats);
-        run_work_loop(&ctx, self.autoscale.clone()).await;
+        run_work_loop(&ctx, self.runtime.autoscale.clone()).await;
         if let Some(handle) = autoscaler_handle {
             handle.abort();
         }

@@ -26,6 +26,11 @@ impl Client {
         crate::ClientBuilder::new().build()
     }
 
+    /// Create a client from a complete config.
+    pub fn from_config(config: crate::Config) -> Result<Self> {
+        crate::ClientBuilder::from_config(config).build()
+    }
+
     /// 获取配置引用（供 Engine 代理轮换时读取 timeout 等参数）。
     pub fn config_ref(&self) -> &Config {
         &self.config

@@ -16,7 +16,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::client::FetchClientConfig;
-use crate::cookie::CfCookieJar;
+use crate::cookie::CookieJar;
 use crate::strategy::BrowserFetchStrategy;
 use wisp_browser::Page;
 use wisp_core::error::Result;
@@ -39,13 +39,13 @@ pub struct StealthStrategy {
     extra_wait_ms: u64,
     /// 单操作超时（用于 wait_for_selector）。
     timeout: Duration,
-    /// CF 会话 cookie 缓存（moka + 文件持久化）。
-    cf_jar: Arc<CfCookieJar>,
+    /// 共享 cookie seam（HTTP/CF 复合状态）。
+    cookie_jar: Arc<dyn CookieJar>,
 }
 
 impl StealthStrategy {
     /// 从 FetchClientConfig + 共享 CfCookieJar 构造。
-    pub fn from_config(config: &FetchClientConfig, cf_jar: Arc<CfCookieJar>) -> Self {
+    pub fn from_config(config: &FetchClientConfig, cookie_jar: Arc<dyn CookieJar>) -> Self {
         Self {
             challenge_timeout: config.challenge_timeout,
             turnstile: config.turnstile.clone(),
@@ -53,7 +53,7 @@ impl StealthStrategy {
             wait_for: config.wait_for.clone(),
             extra_wait_ms: config.extra_wait_ms,
             timeout: config.timeout,
-            cf_jar,
+            cookie_jar,
         }
     }
 }

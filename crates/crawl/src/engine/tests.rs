@@ -5,6 +5,19 @@ use crate::engine::request::check_control_and_hook;
 use async_trait::async_trait;
 use std::collections::HashSet;
 
+fn test_engine_config(fetch_mode: FetchMode, max_retries: u32) -> crate::runner::EngineConfig {
+    crate::runner::EngineConfig {
+        fetch_mode,
+        max_retries,
+        max_concurrent: 8,
+        obey_robots: false,
+        max_pages: 100,
+        max_refetch_rounds: 5,
+        checkpoint_interval: 0,
+        ..Default::default()
+    }
+}
+
 /// 最小 Spider：handle 返回空，不产出 items/follows，避免触碰事件通道。
 struct DummySpider;
 
@@ -62,24 +75,17 @@ fn make_ctx() -> (EngineContext, Arc<SpiderStats>) {
     let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
     let ctx = EngineContext {
         config: EngineConfig {
+            user: test_engine_config(FetchMode::Http, 3),
             client: Arc::new(
                 wisp_fetcher::FetchClient::new(wisp_fetcher::FetchClientConfig::default())
                     .expect("build fetch client"),
             ),
-            fetch_mode: FetchMode::Http,
-            max_concurrent: 8,
-            obey_robots: false,
-            engine_max_pages: 100,
-            max_refetch_rounds: 5,
-            max_retries: 3,
             checkpoint_store: None,
-            checkpoint_interval: 0,
         },
         shared: EngineShared {
             sched: Arc::new(scheduler::Scheduler::new()),
             follow_tx,
             follow_rx: Arc::new(Mutex::new(follow_rx)),
-            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             control: Arc::new(control::EngineControl::new()),
             work_notify: Arc::new(tokio::sync::Notify::new()),
             middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
@@ -198,20 +204,13 @@ fn make_ctx_with_retry(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
                 wisp_fetcher::FetchClient::new(wisp_fetcher::FetchClientConfig::default())
                     .expect("build fetch client"),
             ),
-            fetch_mode: FetchMode::Http,
-            max_concurrent: 8,
-            obey_robots: false,
-            engine_max_pages: 100,
-            max_refetch_rounds: 5,
-            max_retries,
+            user: test_engine_config(FetchMode::Http, max_retries),
             checkpoint_store: None,
-            checkpoint_interval: 0,
         },
         shared: EngineShared {
             sched: Arc::new(scheduler::Scheduler::new()),
             follow_tx,
             follow_rx: Arc::new(Mutex::new(follow_rx)),
-            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             control: Arc::new(control::EngineControl::new()),
             work_notify: Arc::new(tokio::sync::Notify::new()),
             middleware_chain: Arc::new(chain),
@@ -323,20 +322,13 @@ fn make_ctx_auto(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
             client: Arc::new(
                 wisp_fetcher::FetchClient::new(fetch_config).expect("build fetch client"),
             ),
-            fetch_mode: FetchMode::Auto,
-            max_concurrent: 8,
-            obey_robots: false,
-            engine_max_pages: 100,
-            max_refetch_rounds: 5,
-            max_retries,
+            user: test_engine_config(FetchMode::Auto, max_retries),
             checkpoint_store: None,
-            checkpoint_interval: 0,
         },
         shared: EngineShared {
             sched: Arc::new(scheduler::Scheduler::new()),
             follow_tx,
             follow_rx: Arc::new(Mutex::new(follow_rx)),
-            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             control: Arc::new(control::EngineControl::new()),
             work_notify: Arc::new(tokio::sync::Notify::new()),
             middleware_chain: Arc::new(chain),
@@ -515,20 +507,13 @@ fn make_ctx_with_tx(
                 wisp_fetcher::FetchClient::new(wisp_fetcher::FetchClientConfig::default())
                     .expect("build fetch client"),
             ),
-            fetch_mode: FetchMode::Http,
-            max_concurrent: 8,
-            obey_robots: false,
-            engine_max_pages: 100,
-            max_refetch_rounds: 5,
-            max_retries,
+            user: test_engine_config(FetchMode::Http, max_retries),
             checkpoint_store: None,
-            checkpoint_interval: 0,
         },
         shared: EngineShared {
             sched: Arc::new(scheduler::Scheduler::new()),
             follow_tx,
             follow_rx: Arc::new(Mutex::new(follow_rx)),
-            proxy_clients: Arc::new(moka::sync::Cache::builder().max_capacity(1024).build()),
             control: Arc::new(control::EngineControl::new()),
             work_notify: Arc::new(tokio::sync::Notify::new()),
             middleware_chain: Arc::new({

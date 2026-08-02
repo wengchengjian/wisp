@@ -7,7 +7,7 @@ use std::time::Duration;
 use super::{CrawlContext, Middleware, RequestMwAction, ResponseMwAction};
 use crate::runtime::robots::RobotsCache;
 use crate::{Request, Response};
-use wisp_http::Client;
+use wisp_fetcher::FetchClient;
 use wisp_storage::{CachedResponse, Store};
 
 // === 过滤/限制类 ===
@@ -83,15 +83,15 @@ impl Middleware for CacheMiddleware {
 /// 因此 `RobotsMiddleware` 无需额外 `Mutex` 包裹，多个并发请求可并行检查。
 pub struct RobotsMiddleware {
     robots_cache: Arc<RobotsCache>,
-    client: Arc<Client>,
+    fetch_client: Arc<FetchClient>,
 }
 
 impl RobotsMiddleware {
     /// 创建 Robots.txt 检查中间件。
-    pub fn new(robots_cache: Arc<RobotsCache>, client: Arc<Client>) -> Self {
+    pub fn new(robots_cache: Arc<RobotsCache>, fetch_client: Arc<FetchClient>) -> Self {
         Self {
             robots_cache,
-            client,
+            fetch_client,
         }
     }
 }
@@ -103,7 +103,10 @@ impl Middleware for RobotsMiddleware {
     }
 
     async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> RequestMwAction {
-        let allowed = self.robots_cache.is_allowed(&self.client, &req.url).await;
+        let allowed = self
+            .robots_cache
+            .is_allowed(&self.fetch_client, &req.url)
+            .await;
         if allowed {
             RequestMwAction::Continue
         } else {

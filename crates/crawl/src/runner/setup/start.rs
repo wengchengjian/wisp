@@ -16,7 +16,8 @@ impl Engine {
     ) {
         for spider in spiders {
             let start_urls = spider.start_urls();
-            self.event_bus
+            self.runtime
+                .event_bus
                 .emit(EngineEvent::CrawlStarted {
                     spider: spider.name().to_string(),
                     start_urls: start_urls.len(),
@@ -26,7 +27,8 @@ impl Engine {
                 sched
                     .push(Request::get(&url).with_spider(spider.name()))
                     .await;
-                self.event_bus
+                self.runtime
+                    .event_bus
                     .emit(EngineEvent::RequestScheduled {
                         url: sanitize_url(&url),
                         depth: 0,
