@@ -374,8 +374,8 @@ async fn test_banzhu_stealth_bypass() {
 
             // 检查是否仍在 CF 挑战页
             let on_challenge = html.contains("Just a moment")
-                || html.contains("cf-challenge-running")
-                || html.contains("challenge-platform");
+                || html.contains("cf-browser-verification")
+                || html.contains("challenge-running");
 
             if on_challenge {
                 panic!("Stealth 挑战未在 30s 内成功，仍停留在 CF 挑战页");
@@ -385,9 +385,8 @@ async fn test_banzhu_stealth_bypass() {
                 {
                     println!("[Stealth] PASS: 成功绕过 CF，获取到真实页面!");
                 } else {
-                    println!("[Stealth] WARN: 状态 200 但未检测到预期内容");
                     let preview: String = html.chars().take(500).collect();
-                    println!("[Stealth] Body preview: {}", preview);
+                    panic!("Stealth 返回 200 但未检测到预期内容; preview={preview}");
                 }
             } else {
                 panic!("Stealth 挑战返回异常状态码 {}", resp.status);

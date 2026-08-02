@@ -20,6 +20,9 @@
 - CF Turnstile 真实绕过已修复：headless 下 Turnstile iframe 内容为空，点击无效；Stealth builder
   现在自动使用 headed + offscreen 真实渲染。新增本地 widget 回归测试，真实 NopeCHA demo 返回
   “NopeCHA - CAPTCHA Demo”页面并通过挑战页断言。
+- 真实网络/浏览器测试收口已完成一轮：`cf_bypass_real_test` 10/10、`real_scrape_test` 7/7 通过；
+  修复 CF interactive Turnstile 被当作 JS Challenge 空转的问题（按 `_cf_chl_opt.cType` 提前识别），
+  并移除 `challenge-platform` 作为挑战页/托管挑战标记的误判。
 **完成记录（2026-08-01）：**
 
 - async `Store` 重构已完成：`Store` trait 与全部自由函数 async 化，SQLite/FileStore 经
@@ -165,6 +168,40 @@
 以下增量明确未移植，需要单独评估：
 
 - **`croner` 依赖移除**：当前无引用；若未来恢复 cron 调度需重新引入。
+
+## 2. 工程化下一阶段优先级（2026-08-02）
+
+> 依据 2026-08-02 重新盘点；已排除已完成项，并保留之前明确不采纳的决策。
+
+### 已完成，不再列入
+- Rust 2024 / edition 2024 / stable 1.97.1：已到位；各 crate 已声明 `rust-version = "1.91.1"`。
+- CI 基础：`.github/workflows/ci.yml` 已包含 fmt、clippy `-D warnings`、doctest、nextest、cargo deny、llvm-cov 报告。
+- 依赖收敛主体：`[workspace.dependencies]` 已存在，常用依赖均以 `workspace = true` 引用。
+- 测试增强主体：proptest、insta、nextest 已落地；`cargo nextest run --workspace --all-features` 为默认测试命令。
+- cargo-deny 已接 CI。
+
+### P0：先用已有设施回答覆盖率与真实网络
+### P0：真实网络/浏览器收口剩余
+1. Dynamic/Stealth 并发与取消场景测试：补真实网络/浏览器收口的最后缺口，控制总时长。
+
+### P1：高性价比工程化
+2. workspace 剩余收敛：增加 `[workspace.package]`，把仍直写版本的依赖收进 `[workspace.dependencies]`；不新增抽象。
+3. 稳定语法渐进采用：
+   - `#[expect(...)]` 替换 `#[allow(...)]`，防止 lint 被悄悄放宽（低风险先做）。
+   - `let_chains` 压平 URL、robots、scheduler 的多层条件（低风险重构）。
+   - async closures 只在新 API 或明显样板处试点；`gen blocks` 用于 follow links / crawl events 流式产出试点；不批量改现有 trait object API。
+4. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
+
+### P2：按风险与 ROI 推进
+5. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
+6. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
+7. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
+8. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
+
+### 明确不采纳
+- cargo-semver-checks / cargo-public-api：wisp 仍处快速 API 变动阶段，暂不做。
+- cargo-audit：与 `cargo deny check advisories` 重复，暂不做。
+- async fn in traits 无脑迁移：项目大量使用 dyn trait object，保留 async-trait；如要演进，再单独评估 trait-variant。
 
 ## 3. 剩余工作
 

@@ -25,6 +25,10 @@ const DETECTION_JS: &str = r#"(() => {
         findInShadows()) {
         return 'turnstile';
     }
+    const raw = document.documentElement ? document.documentElement.outerHTML : '';
+    if (raw.includes('_cf_chl_opt') && /cType\s*:\s*['"]interactive['"]/.test(raw)) {
+        return 'turnstile';
+    }
     if (title.includes('Just a moment') ||
         title.includes('Attention Required') ||
         document.querySelector('#challenge-running') ||
@@ -34,7 +38,6 @@ const DETECTION_JS: &str = r#"(() => {
         return 'js_challenge';
     }
     if (document.querySelector('#challenge-stage') ||
-        body.includes('challenge-platform') ||
         body.includes('managed_checking_msg')) {
         return 'managed';
     }
@@ -66,7 +69,6 @@ pub async fn is_cloudflare_page(page: &Page) -> Result<bool> {
         const body = document.body ? document.body.innerHTML : '';
         const title = document.title || '';
         return body.includes('cf-browser-verification') ||
-               body.includes('challenge-platform') ||
                body.includes('cf-challenge-running') ||
                body.includes('cf-chl-bypass') ||
                title.includes('Just a moment') ||

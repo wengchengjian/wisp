@@ -257,9 +257,8 @@ cargo test --test callback_routing_test --test engine_infra_test --test sitemap_
 # Stop conditions & multi-spider routing
 cargo test --test stop_condition_test --test multi_spider_test --test multi_spider_routing_test --test novel_10_books_test
 
-# Real network tests (requires internet, uses proxy 127.0.0.1:7897)
-cargo nextest run --test cf_bypass_real_test --run-ignored all
-cargo nextest run --test real_scrape_test --run-ignored all
+# Real network/browser tests (requires internet, proxy 127.0.0.1:7897, Chrome)
+cargo nextest run --test cf_bypass_real_test --test real_scrape_test --run-ignored all --no-fail-fast
 ```
 
 ## Requirements

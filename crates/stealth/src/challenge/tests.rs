@@ -66,6 +66,37 @@ async fn test_detect_no_challenge_on_normal_page() {
     browser.close().await.expect("关闭浏览器");
 }
 
+/// 测试 interactive Turnstile 配置被识别为 Turnstile。
+#[tokio::test]
+#[ignore = "需要 Chrome 浏览器环境"]
+async fn test_detect_interactive_turnstile_marker() {
+    use wisp_browser::Browser;
+    use wisp_core::config::LaunchOptions;
+
+    let browser = Browser::launch(LaunchOptions {
+        headless: true,
+        ..Default::default()
+    })
+    .await
+    .expect("启动浏览器");
+
+    let mut page = browser.new_page().await.expect("创建页面");
+    page.goto("data:text/html,<html><body><script>window._cf_chl_opt={cType: 'interactive'};</script></body></html>")
+        .await
+        .expect("导航");
+
+    let solver = ChallengeSolver::new(&page);
+    let result = solver.detect().await.expect("detect 应成功");
+    assert_eq!(
+        result,
+        ChallengeType::Turnstile,
+        "interactive CF 配置应识别为 Turnstile"
+    );
+
+    let _ = page.close().await;
+    browser.close().await.expect("关闭浏览器");
+}
+
 /// 测试 is_cloudflare_page 在普通页面上返回 false。
 #[tokio::test]
 #[ignore = "需要 Chrome 浏览器环境"]
