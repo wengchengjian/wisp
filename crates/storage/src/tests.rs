@@ -199,3 +199,38 @@ async fn namespace_isolation() {
             .is_some()
     );
 }
+
+#[test]
+fn cached_response_json_snapshot() {
+    let resp = CachedResponse {
+        status: 200,
+        headers: HashMap::from([("content-type".to_string(), "text/html".to_string())]),
+        body: b"<h1>Hello</h1>".to_vec(),
+        content_type: "text/html; charset=utf-8".to_string(),
+        cached_at: 1_700_000_000,
+        ttl: Some(Duration::from_secs(3600)),
+    };
+    insta::assert_snapshot!(
+        "cached_response_json",
+        serde_json::to_string_pretty(&resp).unwrap()
+    );
+}
+
+#[test]
+fn element_snapshot_row_json_snapshot() {
+    let row = ElementSnapshotRow {
+        tag: "div".into(),
+        attrs: serde_json::json!({ "class": "card" }),
+        text_preview: "hello".into(),
+        ancestor_path: serde_json::json!(["html", "body", "main"]),
+        sibling_tags: serde_json::json!(["section", "div"]),
+        position_in_parent: 1,
+        parent_tag: "main".into(),
+        parent_attrs: serde_json::json!({ "id": "content" }),
+        captured_at: 1_700_000_001,
+    };
+    insta::assert_snapshot!(
+        "element_snapshot_row_json",
+        serde_json::to_string_pretty(&row).unwrap()
+    );
+}

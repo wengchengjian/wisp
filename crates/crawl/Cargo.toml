@@ -33,3 +33,7 @@ parking_lot = { workspace = true }
 chrono = { workspace = true }
 htmd = "0.5"
 url = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+insta = { workspace = true }

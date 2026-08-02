@@ -1,0 +1,6 @@
+---
+source: crates/crawl/src/runtime/items.rs
+expression: items.to_jsonl().unwrap()
+---
+{"id":1,"ok":true}
+{"id":2,"ok":false}

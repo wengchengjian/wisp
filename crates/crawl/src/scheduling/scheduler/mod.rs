@@ -54,4 +54,26 @@ mod tests {
             before, after
         );
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+        #[test]
+        fn scheduler_exact_dedup_matches_unique_count(urls in proptest::collection::vec("[a-zA-Z0-9:/.?=&_-]{1,80}", 0..20)) {
+            let unique: std::collections::HashSet<&String> = urls.iter().collect();
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async {
+                let sched = super::Scheduler::with_strategy(super::DedupStrategy::Exact);
+                for url in &urls {
+                    sched.push(crate::Request::get(url)).await;
+                }
+                assert_eq!(sched.len().await, unique.len());
+                let mut popped = 0usize;
+                while sched.pop().await.is_some() {
+                    popped += 1;
+                }
+                assert_eq!(popped, unique.len());
+                assert!(sched.is_empty().await);
+            });
+        }
+    }
 }

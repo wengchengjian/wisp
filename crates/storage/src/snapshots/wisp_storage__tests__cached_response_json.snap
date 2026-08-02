@@ -1,0 +1,32 @@
+---
+source: crates/storage/src/tests.rs
+expression: "serde_json::to_string_pretty(&resp).unwrap()"
+---
+{
+  "status": 200,
+  "headers": {
+    "content-type": "text/html"
+  },
+  "body": [
+    60,
+    104,
+    49,
+    62,
+    72,
+    101,
+    108,
+    108,
+    111,
+    60,
+    47,
+    104,
+    49,
+    62
+  ],
+  "content_type": "text/html; charset=utf-8",
+  "cached_at": 1700000000,
+  "ttl": {
+    "secs": 3600,
+    "nanos": 0
+  }
+}

@@ -1,0 +1,26 @@
+---
+source: crates/storage/src/tests.rs
+expression: "serde_json::to_string_pretty(&row).unwrap()"
+---
+{
+  "tag": "div",
+  "attrs": {
+    "class": "card"
+  },
+  "text_preview": "hello",
+  "ancestor_path": [
+    "html",
+    "body",
+    "main"
+  ],
+  "sibling_tags": [
+    "section",
+    "div"
+  ],
+  "position_in_parent": 1,
+  "parent_tag": "main",
+  "parent_attrs": {
+    "id": "content"
+  },
+  "captured_at": 1700000001
+}

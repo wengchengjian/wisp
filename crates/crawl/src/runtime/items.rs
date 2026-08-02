@@ -169,4 +169,22 @@ mod tests {
         assert_eq!(last["i"], 4);
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn items_json_snapshot() {
+        let items = Items::new(vec![
+            json!({ "title": "A", "price": 12.5 }),
+            json!({ "title": "B", "nested": { "x": 1 } }),
+        ]);
+        insta::assert_snapshot!("items_json", items.to_json().unwrap());
+    }
+
+    #[test]
+    fn items_jsonl_snapshot() {
+        let items = Items::new(vec![
+            json!({ "id": 1, "ok": true }),
+            json!({ "id": 2, "ok": false }),
+        ]);
+        insta::assert_snapshot!("items_jsonl", items.to_jsonl().unwrap());
+    }
 }

@@ -1,0 +1,16 @@
+---
+source: crates/crawl/src/runtime/items.rs
+expression: items.to_json().unwrap()
+---
+[
+  {
+    "price": 12.5,
+    "title": "A"
+  },
+  {
+    "nested": {
+      "x": 1
+    },
+    "title": "B"
+  }
+]

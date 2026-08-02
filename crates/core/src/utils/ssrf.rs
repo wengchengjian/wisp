@@ -145,4 +145,22 @@ mod tests {
         // 注：`https:///path` 被 url crate 解析为 host=Domain("path")，
         // 不会失败。这不是 missing host 案例，故不在此测试。
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+        #[test]
+        fn public_hostnames_are_accepted(host in "[a-z0-9]{1,20}\\.example\\.com", path in "[a-zA-Z0-9/._-]{0,60}") {
+            let url = format!("https://{host}/{path}");
+            assert!(validate_url(&url).is_ok(), "public URL should pass: {url}");
+        }
+
+        #[test]
+        fn private_ipv4_is_rejected(a in 0u8..=255, b in 0u8..=255, c in 0u8..=255, d in 0u8..=255) {
+            let ip = std::net::Ipv4Addr::new(a, b, c, d);
+            if ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() {
+                let url = format!("http://{ip}/");
+                assert!(validate_url(&url).is_err(), "private IP should fail: {url}");
+            }
+        }
+    }
 }

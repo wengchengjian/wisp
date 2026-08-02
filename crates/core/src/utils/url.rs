@@ -231,4 +231,16 @@ mod tests {
             "http://***@example.com/"
         );
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+        #[test]
+        fn url_to_filename_sanitizes_separators(path in "[a-zA-Z0-9/._-]{0,80}") {
+            let url = format!("https://example.com/{path}");
+            let name = url_to_filename(&url, 0);
+            assert!(name.ends_with(".md"));
+            assert!(!name.contains('/') && !name.contains('\\'));
+            assert!(name.chars().count() <= 104);
+        }
+    }
 }

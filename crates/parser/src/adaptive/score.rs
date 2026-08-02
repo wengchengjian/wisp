@@ -80,3 +80,20 @@ pub fn similarity(node: &Node, saved: &ElementSnapshot) -> f64 {
         + 0.5 * parent_score(node, saved);
     score / 8.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+        #[test]
+        fn similarity_self_match_is_max(text in "[a-zA-Z0-9]{1,40}") {
+            let doc = Node::from_html(&format!(r#"<body data-x="1"><div class="x">{}</div></body>"#, text));
+            let node = doc.select_one("div").expect("div should exist");
+            let saved = ElementSnapshot::capture(&node);
+            assert!(similarity(&node, &saved) > 0.99);
+            assert!(crate::adaptive::relocate_with_snapshot(&doc, &saved, 1.0).is_some());
+        }
+    }
+}

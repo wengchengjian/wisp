@@ -228,3 +228,20 @@ async fn test_successful_fetch_caches_rules() {
         "缓存命中不应重新 fetch"
     );
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn parse_arbitrary_text_never_panics(text in "\\PC{0,200}") {
+        let rules = parse_robots_text(&text);
+        for path in &rules.disallowed {
+            assert!(!path.is_empty());
+        }
+        if let Some(delay) = rules.crawl_delay {
+            assert!(delay >= 0.0);
+        }
+        if let Some(rate) = rules.request_rate {
+            assert!(rate > 0.0);
+        }
+    }
+}
