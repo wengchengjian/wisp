@@ -21,8 +21,6 @@ pub struct Engine {
     pub(crate) config: EngineConfig,
     /// 运行时资源。
     pub(crate) runtime: EngineRuntime,
-    /// per-Engine 控制状态。
-    pub(crate) control: Arc<control::EngineControl>,
     /// 运行时并发保护。
     pub(crate) running: Arc<AtomicBool>,
 }
@@ -102,7 +100,7 @@ impl Engine {
 
     /// 获取控制句柄（用于外部 pause/resume/cancel/shutdown）。
     pub fn control(&self) -> &Arc<control::EngineControl> {
-        &self.control
+        &self.runtime.control
     }
 
     /// 获取 Engine 配置。
@@ -113,6 +111,6 @@ impl Engine {
 
     /// 关闭 Engine（停止所有运行中的爬取）。
     pub fn shutdown(&self) {
-        self.control.shutdown();
+        self.runtime.control.shutdown();
     }
 }

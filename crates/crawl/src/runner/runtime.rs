@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::middleware::{ItemPipeline, Middleware, UaRotationMiddleware};
 use crate::observability::events::EventBus;
 use crate::runtime::autoscale::AutoscaledPool;
+use crate::runtime::control::EngineControl;
 use wisp_fetcher::FetchClient;
 use wisp_storage::Store;
 
@@ -13,6 +14,8 @@ use wisp_storage::Store;
 pub(crate) struct EngineRuntime {
     /// 共享 FetchClient（HTTP 连接池 + BrowserPool，跨 Spider 复用）。
     pub fetch_client: Arc<FetchClient>,
+    /// Engine 控制状态（pause/resume/cancel/shutdown）。
+    pub control: Arc<EngineControl>,
     /// 响应缓存存储（可选）。
     pub cache_store: Option<Arc<dyn Store>>,
     /// checkpoint 存储（可选）。

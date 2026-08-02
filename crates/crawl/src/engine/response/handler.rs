@@ -76,7 +76,7 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let stats = ctx.state.stats_for(&resp.request).expect("spider stats");
     let page_url = resp.url.clone();
 
-    let resp = if ctx.shared.middleware_chain.is_empty() {
+    let resp = if ctx.state.middleware_chain.is_empty() {
         Some(resp)
     } else {
         apply_response_middlewares(ctx, &spider, &stats, &page_url, resp).await
@@ -95,6 +95,6 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let (items, follows) = handle_spider_page(ctx, &spider, resp).await;
     process_page_items(ctx, &spider, &stats, &page_url, items).await;
     schedule_follow_requests(ctx, follows).await;
-    ctx.shared.work_notify.notify_one();
+    ctx.state.work_notify.notify_one();
     emit_page_scraped(ctx, &stats, &page_url).await;
 }

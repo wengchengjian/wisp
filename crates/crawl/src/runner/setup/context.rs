@@ -12,7 +12,6 @@ use crate::runner::Engine;
 use crate::scheduler;
 use crate::{CrawlEvent, Request, Spider, SpiderStats};
 use wisp_core::error::Result;
-use wisp_fetcher::FetchClient;
 
 impl Engine {
     pub(crate) fn build_rule_engine(&self) -> Result<Arc<Mutex<auto::ModeRuleEngine>>> {
@@ -23,52 +22,33 @@ impl Engine {
         Ok(Arc::new(Mutex::new(rule_engine)))
     }
 
-    fn build_engine_config(&self, fetch_client: &Arc<FetchClient>) -> engine::EngineConfig {
-        engine::EngineConfig {
-            user: self.config.clone(),
-            client: fetch_client.clone(),
-            checkpoint_store: self.runtime.checkpoint_store.clone(),
-        }
-    }
-
-    fn build_engine_shared(
+    fn build_engine_state(
         &self,
-        fetch_client: &Arc<FetchClient>,
         sched: Arc<scheduler::Scheduler>,
         follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
         follow_rx: tokio::sync::mpsc::UnboundedReceiver<Request>,
         rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
         robots_cache: Arc<crate::runtime::robots::RobotsCache>,
-        fetch_mode: wisp_fetcher::FetchMode,
-        obey_robots: bool,
-    ) -> engine::EngineShared {
-        engine::EngineShared {
-            sched: sched.clone(),
-            follow_tx,
-            follow_rx: Arc::new(Mutex::new(follow_rx)),
-            control: self.control.clone(),
-            work_notify: Arc::new(tokio::sync::Notify::new()),
-            event_bus: self.runtime.event_bus.clone(),
-            middleware_chain: self.build_middleware_chain(
-                fetch_client,
-                &rule_engine,
-                &robots_cache,
-                fetch_mode,
-                obey_robots,
-            ),
-            rule_engine,
-            cf_domain_locks: Arc::new(dashmap::DashMap::new()),
-        }
-    }
-
-    fn build_engine_state(
-        &self,
         spiders: Vec<Arc<dyn Spider>>,
         tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
         items: Arc<Mutex<Vec<Value>>>,
         all_stats: Vec<Arc<SpiderStats>>,
     ) -> engine::EngineState {
+        let fetch_client = self.runtime.fetch_client.clone();
         engine::EngineState {
+            sched: sched.clone(),
+            follow_tx,
+            follow_rx: Arc::new(Mutex::new(follow_rx)),
+            work_notify: Arc::new(tokio::sync::Notify::new()),
+            middleware_chain: self.build_middleware_chain(
+                &fetch_client,
+                &rule_engine,
+                &robots_cache,
+                self.config.fetch_mode,
+                self.config.obey_robots,
+            ),
+            rule_engine,
+            cf_domain_locks: Arc::new(dashmap::DashMap::new()),
             spiders,
             all_stats,
             items,
@@ -91,22 +71,20 @@ impl Engine {
         robots_cache: Arc<crate::runtime::robots::RobotsCache>,
         all_stats: Vec<Arc<SpiderStats>>,
     ) -> Arc<engine::EngineContext> {
-        let fetch_client = self.runtime.fetch_client.clone();
-        let fetch_mode = self.config.fetch_mode;
-        let obey_robots = self.config.obey_robots;
         Arc::new(engine::EngineContext {
-            config: self.build_engine_config(&fetch_client),
-            shared: self.build_engine_shared(
-                &fetch_client,
+            config: self.config.clone(),
+            runtime: self.runtime.clone(),
+            state: self.build_engine_state(
                 sched,
                 follow_tx,
                 follow_rx,
                 rule_engine,
                 robots_cache,
-                fetch_mode,
-                obey_robots,
+                spiders,
+                tx,
+                items,
+                all_stats,
             ),
-            state: self.build_engine_state(spiders, tx, items, all_stats),
         })
     }
 }

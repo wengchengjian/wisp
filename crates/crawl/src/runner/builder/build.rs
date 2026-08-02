@@ -25,6 +25,7 @@ impl EngineBuilder {
         };
         let runtime = EngineRuntime {
             fetch_client,
+            control: Arc::new(control::EngineControl::new()),
             cache_store: self.cache_store,
             checkpoint_store: self.checkpoint_store,
             autoscale: self.autoscale,
@@ -36,7 +37,6 @@ impl EngineBuilder {
         Ok(Engine {
             config: self.config,
             runtime,
-            control: Arc::new(control::EngineControl::new()),
             running: Arc::new(AtomicBool::new(false)),
         })
     }

@@ -71,6 +71,17 @@ fn engine_builder_accepts_existing_fetch_client() {
 }
 
 #[test]
+fn engine_control_handle_and_shutdown_share_runtime_state() {
+    let engine = Engine::infra().build().unwrap();
+    engine.control().shutdown();
+    assert!(engine.runtime.control.is_shutdown());
+
+    let engine = Engine::infra().build().unwrap();
+    engine.shutdown();
+    assert!(engine.runtime.control.is_shutdown());
+}
+
+#[test]
 fn engine_builder_rejects_zero_max_concurrent() {
     let err = match Engine::infra().max_concurrent(0).build() {
         Ok(_) => panic!("max_concurrent=0 应构建失败"),

@@ -1,55 +1,36 @@
 //! Engine 子模块：context。
 
 use super::*;
-use crate::runner::EngineConfig as UserEngineConfig;
+use crate::runner::{EngineConfig, EngineRuntime};
 
-// === EngineContext: 打包所有共享状态 ===
+// === EngineContext: 打包单次 run 状态 ===
 
-/// Engine 运行时上下文（单 Spider），由三层子结构组成。
+/// Engine 运行时上下文（单次 run），由配置、运行时资源和 run 状态组成。
 ///
-/// - `config`: 只读配置（从 Spider 提取，run 期间不变）
-/// - `shared`: 跨 task 共享的可变状态
-/// - `state`: per-run 可变状态
+/// - `config`: 唯一用户配置源
+/// - `runtime`: Engine 长生命周期运行时资源
+/// - `state`: 单次 run 的调度与可变状态
 pub(crate) struct EngineContext {
     pub config: EngineConfig,
-    pub shared: EngineShared,
+    pub runtime: EngineRuntime,
     pub state: EngineState,
 }
 
-/// 只读配置（从 Spider 提取，run 期间不变）。
-pub(crate) struct EngineConfig {
-    /// 唯一用户配置源。
-    pub user: UserEngineConfig,
-    /// 共享 FetchClient。
-    pub client: Arc<wisp_fetcher::FetchClient>,
-    /// checkpoint 存储（可选）。
-    pub checkpoint_store: Option<Arc<dyn wisp_storage::Store>>,
-}
-
-/// 跨 task 共享的可变状态。
-pub(crate) struct EngineShared {
+/// 单次 run 状态：跨 task 共享的调度资源与 per-run 可变状态。
+pub(crate) struct EngineState {
     pub sched: Arc<scheduler::Scheduler>,
     pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
     pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Request>>>,
-    pub control: Arc<control::EngineControl>,
     pub work_notify: Arc<tokio::sync::Notify>,
     pub middleware_chain: Arc<middleware::MiddlewareChain>,
-    pub event_bus: Arc<EventBus>,
     pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
-    /// 域名级 CF 挑战锁：防止初始并发请求全部走浏览器。
-    /// 第一个请求获取锁并解决 CF，其他请求等待后复用 cookie。
     pub cf_domain_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-}
-
-/// per-run 可变状态。
-pub(crate) struct EngineState {
     pub spiders: Vec<Arc<dyn Spider>>,
     pub all_stats: Vec<Arc<SpiderStats>>,
     pub items: Arc<Mutex<Vec<Value>>>,
     pub abort_flag: Arc<AtomicBool>,
     pub tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
     pub global_in_flight: Arc<AtomicUsize>,
-    /// 各 Spider 当前 in-flight 请求（key=spider name，checkpoint 持久化用）。
     pub in_flight_requests: Arc<Mutex<HashMap<String, Vec<Request>>>>,
 }
 
@@ -101,10 +82,10 @@ pub(crate) fn build_crawl_context_for(
 ) -> middleware::CrawlContext {
     middleware::CrawlContext {
         spider_name: spider.name().to_string(),
-        fetch_mode: ctx.config.user.fetch_mode,
-        max_concurrent: ctx.config.user.max_concurrent,
-        max_pages: ctx.config.user.max_pages,
-        obey_robots: ctx.config.user.obey_robots,
+        fetch_mode: ctx.config.fetch_mode,
+        max_concurrent: ctx.config.max_concurrent,
+        max_pages: ctx.config.max_pages,
+        obey_robots: ctx.config.obey_robots,
         pages_crawled: stats.pages.load(Ordering::SeqCst),
         errors: stats.errors.load(Ordering::SeqCst),
     }

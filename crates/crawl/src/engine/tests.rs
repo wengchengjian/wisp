@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::engine::request::check_control_and_hook;
+use crate::runner::EngineRuntime;
 use async_trait::async_trait;
 use std::collections::HashSet;
 
@@ -69,41 +70,56 @@ impl Spider for PanicSpider {
 }
 
 /// 构造最小 EngineContext（单 Spider，Http 模式，无事件通道）。
-/// 返回上下文与对应 stats 的 Arc 克隆，便于测试断言计数器。
-fn make_ctx() -> (EngineContext, Arc<SpiderStats>) {
+fn make_ctx_with(
+    config: crate::runner::EngineConfig,
+    chain: middleware::MiddlewareChain,
+    tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
+) -> (EngineContext, Arc<SpiderStats>) {
     let stats = Arc::new(SpiderStats::new());
     let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+    let fetch_client = Arc::new(
+        wisp_fetcher::FetchClient::new(config.transport.clone()).expect("build fetch client"),
+    );
     let ctx = EngineContext {
-        config: EngineConfig {
-            user: test_engine_config(FetchMode::Http, 3),
-            client: Arc::new(
-                wisp_fetcher::FetchClient::new(wisp_fetcher::FetchClientConfig::default())
-                    .expect("build fetch client"),
-            ),
+        config,
+        runtime: EngineRuntime {
+            fetch_client,
+            control: Arc::new(crate::control::EngineControl::new()),
+            cache_store: None,
             checkpoint_store: None,
+            autoscale: None,
+            event_bus: Arc::new(crate::observability::events::EventBus::new()),
+            ua_middleware: None,
+            custom_middlewares: Vec::new(),
+            pipelines: Vec::new(),
         },
-        shared: EngineShared {
+        state: EngineState {
             sched: Arc::new(scheduler::Scheduler::new()),
             follow_tx,
             follow_rx: Arc::new(Mutex::new(follow_rx)),
-            control: Arc::new(control::EngineControl::new()),
             work_notify: Arc::new(tokio::sync::Notify::new()),
-            middleware_chain: Arc::new(middleware::MiddlewareChain::new()),
-            event_bus: Arc::new(crate::observability::events::EventBus::new()),
+            middleware_chain: Arc::new(chain),
             rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
             cf_domain_locks: Arc::new(dashmap::DashMap::new()),
-        },
-        state: EngineState {
             spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
             all_stats: vec![stats.clone()],
             items: Arc::new(Mutex::new(Vec::new())),
             abort_flag: Arc::new(AtomicBool::new(false)),
-            tx: None,
+            tx,
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
         },
     };
     (ctx, stats)
+}
+
+/// 返回上下文与对应 stats 的 Arc 克隆，便于测试断言计数器。
+fn make_ctx() -> (EngineContext, Arc<SpiderStats>) {
+    make_ctx_with(
+        test_engine_config(FetchMode::Http, 3),
+        middleware::MiddlewareChain::new(),
+        None,
+    )
 }
 
 /// 构造最小 Response，仅 from_cache 字段可变。
@@ -189,46 +205,17 @@ async fn save_checkpoint_persists_seen_urls() {
 
 /// 构造带 RetryMiddleware 的 EngineContext（max_retries 可配置）。
 fn make_ctx_with_retry(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
-    let stats = Arc::new(SpiderStats::new());
-    let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
     let mut chain = middleware::MiddlewareChain::new();
     chain
         .middlewares
         .push(Arc::new(middleware::builtin::RetryMiddleware::new(
             std::time::Duration::ZERO,
         )));
-
-    let ctx = EngineContext {
-        config: EngineConfig {
-            client: Arc::new(
-                wisp_fetcher::FetchClient::new(wisp_fetcher::FetchClientConfig::default())
-                    .expect("build fetch client"),
-            ),
-            user: test_engine_config(FetchMode::Http, max_retries),
-            checkpoint_store: None,
-        },
-        shared: EngineShared {
-            sched: Arc::new(scheduler::Scheduler::new()),
-            follow_tx,
-            follow_rx: Arc::new(Mutex::new(follow_rx)),
-            control: Arc::new(control::EngineControl::new()),
-            work_notify: Arc::new(tokio::sync::Notify::new()),
-            middleware_chain: Arc::new(chain),
-            event_bus: Arc::new(crate::observability::events::EventBus::new()),
-            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-            cf_domain_locks: Arc::new(dashmap::DashMap::new()),
-        },
-        state: EngineState {
-            spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
-            all_stats: vec![stats.clone()],
-            items: Arc::new(Mutex::new(Vec::new())),
-            abort_flag: Arc::new(AtomicBool::new(false)),
-            tx: None,
-            global_in_flight: Arc::new(AtomicUsize::new(0)),
-            in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
-        },
-    };
-    (ctx, stats)
+    make_ctx_with(
+        test_engine_config(FetchMode::Http, max_retries),
+        chain,
+        None,
+    )
 }
 
 /// ND-002-CORR 回归测试：fetch_dispatch 必须实际执行重试。
@@ -303,50 +290,15 @@ async fn fetch_dispatch_no_retry_when_max_retries_zero() {
 /// 构造 Auto 模式 EngineContext（max_concurrent_pages=0 禁用浏览器池，
 /// Stealth 模式快速返回 "browser pool not configured" 错误）。
 fn make_ctx_auto(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
-    let stats = Arc::new(SpiderStats::new());
-    let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
     let mut chain = middleware::MiddlewareChain::new();
     chain
         .middlewares
         .push(Arc::new(middleware::builtin::RetryMiddleware::new(
             std::time::Duration::ZERO,
         )));
-
-    let fetch_config = wisp_fetcher::FetchClientConfig {
-        max_concurrent_pages: 0, // 禁用浏览器池，Stealth 模式快速失败
-        ..Default::default()
-    };
-
-    let ctx = EngineContext {
-        config: EngineConfig {
-            client: Arc::new(
-                wisp_fetcher::FetchClient::new(fetch_config).expect("build fetch client"),
-            ),
-            user: test_engine_config(FetchMode::Auto, max_retries),
-            checkpoint_store: None,
-        },
-        shared: EngineShared {
-            sched: Arc::new(scheduler::Scheduler::new()),
-            follow_tx,
-            follow_rx: Arc::new(Mutex::new(follow_rx)),
-            control: Arc::new(control::EngineControl::new()),
-            work_notify: Arc::new(tokio::sync::Notify::new()),
-            middleware_chain: Arc::new(chain),
-            event_bus: Arc::new(crate::observability::events::EventBus::new()),
-            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-            cf_domain_locks: Arc::new(dashmap::DashMap::new()),
-        },
-        state: EngineState {
-            spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
-            all_stats: vec![stats.clone()],
-            items: Arc::new(Mutex::new(Vec::new())),
-            abort_flag: Arc::new(AtomicBool::new(false)),
-            tx: None,
-            global_in_flight: Arc::new(AtomicUsize::new(0)),
-            in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
-        },
-    };
-    (ctx, stats)
+    let mut config = test_engine_config(FetchMode::Auto, max_retries);
+    config.transport.max_concurrent_pages = 0; // 禁用浏览器池，Stealth 模式快速失败
+    make_ctx_with(config, chain, None)
 }
 
 /// Auto 模式首次连接失败时，fetch_dispatch 应主动升级 Stealth 重试。
@@ -373,7 +325,7 @@ async fn fetch_dispatch_auto_upgrades_to_stealth_on_first_failure() {
     assert!(err.is_some(), "应返回错误信息");
 
     // 关键断言：rule_engine 应学到该 URL 需要 Stealth
-    let resolved = ctx.shared.rule_engine.lock().await.resolve(url);
+    let resolved = ctx.state.rule_engine.lock().await.resolve(url);
     assert_eq!(
         resolved,
         Some(FetchMode::Stealth),
@@ -395,7 +347,7 @@ async fn fetch_dispatch_no_duplicate_autofallback_for_learned_url() {
 
     // 预先学习：模拟之前请求已 learn 过 Stealth
     {
-        let mut rule_engine = ctx.shared.rule_engine.lock().await;
+        let mut rule_engine = ctx.state.rule_engine.lock().await;
         rule_engine.learn(url, FetchMode::Stealth);
         assert_eq!(rule_engine.auto_rule_count(), 1);
     }
@@ -411,7 +363,7 @@ async fn fetch_dispatch_no_duplicate_autofallback_for_learned_url() {
     assert!(err.is_some(), "应返回错误信息");
 
     // 关键断言：不应重复 learn（auto_rule_count 仍为 1）
-    let rule_engine = ctx.shared.rule_engine.lock().await;
+    let rule_engine = ctx.state.rule_engine.lock().await;
     assert_eq!(
         rule_engine.auto_rule_count(),
         1,
@@ -429,7 +381,7 @@ async fn fetch_dispatch_no_duplicate_autofallback_for_learned_url() {
 async fn check_control_cancelled_url_returns_false() {
     let (ctx, _stats) = make_ctx();
     let url = "http://example.com/cancelled";
-    ctx.shared.control.cancel(url).await;
+    ctx.runtime.control.cancel(url).await;
     let req = Request::get(url);
     assert!(
         !check_control_and_hook(&ctx, &req, &ctx.state.spiders[0]).await,
@@ -441,7 +393,7 @@ async fn check_control_cancelled_url_returns_false() {
 #[tokio::test]
 async fn check_control_shutdown_returns_false() {
     let (ctx, _stats) = make_ctx();
-    ctx.shared.control.shutdown();
+    ctx.runtime.control.shutdown();
     let req = Request::get("http://example.com/any");
     assert!(
         !check_control_and_hook(&ctx, &req, &ctx.state.spiders[0]).await,
@@ -455,8 +407,8 @@ async fn check_control_pause_then_shutdown_returns_false() {
     let (ctx, _stats) = make_ctx();
     let url = "http://example.com/paused";
     // 先 pause，再 shutdown（避免 wait_if_paused 永久阻塞）
-    ctx.shared.control.pause(url).await;
-    ctx.shared.control.shutdown();
+    ctx.runtime.control.pause(url).await;
+    ctx.runtime.control.shutdown();
     let req = Request::get(url);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -472,7 +424,7 @@ async fn check_control_pause_then_shutdown_returns_false() {
 async fn process_request_cancelled_url_returns_none() {
     let (ctx, stats) = make_ctx();
     let url = "http://example.com/cancelled";
-    ctx.shared.control.cancel(url).await;
+    ctx.runtime.control.cancel(url).await;
     let req = Request::get(url);
     let result = process_request(&ctx, req).await;
     assert!(result.is_none(), "cancelled URL 应返回 None");
@@ -484,7 +436,7 @@ async fn process_request_cancelled_url_returns_none() {
 #[tokio::test]
 async fn process_request_shutdown_returns_none() {
     let (ctx, _stats) = make_ctx();
-    ctx.shared.control.shutdown();
+    ctx.runtime.control.shutdown();
     let req = Request::get("http://example.com/any");
     let result = process_request(&ctx, req).await;
     assert!(result.is_none(), "shutdown 时应返回 None");
@@ -498,47 +450,18 @@ fn make_ctx_with_tx(
     Arc<SpiderStats>,
     tokio::sync::mpsc::Receiver<CrawlEvent>,
 ) {
-    let stats = Arc::new(SpiderStats::new());
-    let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
     let (tx, rx) = tokio::sync::mpsc::channel::<CrawlEvent>(128);
-    let ctx = EngineContext {
-        config: EngineConfig {
-            client: Arc::new(
-                wisp_fetcher::FetchClient::new(wisp_fetcher::FetchClientConfig::default())
-                    .expect("build fetch client"),
-            ),
-            user: test_engine_config(FetchMode::Http, max_retries),
-            checkpoint_store: None,
-        },
-        shared: EngineShared {
-            sched: Arc::new(scheduler::Scheduler::new()),
-            follow_tx,
-            follow_rx: Arc::new(Mutex::new(follow_rx)),
-            control: Arc::new(control::EngineControl::new()),
-            work_notify: Arc::new(tokio::sync::Notify::new()),
-            middleware_chain: Arc::new({
-                let mut chain = middleware::MiddlewareChain::new();
-                chain
-                    .middlewares
-                    .push(Arc::new(middleware::builtin::RetryMiddleware::new(
-                        std::time::Duration::ZERO,
-                    )));
-                chain
-            }),
-            event_bus: Arc::new(crate::observability::events::EventBus::new()),
-            rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-            cf_domain_locks: Arc::new(dashmap::DashMap::new()),
-        },
-        state: EngineState {
-            spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
-            all_stats: vec![stats.clone()],
-            items: Arc::new(Mutex::new(Vec::new())),
-            abort_flag: Arc::new(AtomicBool::new(false)),
-            tx: Some(tx),
-            global_in_flight: Arc::new(AtomicUsize::new(0)),
-            in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
-        },
-    };
+    let mut chain = middleware::MiddlewareChain::new();
+    chain
+        .middlewares
+        .push(Arc::new(middleware::builtin::RetryMiddleware::new(
+            std::time::Duration::ZERO,
+        )));
+    let (ctx, stats) = make_ctx_with(
+        test_engine_config(FetchMode::Http, max_retries),
+        chain,
+        Some(tx),
+    );
     (ctx, stats, rx)
 }
 

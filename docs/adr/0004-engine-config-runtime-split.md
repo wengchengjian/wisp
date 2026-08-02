@@ -2,4 +2,4 @@
 
 Status: accepted
 
-EngineConfig is the single immutable user config produced by the builder and held by Engine. FetchClient, stores, autoscale, event bus, middleware, and pipelines live in EngineRuntime. EngineContext consumes the same EngineConfig instead of maintaining a second subset.
+EngineConfig is the single immutable user config produced by the builder and held by Engine. FetchClient, EngineControl, stores, autoscale, event bus, middleware, and pipelines live in EngineRuntime. EngineContext consumes the same EngineConfig and EngineRuntime instead of maintaining a second subset.

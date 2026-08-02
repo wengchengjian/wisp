@@ -11,13 +11,13 @@ pub(crate) async fn check_control_and_hook(
     spider: &Arc<dyn Spider>,
 ) -> bool {
     // per-Engine 控制状态检查
-    if ctx.shared.control.is_cancelled(&req.url).await {
+    if ctx.runtime.control.is_cancelled(&req.url).await {
         return false;
     }
-    if !ctx.shared.control.wait_if_paused(&req.url).await {
+    if !ctx.runtime.control.wait_if_paused(&req.url).await {
         return false;
     }
-    if ctx.shared.control.is_shutdown() {
+    if ctx.runtime.control.is_shutdown() {
         return false;
     }
     // Spider 异步钩子
@@ -66,7 +66,7 @@ async fn run_request_middlewares(
 ) -> RequestStage {
     let crawl_ctx = build_crawl_context_for(ctx, spider, stats);
     match ctx
-        .shared
+        .state
         .middleware_chain
         .run_request_middlewares(req, &crawl_ctx)
         .await
@@ -79,7 +79,7 @@ async fn run_request_middlewares(
         middleware::RequestMwAction::Respond(cached_resp) => {
             stats.cache_hits.fetch_add(1, Ordering::SeqCst);
             record_status(stats, cached_resp.status);
-            ctx.shared
+            ctx.runtime
                 .event_bus
                 .emit(EngineEvent::ResponseReceived {
                     url: sanitize_url(&req.url),
@@ -106,7 +106,7 @@ async fn emit_fetch_failure(ctx: &EngineContext, req: &Request, e: &wisp_core::e
             })
             .await;
     }
-    ctx.shared
+    ctx.runtime
         .event_bus
         .emit(EngineEvent::ErrorOccurred {
             url: sanitize_url(&req.url),
@@ -136,7 +136,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
     }
 
     let mut req = req;
-    if !ctx.shared.middleware_chain.is_empty() {
+    if !ctx.state.middleware_chain.is_empty() {
         match run_request_middlewares(ctx, &spider, &stats, &mut req).await {
             RequestStage::Stop => return None,
             RequestStage::Respond(resp) => return Some(resp),
@@ -147,7 +147,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
     let fetch_started = std::time::Instant::now();
     match fetch_dispatch(ctx, &req).await {
         Ok(resp) => {
-            ctx.shared
+            ctx.runtime
                 .event_bus
                 .emit(EngineEvent::ResponseReceived {
                     url: sanitize_url(&req.url),

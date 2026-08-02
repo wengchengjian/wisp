@@ -9,7 +9,7 @@ pub(super) async fn process_page_items(
     page_url: &str,
     items: Vec<Value>,
 ) {
-    let pipeline_crawl_ctx = if ctx.shared.middleware_chain.is_empty() {
+    let pipeline_crawl_ctx = if ctx.state.middleware_chain.is_empty() {
         None
     } else {
         Some(build_crawl_context_for(ctx, spider, stats))
@@ -20,7 +20,7 @@ pub(super) async fn process_page_items(
             None => continue,
         };
         let item = if let Some(ref crawl_ctx) = pipeline_crawl_ctx {
-            ctx.shared
+            ctx.state
                 .middleware_chain
                 .run_pipelines(item, crawl_ctx)
                 .await
@@ -29,7 +29,7 @@ pub(super) async fn process_page_items(
         };
         if let Some(processed) = item {
             stats.items.fetch_add(1, Ordering::SeqCst);
-            ctx.shared
+            ctx.runtime
                 .event_bus
                 .emit(EngineEvent::ItemScraped {
                     url: sanitize_url(page_url),
@@ -46,14 +46,14 @@ pub(super) async fn process_page_items(
 /// 将 follow 请求送入主循环队列并发送调度事件。
 pub(super) async fn schedule_follow_requests(ctx: &EngineContext, follows: Vec<Request>) {
     for f in follows {
-        ctx.shared
+        ctx.runtime
             .event_bus
             .emit(EngineEvent::RequestScheduled {
                 url: sanitize_url(&f.url),
                 depth: f.depth,
             })
             .await;
-        if ctx.shared.follow_tx.send(f).is_err() {
+        if ctx.state.follow_tx.send(f).is_err() {
             tracing::debug!("follow_tx closed, dropping follow request");
         }
     }
@@ -85,7 +85,7 @@ pub(super) async fn emit_error_event(ctx: &EngineContext, url: &str, err: &str) 
             })
             .await;
     }
-    ctx.shared
+    ctx.runtime
         .event_bus
         .emit(EngineEvent::ErrorOccurred {
             url: sanitize_url(url),

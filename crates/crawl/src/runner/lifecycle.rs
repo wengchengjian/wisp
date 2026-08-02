@@ -16,13 +16,13 @@ use wisp_core::error::Result;
 
 impl Engine {
     async fn run_middleware_init(&self, ctx: &Arc<engine::EngineContext>) {
-        if ctx.shared.middleware_chain.is_empty() {
+        if ctx.state.middleware_chain.is_empty() {
             return;
         }
         for (spider, stats) in ctx.state.spiders.iter().zip(&ctx.state.all_stats) {
             let crawl_ctx = engine::build_crawl_context_for(ctx, spider, stats);
-            ctx.shared.middleware_chain.run_init(&crawl_ctx).await;
-            ctx.shared
+            ctx.state.middleware_chain.run_init(&crawl_ctx).await;
+            ctx.state
                 .middleware_chain
                 .run_pipelines_open(&crawl_ctx)
                 .await;
@@ -30,12 +30,12 @@ impl Engine {
     }
 
     async fn run_middleware_close(&self, ctx: &Arc<engine::EngineContext>) {
-        if ctx.shared.middleware_chain.is_empty() {
+        if ctx.state.middleware_chain.is_empty() {
             return;
         }
         for (spider, stats) in ctx.state.spiders.iter().zip(&ctx.state.all_stats) {
             let crawl_ctx = engine::build_crawl_context_for(ctx, spider, stats);
-            ctx.shared
+            ctx.state
                 .middleware_chain
                 .run_pipelines_close(&crawl_ctx)
                 .await;
@@ -48,7 +48,7 @@ impl Engine {
         all_stats: &[Arc<SpiderStats>],
     ) -> Option<tokio::task::JoinHandle<()>> {
         let pool = self.runtime.autoscale.clone()?;
-        pool.set_work_notify(Arc::clone(&ctx.shared.work_notify));
+        pool.set_work_notify(Arc::clone(&ctx.state.work_notify));
         let stats = all_stats.to_vec();
         let event_bus = self.runtime.event_bus.clone();
         Some(tokio::spawn(async move {
@@ -86,7 +86,7 @@ impl Engine {
             spider.on_close().await;
         }
         let interrupted =
-            ctx.state.abort_flag.load(Ordering::SeqCst) || ctx.shared.control.is_shutdown();
+            ctx.state.abort_flag.load(Ordering::SeqCst) || ctx.runtime.control.is_shutdown();
         if !interrupted {
             self.cleanup_checkpoints(ctx).await;
         }
@@ -107,7 +107,7 @@ impl Engine {
             return Ok(Vec::new());
         }
         let _guard = RunGuard::acquire(&self.running)?;
-        self.control.reset().await;
+        self.runtime.control.reset().await;
 
         let all_stats: Vec<Arc<SpiderStats>> = spiders
             .iter()

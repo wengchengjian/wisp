@@ -11,9 +11,9 @@ use crate::{Spider, SpiderStats};
 use wisp_core::utils::sanitize_url;
 
 async fn drain_follow_queue(ctx: &engine::EngineContext) {
-    let mut rx_guard = ctx.shared.follow_rx.lock().await;
+    let mut rx_guard = ctx.state.follow_rx.lock().await;
     while let Ok(req) = rx_guard.try_recv() {
-        ctx.shared.sched.push(req).await;
+        ctx.state.sched.push(req).await;
     }
 }
 
@@ -53,7 +53,7 @@ async fn scheduling_decision(
     if ctx.state.abort_flag.load(Ordering::SeqCst) {
         return Some(NextWorkResult::Done);
     }
-    if ctx.shared.control.is_shutdown() {
+    if ctx.runtime.control.is_shutdown() {
         return Some(done_or_wait(
             ctx.state.global_in_flight.load(Ordering::SeqCst),
         ));
@@ -65,15 +65,14 @@ async fn scheduling_decision(
         .iter()
         .map(|s| s.pages.load(Ordering::SeqCst))
         .sum();
-    if total_pages + ctx.state.global_in_flight.load(Ordering::SeqCst) >= ctx.config.user.max_pages
-    {
+    if total_pages + ctx.state.global_in_flight.load(Ordering::SeqCst) >= ctx.config.max_pages {
         return Some(done_or_wait(
             ctx.state.global_in_flight.load(Ordering::SeqCst),
         ));
     }
     let limit = match autoscale {
         Some(pool) => pool.current_concurrency(),
-        None => ctx.config.user.max_concurrent,
+        None => ctx.config.max_concurrent,
     };
     if ctx.state.global_in_flight.load(Ordering::SeqCst) >= limit {
         return Some(NextWorkResult::Wait);
@@ -88,8 +87,8 @@ pub(super) async fn next_work(
     if let Some(result) = scheduling_decision(ctx, autoscale).await {
         return result;
     }
-    let queue_size = ctx.shared.sched.len().await;
-    let mut req = match ctx.shared.sched.pop().await {
+    let queue_size = ctx.state.sched.len().await;
+    let mut req = match ctx.state.sched.pop().await {
         Some(req) => req,
         None => return done_or_wait(ctx.state.global_in_flight.load(Ordering::SeqCst)),
     };

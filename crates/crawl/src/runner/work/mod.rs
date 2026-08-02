@@ -32,9 +32,7 @@ pub(crate) async fn run_work_loop(
 ) {
     let buffer_ceiling = autoscale
         .as_ref()
-        .map_or(ctx.config.user.max_concurrent, |pool| {
-            pool.max_concurrency()
-        });
+        .map_or(ctx.config.max_concurrent, |pool| pool.max_concurrency());
     let stream = {
         let ctx = ctx.clone();
         let autoscale = autoscale.clone();
@@ -48,7 +46,7 @@ pub(crate) async fn run_work_loop(
                             let ctx = ctx.clone();
                             return Some((work.run(ctx.clone()), ()));
                         }
-                        NextWorkResult::Wait => ctx.shared.work_notify.notified().await,
+                        NextWorkResult::Wait => ctx.state.work_notify.notified().await,
                         NextWorkResult::Continue => continue,
                         NextWorkResult::Done => return None,
                     }

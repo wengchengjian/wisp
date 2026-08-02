@@ -16,4 +16,5 @@ pub use builder::EngineBuilder;
 pub use config::EngineConfig;
 pub use engine::Engine;
 pub(crate) use guard::RunGuard;
+pub(crate) use runtime::EngineRuntime;
 pub(crate) use work::{build_final_stats, run_stream_driver, run_work_loop};

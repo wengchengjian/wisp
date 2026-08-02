@@ -9,10 +9,10 @@ pub(super) async fn maybe_persist_checkpoint(
     spider: &Arc<dyn Spider>,
     stats: &Arc<SpiderStats>,
 ) {
-    let Some(store) = &ctx.config.checkpoint_store else {
+    let Some(store) = &ctx.runtime.checkpoint_store else {
         return;
     };
-    let interval = ctx.config.user.checkpoint_interval.max(1);
+    let interval = ctx.config.checkpoint_interval.max(1);
     let pages = stats.pages.load(Ordering::SeqCst);
     if pages == 0 || pages % interval != 0 {
         return;
@@ -28,17 +28,17 @@ pub(super) async fn maybe_persist_checkpoint(
     match persist_spider_checkpoint(
         store.as_ref(),
         spider.name(),
-        &ctx.shared.sched,
+        &ctx.state.sched,
         stats,
         in_flight,
     )
     .await
     {
         Ok(()) => {
-            ctx.shared
+            ctx.runtime
                 .event_bus
                 .emit(EngineEvent::CheckpointSaved {
-                    pending: ctx.shared.sched.len().await,
+                    pending: ctx.state.sched.len().await,
                 })
                 .await;
         }
@@ -95,7 +95,7 @@ pub(super) async fn apply_response_middlewares(
     loop {
         let crawl_ctx = build_crawl_context_for(ctx, spider, stats);
         match ctx
-            .shared
+            .state
             .middleware_chain
             .run_response_middlewares(&mut resp, &crawl_ctx)
             .await
@@ -114,7 +114,7 @@ pub(super) async fn apply_response_middlewares(
                 let Some(r) = refetch_or_error(
                     ctx,
                     &new_req,
-                    ctx.config.user.max_refetch_rounds as u32,
+                    ctx.config.max_refetch_rounds as u32,
                     refetch_depth,
                 )
                 .await
