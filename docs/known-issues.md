@@ -4,7 +4,7 @@
 > 每完成一项，从对应小节删除并补一行完成记录，避免堆积过期条目。
 
 **更新日期：** 2026-08-02
-**范围：** master `430c37d`（crate 拆分 + arch-refactor 整合后）
+**范围：** master `0161b1b`（覆盖率门槛 + 真实网络测试收口后）
 
 **完成记录（2026-08-02）：**
 - 分页 follow 竞态已修复：`NextWork` 创建时即计入 `global_in_flight`/`stats.in_flight` 并登记
@@ -180,7 +180,6 @@
 - 测试增强主体：proptest、insta、nextest 已落地；`cargo nextest run --workspace --all-features` 为默认测试命令。
 - cargo-deny 已接 CI。
 
-### P0：先用已有设施回答覆盖率与真实网络
 ### P0：真实网络/浏览器收口剩余
 1. Dynamic/Stealth 并发与取消场景测试：补真实网络/浏览器收口的最后缺口，控制总时长。
 
