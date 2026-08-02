@@ -191,6 +191,9 @@ fn novel_spiders(base: &str, book_limit: usize) -> Vec<ClosureSpider> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "console")]
+    console_subscriber::init();
+
     let books = env_usize("NOVEL_BOOKS", 30);
     let chapters = env_usize("NOVEL_CHAPTERS", 50);
     let chapter_kb = env_usize("NOVEL_CHAPTER_KB", 8);

@@ -9,6 +9,7 @@ license.workspace = true
 default = []
 browser = ["wisp-fetcher/browser"]
 stealth = ["browser", "wisp-fetcher/stealth"]
+loom = []
 
 [dependencies]
 wisp-core = { workspace = true }
@@ -37,3 +38,4 @@ url = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 insta = { workspace = true }
+loom = { workspace = true }

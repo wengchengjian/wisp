@@ -272,6 +272,9 @@ cargo nextest run --test cf_bypass_real_test --test real_scrape_test --run-ignor
 
 # Chrome-only concurrency/cancel tests (no network required)
 cargo nextest run --test browser_concurrency_cancel_test --run-ignored all
+
+# Tokio Console 开发观测（另开终端运行 tokio-console）
+RUSTFLAGS="--cfg tokio_unstable" cargo run --features console --example novel_profiler
 ```
 
 ## Requirements

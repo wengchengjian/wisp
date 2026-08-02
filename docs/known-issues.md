@@ -31,6 +31,10 @@
 - 语法现代化第一轮已完成：`#[allow]` 全部转 `#[expect]`，可安全改写的 `let_chains` 已压平，
   async closures 用于无捕获/可静态 future 回调；`EventCallback` 支持 `event_listener` 注册 async closure。
   gen blocks 因 stable 1.97 仍 experimental，本轮暂缓。
+- loom 模型测试已完成：新增 `crates/crawl/tests/loom_models.rs`，覆盖 scheduler/control/autoscale
+  状态不变量；通过 `cargo test -p wisp-crawl --features loom --test loom_models --release` 运行。
+- tokio-console 开发观测已接入：根包新增 `console` feature，`novel_profiler` 支持 console 初始化，
+  README 已记录运行命令。
 **完成记录（2026-08-01）：**
 
 - async `Store` 重构已完成：`Store` trait 与全部自由函数 async 化，SQLite/FileStore 经
@@ -188,14 +192,12 @@
 - 测试增强主体：proptest、insta、nextest 已落地；`cargo nextest run --workspace --all-features` 为默认测试命令。
 - cargo-deny 已接 CI。
 
-### P1：高性价比工程化
-1. 并发正确性：用 loom 覆盖 scheduler/control/autoscale 状态竞争；tokio-console 只作为开发期观测工具，不接入运行时依赖。
 
 ### P2：按风险与 ROI 推进
-2. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
-3. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
-4. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
-5. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
+1. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
+2. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
+3. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
+4. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
 
 ### 明确不采纳
 - cargo-semver-checks / cargo-public-api：wisp 仍处快速 API 变动阶段，暂不做。

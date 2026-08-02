@@ -53,6 +53,8 @@ tungstenite = "0.30"
 which = "7"
 woven-html = "0.1"
 zip = "2"
+console-subscriber = "0.5"
+loom = "0.7"
 proptest = "1"
 insta = "1"
 
@@ -76,6 +78,8 @@ stealth = ["browser", "wisp-fetcher/stealth", "wisp-crawl/stealth", "dep:wisp-st
 mcp = ["dep:wisp-mcp"]
 # 启用 SQLite 存储后端（默认禁用，使用 FileStore）
 sqlite = ["wisp-storage/sqlite", "wisp-mcp?/sqlite"]
+# 开发期 Tokio Console 观测（需 RUSTFLAGS="--cfg tokio_unstable"）
+console = ["dep:console-subscriber", "tokio/tracing"]
 
 [dependencies]
 wisp-core = { workspace = true }
@@ -92,6 +96,7 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 tracing-subscriber = { workspace = true }
+console-subscriber = { workspace = true, optional = true }
 wreq-util = { workspace = true }
 
 [dev-dependencies]
