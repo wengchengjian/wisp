@@ -81,4 +81,39 @@ mod tests {
         assert!(json_content.ends_with("]\n"));
         let _ = std::fs::remove_file(&json_path);
     }
+
+    #[tokio::test]
+    async fn batch_pipeline_flushes_at_capacity_and_close() {
+        let c = ctx();
+        let flushed = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let flushed_clone = flushed.clone();
+        let p = BatchItemPipeline::new(2, move |items| {
+            let flushed = flushed_clone.clone();
+            async move {
+                flushed.lock().await.extend(items);
+            }
+        });
+
+        p.process_item(json!("a"), &c).await;
+        p.process_item(json!("b"), &c).await;
+        assert_eq!(flushed.lock().await.len(), 2, "满 batch_size 应立即 flush");
+        p.process_item(json!("c"), &c).await;
+        p.close(&c).await;
+        assert_eq!(flushed.lock().await.len(), 3, "close 应 flush 剩余 item");
+    }
+
+    #[tokio::test]
+    async fn jsonl_writer_pipeline_writes_lines() {
+        let suffix = wisp_core::utils::random::rand_suffix();
+        let path = std::env::temp_dir().join(format!("wisp_jsonl_pipeline_{suffix}.jsonl"));
+        let p = JsonlWriterPipeline::new(path.to_str().unwrap());
+        let c = ctx();
+        p.open(&c).await;
+        p.process_item(json!("line1"), &c).await;
+        p.close(&c).await;
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.trim_end().lines().count(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
 }

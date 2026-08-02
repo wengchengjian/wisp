@@ -204,3 +204,25 @@ async fn test_stream_with_builder() {
     assert!(done);
     assert!(items >= 1);
 }
+
+#[tokio::test]
+async fn test_http_client_follows_redirect() {
+    let target = common::spawn_html_server("<h1>Redirected</h1>").await;
+    let start = common::spawn_redirect_server(target.clone()).await;
+    let client = wisp::http::Client::builder().build().unwrap();
+    let resp = client.get(&start, &[]).await.unwrap();
+    assert_eq!(resp.status, 200);
+    assert!(resp.url.starts_with(&target));
+    assert!(resp.text().unwrap().contains("Redirected"));
+}
+
+#[tokio::test]
+async fn test_http_client_rejects_oversized_body() {
+    let base = common::spawn_large_body_server(1024).await;
+    let client = wisp::http::Client::builder()
+        .max_body_size(16)
+        .build()
+        .unwrap();
+    let err = client.get(&base, &[]).await.unwrap_err();
+    assert!(err.to_string().contains("too large"), "{err}");
+}

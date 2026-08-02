@@ -23,6 +23,17 @@ use wisp::fetcher::FetchMode;
 use wisp::storage::MemoryStore;
 use wisp::Engine;
 
+fn fast_fetch_config() -> wisp::FetchClientConfig {
+    wisp::FetchClientConfig {
+        http: wisp::http::Config {
+            timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+        max_concurrent_pages: 0,
+        ..Default::default()
+    }
+}
+
 /// 最小 Spider：handle 返回空，不产出 items/follows。
 struct DummySpider {
     name: String,
@@ -476,6 +487,7 @@ async fn run_stream_emits_events_in_order() {
 #[tokio::test]
 async fn run_stream_emits_error_then_done_on_failure() {
     let engine = Engine::infra()
+        .fetch_client_config(fast_fetch_config())
         .max_pages(1)
         .obey_robots(false)
         .max_retries(0)
@@ -592,7 +604,7 @@ impl Spider for SlowSpider {
         vec![self.url.clone()]
     }
     async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         (vec![], vec![])
     }
 }
@@ -623,12 +635,13 @@ impl Spider for GracefulShutdownSpider {
 
 /// 同一 Engine 实例并发 run 应返回 Engine 错误。
 ///
-/// 用 SlowSpider（handle sleep 10s）确保 run1 不立即完成，
+/// 用 SlowSpider（handle sleep 1s）确保 run1 不立即完成，
 /// run2 应立即返回 Engine 错误。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_run_on_same_engine_returns_error() {
     let url = spawn_html_server("<html><body>ok</body></html>").await;
     let engine = Engine::infra()
+        .fetch_client_config(fast_fetch_config())
         .max_pages(100)
         .obey_robots(false)
         .max_retries(0)
@@ -642,16 +655,16 @@ async fn concurrent_run_on_same_engine_returns_error() {
     };
     let spider2 = DummySpider {
         name: "concurrent-2".into(),
-        urls: vec!["http://127.0.0.1:1/".into()],
+        urls: vec![url.clone()],
     };
 
-    // run1：先 poll 一段时间获取 running 标志（SlowSpider handle sleep 10s，不会完成）
+    // run1：先 poll 一段时间获取 running 标志（SlowSpider handle sleep 1s，不会完成）
     let run1 = engine.run(spider1);
     tokio::pin!(run1);
     let poll_result = tokio::time::timeout(Duration::from_millis(100), &mut run1).await;
     assert!(
         poll_result.is_err(),
-        "run1 不应在 100ms 内完成（SlowSpider handle sleep 10s）"
+        "run1 不应在 100ms 内完成（SlowSpider handle sleep 1s）"
     );
 
     // run2：应立即返回 Engine 错误（running 标志被 run1 占用）
@@ -675,7 +688,7 @@ async fn concurrent_run_on_same_engine_returns_error() {
     // 验证 running 标志已释放：再次 run 应成功
     let spider3 = DummySpider {
         name: "concurrent-3".into(),
-        urls: vec!["http://127.0.0.1:1/".into()],
+        urls: vec![url.clone()],
     };
     let result = engine.run(spider3).await;
     assert!(

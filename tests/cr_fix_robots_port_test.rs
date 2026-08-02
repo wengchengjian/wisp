@@ -7,18 +7,26 @@
 //! 同时验证：fetch 失败时返回的空规则不被缓存（瞬态网络失败后下次重试）。
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::crawl::runtime::robots::RobotsCache;
 use wisp::{FetchClient, FetchClientConfig};
 
-/// 两个测试都用随机端口起 mock server，`dead_port = port + 1` 可能与另一个
-/// 测试的监听端口相撞，串行化避免并发端口冲突。
-static ROBOTS_PORT_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+fn client_with_fast_timeout() -> FetchClient {
+    FetchClient::new(FetchClientConfig {
+        http: wisp::http::Config {
+            timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+        max_concurrent_pages: 0,
+        ..Default::default()
+    })
+    .unwrap()
+}
 
 #[tokio::test]
 async fn robots_fetched_from_correct_port() {
-    let _guard = ROBOTS_PORT_TEST_LOCK.lock();
     // 启动 mock server 监听随机端口
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -43,11 +51,7 @@ async fn robots_fetched_from_correct_port() {
 
     // 用带非默认端口的 URL 触发 rules_for
     let url = format!("http://127.0.0.1:{}/page", port);
-    let client = FetchClient::new(FetchClientConfig {
-        max_concurrent_pages: 0,
-        ..Default::default()
-    })
-    .unwrap();
+    let client = client_with_fast_timeout();
     let cache = RobotsCache::new();
     let allowed = cache.is_allowed(&client, &url).await;
     assert_eq!(
@@ -60,8 +64,7 @@ async fn robots_fetched_from_correct_port() {
 
 #[tokio::test]
 async fn fetch_failure_not_cached_so_retry_happens() {
-    let _guard = ROBOTS_PORT_TEST_LOCK.lock();
-    // 第一次指向不存在的端口（fetch 失败），第二次指向有效 mock server。
+    // 第一次指向刚释放的随机端口（fetch 失败），第二次指向有效 mock server。
     // 失败应不缓存，第二次 rules_for 应重新 fetch 命中 mock server。
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -83,16 +86,13 @@ async fn fetch_failure_not_cached_so_retry_happens() {
         }
     });
 
-    let client = FetchClient::new(FetchClientConfig {
-        max_concurrent_pages: 0,
-        ..Default::default()
-    })
-    .unwrap();
+    let client = client_with_fast_timeout();
     let cache = RobotsCache::new();
 
     // 第一次：指向无人监听的端口，fetch 应失败返回空规则（且不缓存）
-    let dead_port = port.wrapping_add(1);
-    // 尝试若干端口找到一个真正无监听的（避免 mock server 端口+1 偶然被占）
+    let dead_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_port = dead_listener.local_addr().unwrap().port();
+    drop(dead_listener);
     let dead_url = format!("http://127.0.0.1:{dead_port}/page");
     let _dead_rules = cache.rules_for(&client, &dead_url).await;
 

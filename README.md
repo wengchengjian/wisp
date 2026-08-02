@@ -232,6 +232,18 @@ Fetcher::stealth()
 
 ## Running Tests
 
+默认测试工具为 cargo-nextest：
+
+```bash
+# 默认完整测试（快速并行执行，不含 doctest）
+cargo nextest run --workspace --all-features
+
+# doctest 单独执行
+cargo test --doc
+```
+
+libtest 兼容命令仍可用：
+
 ```bash
 # Unit tests (no network required)
 cargo test --lib
@@ -246,8 +258,8 @@ cargo test --test callback_routing_test --test engine_infra_test --test sitemap_
 cargo test --test stop_condition_test --test multi_spider_test --test multi_spider_routing_test --test novel_10_books_test
 
 # Real network tests (requires internet, uses proxy 127.0.0.1:7897)
-cargo test --test cf_bypass_real_test -- --ignored
-cargo test --test real_scrape_test -- --ignored
+cargo nextest run --test cf_bypass_real_test --run-ignored all
+cargo nextest run --test real_scrape_test --run-ignored all
 ```
 
 ## Requirements

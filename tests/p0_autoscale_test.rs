@@ -4,6 +4,17 @@
 use std::time::Duration;
 use wisp::crawl::runtime::autoscale::{AutoscaleConfig, AutoscaledPool};
 
+fn fast_fetch_config() -> wisp::FetchClientConfig {
+    wisp::FetchClientConfig {
+        http: wisp::http::Config {
+            timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+        max_concurrent_pages: 0,
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn engine_builder_accepts_autoscale() {
     let engine = wisp::crawl::Engine::infra()
@@ -67,6 +78,7 @@ impl Spider for FailSpider {
 async fn run_with_autoscale_completes_without_deadlock() {
     // 启用 autoscale(1, 4)，爬取不可达 URL，引擎应正常完成不卡死
     let engine = wisp::crawl::Engine::infra()
+        .fetch_client_config(fast_fetch_config())
         .max_pages(10)
         .autoscale(1, 4)
         .obey_robots(false)

@@ -6,11 +6,23 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
+use std::time::Duration;
 use wisp::crawl::*;
 use wisp::fetcher::FetchMode;
 use wisp::parser::ResponseExt;
 
 mod common;
+
+fn fast_fetch_config() -> wisp::FetchClientConfig {
+    wisp::FetchClientConfig {
+        http: wisp::http::Config {
+            timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+        max_concurrent_pages: 0,
+        ..Default::default()
+    }
+}
 
 /// 最小 Spider：handle 返回单个 item，不 follow。
 struct CountSpider {
@@ -37,6 +49,7 @@ async fn test_engine_multiple_runs_share_resources() {
     // 端口 1 不可达，请求会立即失败（connection refused）
     // 必须指定 FetchMode::Http，否则默认 Auto 模式会尝试启动 Chrome 嗅探，导致卡住
     let engine = Engine::infra()
+        .fetch_client_config(fast_fetch_config())
         .max_pages(10)
         .obey_robots(false)
         .max_retries(0)
@@ -116,6 +129,7 @@ async fn test_engine_run_returns_items() {
     }
 
     let engine = Engine::infra()
+        .fetch_client_config(fast_fetch_config())
         .max_pages(1)
         .obey_robots(false)
         .build()
@@ -132,6 +146,7 @@ async fn test_engine_control_reset_between_runs() {
     // 验证每次 run 开始时 control 被 reset（清除上次的 shutdown/pause 状态）
     // 必须指定 FetchMode::Http，否则默认 Auto 模式会尝试启动 Chrome 嗅探，导致卡住
     let engine = Engine::infra()
+        .fetch_client_config(fast_fetch_config())
         .obey_robots(false)
         .max_retries(0)
         .fetch_mode(FetchMode::Http)

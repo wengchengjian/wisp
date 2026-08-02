@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use wisp_proxy::{ProxyPool, RotationStrategy};
 
 fn make_req() -> Request {
     Request {
@@ -516,4 +517,25 @@ fn default_middlewares_names_match_config() {
             .any(|n| n.ends_with("DynamicUpgradeMiddleware")),
         "默认不应含 DynamicUpgrade: {names:?}"
     );
+}
+
+#[tokio::test]
+async fn test_proxy_injection_middleware() {
+    let pool = Arc::new(ProxyPool::new(
+        vec!["http://p1:8080".into(), "http://p2:8080".into()],
+        RotationStrategy::Sequential,
+    ));
+    let mw = ProxyInjectionMiddleware::new(pool);
+    let ctx = make_ctx();
+
+    let mut req = make_req();
+    assert_eq!(
+        mw.process_request(&mut req, &ctx).await,
+        RequestMwAction::Modified
+    );
+    assert_eq!(req.proxy.as_deref(), Some("http://p1:8080"));
+
+    let mut req2 = make_req();
+    mw.process_request(&mut req2, &ctx).await;
+    assert_eq!(req2.proxy.as_deref(), Some("http://p2:8080"));
 }

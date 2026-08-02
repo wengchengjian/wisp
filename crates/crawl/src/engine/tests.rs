@@ -5,9 +5,10 @@ use crate::engine::request::check_control_and_hook;
 use crate::runner::EngineRuntime;
 use async_trait::async_trait;
 use std::collections::HashSet;
+use std::time::Duration;
 
 fn test_engine_config(fetch_mode: FetchMode, max_retries: u32) -> crate::runner::EngineConfig {
-    crate::runner::EngineConfig {
+    let mut config = crate::runner::EngineConfig {
         fetch_mode,
         max_retries,
         max_concurrent: 8,
@@ -16,7 +17,10 @@ fn test_engine_config(fetch_mode: FetchMode, max_retries: u32) -> crate::runner:
         max_refetch_rounds: 5,
         checkpoint_interval: 0,
         ..Default::default()
-    }
+    };
+    config.transport.http.timeout = Duration::from_millis(100);
+    config.transport.max_concurrent_pages = 0;
+    config
 }
 
 /// 最小 Spider：handle 返回空，不产出 items/follows，避免触碰事件通道。
@@ -244,7 +248,9 @@ async fn fetch_dispatch_actually_retries_on_network_error() {
     assert!(err.is_some(), "重试耗尽后应返回错误信息");
     let err_msg = err.unwrap();
     assert!(
-        err_msg.contains("fetch failed") || err_msg.contains("Connection failed"),
+        err_msg.contains("fetch failed")
+            || err_msg.contains("Connection failed")
+            || err_msg.contains("timed out"),
         "错误信息应含 'fetch failed'，实际: {}",
         err_msg
     );

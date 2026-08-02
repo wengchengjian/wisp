@@ -12,8 +12,20 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use wisp::crawl::*;
 use wisp::fetcher::FetchMode;
+
+fn fast_fetch_config() -> wisp::FetchClientConfig {
+    wisp::FetchClientConfig {
+        http: wisp::http::Config {
+            timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+        max_concurrent_pages: 0,
+        ..Default::default()
+    }
+}
 
 /// 修复3 回归：StopContext.queue_size 字段可被 FnStopCondition 读取，
 /// 验证终止策略能基于真实队列长度判定。
@@ -112,6 +124,7 @@ async fn test_fetch_retry_count_semantics() {
         count: count.clone(),
     };
     let engine = Engine::infra()
+        .fetch_client_config(fast_fetch_config())
         .max_pages(1)
         .obey_robots(false)
         .max_retries(3)
