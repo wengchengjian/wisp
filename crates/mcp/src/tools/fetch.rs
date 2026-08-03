@@ -1,8 +1,9 @@
 //! MCP fetch_page 工具。
 
+use super::fetch_html::fetch_html;
 use super::types::{FetchPageArgs, FetchPageResult, ToolContext};
+use wisp_core::FetchMode;
 use wisp_core::error::Result;
-use wisp_core::{FetchMode, Request};
 use wreq_util::Profile;
 
 fn profile_from_name(name: &str) -> Profile {
@@ -15,23 +16,19 @@ fn profile_from_name(name: &str) -> Profile {
 
 /// 抓取单个网页，返回 HTML 文本。
 pub async fn fetch_page(args: FetchPageArgs, ctx: &ToolContext<'_>) -> Result<FetchPageResult> {
-    wisp_core::utils::validate_url(&args.url)?;
-
     let emulation = args.emulation.as_deref().map(profile_from_name);
-    let resp = ctx
-        .fetch_client
-        .fetch_with(
-            &Request::get(&args.url),
-            FetchMode::Http,
-            &wisp_fetcher::FetchOptions { emulation },
-        )
-        .await?;
-    let html = resp.text()?;
+    let page = fetch_html(
+        ctx,
+        &args.url,
+        FetchMode::Http,
+        &wisp_fetcher::FetchOptions { emulation },
+    )
+    .await?;
 
     Ok(FetchPageResult {
-        url: args.url,
-        status: resp.status,
-        html,
-        bytes: resp.body.len(),
+        url: page.url,
+        status: page.status,
+        html: page.html,
+        bytes: page.bytes,
     })
 }

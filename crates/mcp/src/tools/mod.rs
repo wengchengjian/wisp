@@ -4,6 +4,7 @@ mod adaptive;
 mod crawl;
 mod extract;
 mod fetch;
+mod fetch_html;
 mod gateway;
 #[cfg(feature = "stealth")]
 mod stealth;

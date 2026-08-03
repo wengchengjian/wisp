@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
+use super::fetch_html::fetch_html;
 use super::types::{AdaptiveScrapeArgs, AdaptiveScrapeResult, ToolContext};
+use wisp_core::FetchMode;
 use wisp_core::error::Result;
-use wisp_core::{FetchMode, Request};
 use wisp_parser::Node;
 use wisp_storage::{Store, open_store};
 
@@ -13,13 +14,14 @@ pub async fn adaptive_scrape(
     args: AdaptiveScrapeArgs,
     ctx: &ToolContext<'_>,
 ) -> Result<AdaptiveScrapeResult> {
-    wisp_core::utils::validate_url(&args.url)?;
-    let resp = ctx
-        .fetch_client
-        .fetch(&Request::get(&args.url), FetchMode::Http)
-        .await?;
-    let html = resp.text()?;
-    let doc = Node::from_html(&html);
+    let page = fetch_html(
+        ctx,
+        &args.url,
+        FetchMode::Http,
+        &wisp_fetcher::FetchOptions::default(),
+    )
+    .await?;
+    let doc = Node::from_html(&page.html);
     let effective_store: Arc<dyn Store> = match args.db_path.as_deref() {
         Some(path) if !path.is_empty() => open_store(path)?,
         _ => Arc::clone(ctx.store),
@@ -30,20 +32,20 @@ pub async fn adaptive_scrape(
             &doc,
             &args.selector,
             &args.key,
-            &args.url,
+            &page.url,
             true,
             wisp_parser::DEFAULT_TOLERANCE,
         )
         .await?;
     match found {
         Some(node) => Ok(AdaptiveScrapeResult {
-            url: args.url,
+            url: page.url,
             found: true,
             text: Some(node.text()),
             html: Some(node.html()),
         }),
         None => Ok(AdaptiveScrapeResult {
-            url: args.url,
+            url: page.url,
             found: false,
             text: None,
             html: None,
