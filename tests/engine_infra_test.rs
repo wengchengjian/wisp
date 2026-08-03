@@ -137,8 +137,8 @@ async fn test_engine_run_returns_items() {
     let (stats, items) = engine.run(PSpider { url: base }).await.unwrap();
     assert!(stats.pages_crawled >= 1, "应爬取至少 1 页");
     assert_eq!(items.len(), 2, "应产出 2 个 item");
-    assert_eq!(items[0]["text"], "item1");
-    assert_eq!(items[1]["text"], "item2");
+    assert_eq!(items[0].value()["text"], "item1");
+    assert_eq!(items[1].value()["text"], "item2");
 }
 
 #[tokio::test]

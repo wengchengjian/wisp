@@ -145,6 +145,15 @@ impl FetchClient {
     }
 
     pub(crate) async fn fetch_http(&self, req: &Request) -> Result<Response> {
+        self.ensure_domain_allowed(req)?;
+        if let Some(proxy) = req.proxy.as_deref() {
+            let client = self.proxy_client(proxy)?;
+            return client.fetch(req).await;
+        }
+        self.http.fetch(req).await
+    }
+
+    fn ensure_domain_allowed(&self, req: &Request) -> Result<()> {
         if let Some(ref blocker) = self.config.domain_blocker
             && blocker.should_block(&req.url)
         {
@@ -153,11 +162,7 @@ impl FetchClient {
                 wisp_core::utils::sanitize_url(&req.url)
             )));
         }
-        if let Some(proxy) = req.proxy.as_deref() {
-            let client = self.proxy_client(proxy)?;
-            return client.fetch(req).await;
-        }
-        self.http.fetch(req).await
+        Ok(())
     }
 
     /// 使用共享 cookie/代理配置和指定 TLS 指纹执行 HTTP 抓取。
@@ -169,14 +174,7 @@ impl FetchClient {
         req: &Request,
         emulation: Profile,
     ) -> Result<Response> {
-        if let Some(ref blocker) = self.config.domain_blocker
-            && blocker.should_block(&req.url)
-        {
-            return Err(WispError::Config(format!(
-                "domain blocked by DomainBlocker: {}",
-                wisp_core::utils::sanitize_url(&req.url)
-            )));
-        }
+        self.ensure_domain_allowed(req)?;
         let mut http = self.config.http.clone();
         http.emulation = Some(emulation);
         http.cookie_jar = Some(self.http_jar.jar());
@@ -256,6 +254,7 @@ impl FetchClient {
         req: &Request,
         strategy: &dyn BrowserFetchStrategy,
     ) -> Result<Response> {
+        self.ensure_domain_allowed(req)?;
         let pool = self.browser_pool.as_ref().ok_or_else(|| {
             WispError::Browser(wisp_core::error::BrowserError::Other(
                 "browser pool not configured (max_concurrent_pages=0)".into(),
@@ -263,14 +262,6 @@ impl FetchClient {
         })?;
         let mut handle = pool.acquire().await?;
 
-        if let Some(ref blocker) = self.config.domain_blocker
-            && blocker.should_block(&req.url)
-        {
-            return Err(WispError::Config(format!(
-                "domain blocked by DomainBlocker: {}",
-                wisp_core::utils::sanitize_url(&req.url)
-            )));
-        }
         if let Some(ref blocker) = self.config.domain_blocker
             && let urls = blocker.blocked_domains()
             && !urls.is_empty()
@@ -367,6 +358,28 @@ impl Drop for FetchClient {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ensure_domain_allowed_blocks_configured_domain() {
+        use wisp_http::DomainBlocker;
+        let mut blocker = DomainBlocker::new();
+        blocker.block_domain("ads.example.com");
+        let config = FetchClientConfig {
+            domain_blocker: Some(blocker),
+            max_concurrent_pages: 0,
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+        assert!(
+            client
+                .ensure_domain_allowed(&Request::get("https://ads.example.com/ad.js"))
+                .is_err()
+        );
+        assert!(
+            client
+                .ensure_domain_allowed(&Request::get("https://ok.example.com/"))
+                .is_ok()
+        );
+    }
     #[test]
     fn proxy_client_preserves_full_config() {
         let config = FetchClientConfig {

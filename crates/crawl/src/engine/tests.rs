@@ -108,7 +108,6 @@ fn make_ctx_with(
             cf_domain_locks: Arc::new(dashmap::DashMap::new()),
             spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
             all_stats: vec![stats.clone()],
-            items: Arc::new(Mutex::new(Vec::new())),
             abort_flag: Arc::new(AtomicBool::new(false)),
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -128,17 +127,17 @@ fn make_ctx() -> (EngineContext, Arc<SpiderStats>) {
 
 /// 构造最小 Response，仅 from_cache 字段可变。
 fn make_resp(from_cache: bool) -> Response {
-    Response::from_parts(
-        200,
-        "http://example.com/page".into(),
-        HashMap::new(),
-        vec![],
-        None,
-        Vec::new(),
-        Request::get("http://example.com/page"),
-        String::new(),
+    Response::from_parts(wisp_core::ResponseParts {
+        status: 200,
+        url: "http://example.com/page".into(),
+        headers: HashMap::new(),
+        body: vec![],
+        title: None,
+        cookies: Vec::new(),
+        request: Request::get("http://example.com/page"),
+        content_type: String::new(),
         from_cache,
-    )
+    })
 }
 
 /// 缓存命中（from_cache=true）时 stats.pages 不应递增。
@@ -179,18 +178,25 @@ async fn process_response_isolates_handler_panic() {
 /// Task 3：验证 persist_spider_checkpoint 把 Scheduler 的 seen_urls 集合写入持久化 blob。
 #[tokio::test]
 async fn save_checkpoint_persists_seen_urls() {
-    let store = wisp_storage::MemoryStore::default();
-    let sched = scheduler::Scheduler::new();
+    let (mut ctx, stats) = make_ctx();
+    let store: Arc<dyn Store> = Arc::new(wisp_storage::MemoryStore::default());
+    ctx.runtime.checkpoint_store = Some(store.clone());
+    ctx.config.checkpoint_interval = 5;
     // push 两个 URL：进入 heap 与 seen 集合
-    sched.push(Request::get("https://example.com/a")).await;
-    sched.push(Request::get("https://example.com/b")).await;
+    ctx.state
+        .sched
+        .push(Request::get("https://example.com/a"))
+        .await;
+    ctx.state
+        .sched
+        .push(Request::get("https://example.com/b"))
+        .await;
 
-    let stats = Arc::new(SpiderStats::new());
-    persist_spider_checkpoint(&store, "seen_persist_spider", &sched, &stats, Vec::new())
-        .await
-        .expect("persist_spider_checkpoint should succeed");
+    stats.pages.store(5, std::sync::atomic::Ordering::SeqCst);
+    let spider = ctx.state.spiders[0].clone();
+    maybe_persist_checkpoint(&ctx, &spider, &stats).await;
 
-    let blob = wisp_storage::load_checkpoint(&store, "seen_persist_spider")
+    let blob = wisp_storage::load_checkpoint(store.as_ref(), "dummy")
         .await
         .expect("load checkpoint ok")
         .expect("checkpoint should exist");

@@ -3,37 +3,53 @@
 use super::*;
 use std::collections::HashSet;
 
-pub(crate) async fn persist_spider_checkpoint(
-    store: &dyn wisp_storage::Store,
-    spider_name: &str,
-    sched: &scheduler::Scheduler,
+/// 到点则持久化 Spider checkpoint；未配置存储或未到 interval 时直接返回。
+pub(crate) async fn maybe_persist_checkpoint(
+    ctx: &EngineContext,
+    spider: &Arc<dyn Spider>,
     stats: &Arc<SpiderStats>,
-    in_flight: Vec<Request>,
-) -> Result<()> {
-    let pending = sched.pending_urls().await;
-    let seen = sched.seen_urls().await; // 持久化 seen 去重集合
-    let snapshot = stats.snapshot();
+) {
+    let Some(store) = &ctx.runtime.checkpoint_store else {
+        return;
+    };
+    let interval = ctx.config.checkpoint_interval.max(1);
+    let pages = stats.pages.load(Ordering::SeqCst);
+    if pages == 0 || !pages.is_multiple_of(interval) {
+        return;
+    }
+    let in_flight = ctx
+        .state
+        .in_flight_requests
+        .lock()
+        .await
+        .get(spider.name())
+        .cloned()
+        .unwrap_or_default();
     let state = CrawlState {
-        spider_name: spider_name.to_string(),
-        pending_urls: pending,
-        seen_urls: seen,
-        stats: snapshot,
+        spider_name: spider.name().to_string(),
+        pending_urls: ctx.state.sched.pending_urls().await,
+        seen_urls: ctx.state.sched.seen_urls().await, // 持久化 seen 去重集合
+        stats: stats.snapshot(),
         in_flight_urls: in_flight,
         saved_at: chrono::Utc::now(),
     };
-    let blob = bincode::serialize(&state).map_err(|e| {
-        wisp_core::error::WispError::Storage(wisp_core::error::StorageError::General(format!(
-            "checkpoint 序列化失败: {e}"
-        )))
-    })?;
-    wisp_storage::save_checkpoint(store, spider_name, &blob)
-        .await
-        .map_err(|e| {
-            wisp_core::error::WispError::Storage(wisp_core::error::StorageError::General(format!(
-                "checkpoint 保存失败: {e}"
-            )))
-        })?;
-    Ok(())
+    let blob = match bincode::serialize(&state) {
+        Ok(blob) => blob,
+        Err(e) => {
+            tracing::warn!("checkpoint 序列化失败: {e}");
+            return;
+        }
+    };
+    if let Err(e) = wisp_storage::save_checkpoint(store.as_ref(), spider.name(), &blob).await {
+        tracing::warn!("checkpoint 保存失败: {e}");
+        return;
+    }
+    ctx.runtime
+        .event_bus
+        .emit(CrawlEvent::CheckpointSaved {
+            pending: ctx.state.sched.len().await,
+        })
+        .await;
 }
 
 /// 加载并反序列化某个 Spider 的 checkpoint。

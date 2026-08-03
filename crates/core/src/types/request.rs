@@ -85,17 +85,7 @@ impl Request {
     pub fn get(url: &str) -> Self {
         Self {
             url: url.to_string(),
-            method: Method::Get,
-            headers: HashMap::new(),
-            body: None,
-            meta: Value::Null,
-            callback: None,
-            spider: None,
-            priority: 0,
-            depth: 0,
-            proxy: None,
-            fetch_mode_override: None,
-            retry_count: 0,
+            ..Default::default()
         }
     }
 
@@ -104,16 +94,8 @@ impl Request {
         Self {
             url: url.to_string(),
             method: Method::Post,
-            headers: HashMap::new(),
             body,
-            meta: Value::Null,
-            callback: None,
-            spider: None,
-            priority: 0,
-            depth: 0,
-            proxy: None,
-            fetch_mode_override: None,
-            retry_count: 0,
+            ..Default::default()
         }
     }
 

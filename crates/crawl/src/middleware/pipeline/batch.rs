@@ -6,9 +6,11 @@ use std::future::Future;
 use std::pin::Pin;
 use tokio::sync::Mutex;
 
+use crate::Item;
 use crate::middleware::{CrawlContext, ItemPipeline};
 
-type FlushFn = Box<dyn Fn(Vec<Value>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+type FlushFn =
+    Box<dyn Fn(Vec<Item<Value>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// 通用批量处理 Pipeline：内部缓冲，满 batch_size 条自动调用 flush_fn 批量提交。
 ///
@@ -25,7 +27,7 @@ type FlushFn = Box<dyn Fn(Vec<Value>) -> Pin<Box<dyn Future<Output = ()> + Send>
 /// });
 /// ```
 pub struct BatchItemPipeline {
-    buffer: Mutex<Vec<Value>>,
+    buffer: Mutex<Vec<Item<Value>>>,
     batch_size: usize,
     flush_fn: FlushFn,
 }
@@ -37,7 +39,7 @@ impl BatchItemPipeline {
     /// - `flush_fn`：批量提交逻辑（接收一批 items）
     pub fn new<F, Fut>(batch_size: usize, flush_fn: F) -> Self
     where
-        F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
+        F: Fn(Vec<Item<Value>>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         Self {
@@ -50,7 +52,7 @@ impl BatchItemPipeline {
 
 #[async_trait]
 impl ItemPipeline for BatchItemPipeline {
-    async fn process_item(&self, item: Value, _ctx: &CrawlContext) -> Option<Value> {
+    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>> {
         let mut buf = self.buffer.lock().await;
         buf.push(item.clone());
         if buf.len() >= self.batch_size {

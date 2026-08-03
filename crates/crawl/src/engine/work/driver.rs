@@ -1,20 +1,21 @@
 //! 流式运行驱动。
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use super::Engine;
-use crate::{CrawlEvent, Spider};
+use crate::{CrawlEvent, CrawlStats, Spider};
+use wisp_core::error::Result;
 
 pub(crate) async fn run_stream_driver(
     engine: Engine,
     spiders: Vec<Arc<dyn Spider>>,
     tx: tokio::sync::mpsc::Sender<CrawlEvent>,
+    outcome: tokio::sync::oneshot::Sender<Result<Vec<CrawlStats>>>,
 ) {
-    let items = Arc::new(Mutex::new(Vec::new()));
-    match engine.run_inner_many(spiders, items).await {
+    match engine.run_inner_many(spiders).await {
         Ok(stats) => {
-            let _ = tx.send(CrawlEvent::DoneMany(stats)).await;
+            let _ = tx.send(CrawlEvent::DoneMany(stats.clone())).await;
+            let _ = outcome.send(Ok(stats));
         }
         Err(e) => {
             let _ = tx
@@ -25,6 +26,7 @@ pub(crate) async fn run_stream_driver(
                 })
                 .await;
             let _ = tx.send(CrawlEvent::DoneMany(Vec::new())).await;
+            let _ = outcome.send(Err(e));
         }
     }
 }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{CrawlContext, ErrorAction, RequestMwAction, ResponseMwAction};
-use crate::{Request, Response};
+use crate::{Item, Request, Response};
 use wisp_core::error::WispError;
 
 // === Middleware trait ===
@@ -78,7 +78,7 @@ pub trait ItemPipeline: Send + Sync {
     async fn open(&self, _ctx: &CrawlContext) {}
 
     /// 处理单个 item。返回 Some(item) 继续传递，None 丢弃。
-    async fn process_item(&self, item: Value, _ctx: &CrawlContext) -> Option<Value>;
+    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>>;
 
     /// 生命周期：爬取结束后调用（flush 缓冲、关闭连接）。
     async fn close(&self, _ctx: &CrawlContext) {}

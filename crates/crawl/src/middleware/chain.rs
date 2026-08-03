@@ -8,7 +8,7 @@ use tracing::Instrument;
 use super::{
     CrawlContext, ErrorAction, ItemPipeline, Middleware, RequestMwAction, ResponseMwAction,
 };
-use crate::{Request, Response};
+use crate::{Item, Request, Response};
 use wisp_core::error::WispError;
 
 /// 中间件链：按 priority 排序后顺序执行所有中间件。
@@ -98,7 +98,11 @@ impl MiddlewareChain {
     }
 
     /// 执行 item 管道链。
-    pub(crate) async fn run_pipelines(&self, item: Value, ctx: &CrawlContext) -> Option<Value> {
+    pub(crate) async fn run_pipelines(
+        &self,
+        item: Item<Value>,
+        ctx: &CrawlContext,
+    ) -> Option<Item<Value>> {
         let mut current = Some(item);
         for pipeline in &self.pipelines {
             match current {

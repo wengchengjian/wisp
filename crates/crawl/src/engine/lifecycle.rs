@@ -1,9 +1,7 @@
 //! Engine lifecycle orchestration.
 
-use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tokio::sync::Mutex;
 
 use super::Engine;
 use super::{RunGuard, build_final_stats, run_work_loop};
@@ -94,11 +92,9 @@ impl Engine {
     }
 
     /// 内部运行逻辑：共享队列驱动多个 Spider。
-    /// 内部运行逻辑：共享队列驱动多个 Spider。
     pub(crate) async fn run_inner_many(
         &self,
         spiders: Vec<Arc<dyn Spider>>,
-        items: Arc<Mutex<Vec<Value>>>,
     ) -> Result<Vec<CrawlStats>> {
         if spiders.is_empty() {
             return Ok(Vec::new());
@@ -118,16 +114,15 @@ impl Engine {
         self.restore_checkpoints(&spiders, &sched, &all_stats).await;
         self.seed_start_urls(&spiders, &sched).await;
         self.notify_spiders_start(&spiders).await;
-        let ctx = self.build_engine_context(
-            spiders,
-            items,
+        let ctx = self.build_engine_context(engine::EngineRunDraft {
             sched,
             follow_tx,
             follow_rx,
             rule_engine,
             robots_cache,
-            all_stats.clone(),
-        );
+            spiders,
+            all_stats: all_stats.clone(),
+        });
 
         self.run_middleware_init(&ctx).await;
         let autoscaler_handle = self.spawn_autoscaler(&ctx, &all_stats);

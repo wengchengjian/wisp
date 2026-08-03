@@ -4,48 +4,6 @@ use super::emit::emit_error_event;
 use super::*;
 use crate::middleware;
 
-pub(super) async fn maybe_persist_checkpoint(
-    ctx: &EngineContext,
-    spider: &Arc<dyn Spider>,
-    stats: &Arc<SpiderStats>,
-) {
-    let Some(store) = &ctx.runtime.checkpoint_store else {
-        return;
-    };
-    let interval = ctx.config.checkpoint_interval.max(1);
-    let pages = stats.pages.load(Ordering::SeqCst);
-    if pages == 0 || !pages.is_multiple_of(interval) {
-        return;
-    }
-    let in_flight = ctx
-        .state
-        .in_flight_requests
-        .lock()
-        .await
-        .get(spider.name())
-        .cloned()
-        .unwrap_or_default();
-    match persist_spider_checkpoint(
-        store.as_ref(),
-        spider.name(),
-        &ctx.state.sched,
-        stats,
-        in_flight,
-    )
-    .await
-    {
-        Ok(()) => {
-            ctx.runtime
-                .event_bus
-                .emit(CrawlEvent::CheckpointSaved {
-                    pending: ctx.state.sched.len().await,
-                })
-                .await;
-        }
-        Err(e) => tracing::warn!("checkpoint 保存失败: {e}"),
-    }
-}
-
 /// 响应中间件链，支持最多 `max_refetch_rounds` 轮 Refetch。
 async fn refetch_or_error(
     ctx: &EngineContext,

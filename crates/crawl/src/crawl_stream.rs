@@ -1,7 +1,7 @@
 //! 流式爬取事件与事件流包装。
 
 use crate::CrawlStats;
-use serde_json::Value;
+use crate::Item;
 use wisp_fetcher::FetchMode;
 
 /// 爬取过程中的事件流。
@@ -31,7 +31,7 @@ pub enum CrawlEvent {
         from_cache: bool,
     },
     /// 爬取到的 item。
-    Item(Value),
+    Item(Item),
     /// 页面爬取完成。
     PageScraped {
         /// 页面 URL。
@@ -88,20 +88,20 @@ pub enum CrawlEvent {
 
 /// 流式爬取事件流
 pub struct CrawlStream {
-    pub(crate) inner: std::pin::Pin<Box<dyn futures::Stream<Item = CrawlEvent>>>,
+    pub(crate) inner: std::pin::Pin<Box<dyn futures::Stream<Item = CrawlEvent> + Send>>,
 }
 
 impl CrawlStream {
     /// 过滤出 item 流。
-    pub fn items(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Value>>> {
+    pub fn items(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Item> + Send>> {
         use futures::StreamExt;
         Box::pin(self.inner.filter_map(async |e| match e {
-            CrawlEvent::Item(v) => Some(v),
+            CrawlEvent::Item(item) => Some(item),
             _ => None,
         }))
     }
     /// 获取完整事件流。
-    pub fn events(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = CrawlEvent>>> {
+    pub fn events(self) -> std::pin::Pin<Box<dyn futures::Stream<Item = CrawlEvent> + Send>> {
         self.inner
     }
 }

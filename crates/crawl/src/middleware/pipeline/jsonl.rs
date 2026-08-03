@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+use crate::Item;
 use crate::middleware::{CrawlContext, ItemPipeline};
 
 pub struct JsonlWriterPipeline {
@@ -33,7 +34,7 @@ impl ItemPipeline for JsonlWriterPipeline {
         }
     }
 
-    async fn process_item(&self, item: Value, _ctx: &CrawlContext) -> Option<Value> {
+    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>> {
         use std::io::Write;
         let mut guard = self.file.lock().await;
         if let Some(ref mut file) = *guard {

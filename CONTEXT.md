@@ -28,6 +28,10 @@ _Avoid_: depth limit
 The Crawl module that schedules Fetches, runs middleware, and enforces stop conditions.
 _Avoid_: runner
 
+**Run**:
+One execution of one or more Spiders by an Engine; each Run gets its own scheduler, stats, and items.
+_Avoid_: session
+
 **Spider**:
 User-defined crawl behavior: start URLs, response handling, follow requests, and stopping.
 _Avoid_: scraper
@@ -47,3 +51,7 @@ _Avoid_: counters
 **Crawl event**:
 A fact a Crawl emits once; all listeners and stream subscribers receive the same event.
 _Avoid_: signals
+
+**Item**:
+A structured value a Spider produces from a Response, carrying source URL, Spider, callback, and stable id; delivered through Item pipelines and Crawl events.
+_Avoid_: result row

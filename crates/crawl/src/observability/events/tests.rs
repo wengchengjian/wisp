@@ -1,9 +1,14 @@
 use super::*;
 use crate::CrawlEvent;
+use crate::Item;
 use futures::StreamExt;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn item(value: Value) -> Item {
+    Item::new(value, "https://example.com", "test", None)
+}
 
 #[tokio::test]
 async fn test_event_bus_no_listeners() {
@@ -38,7 +43,7 @@ async fn test_event_bus_with_listener() {
         start_urls: 1,
     })
     .await;
-    bus.emit(CrawlEvent::Item(json!(1))).await;
+    bus.emit(CrawlEvent::Item(item(json!(1)))).await;
 
     assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
@@ -61,7 +66,7 @@ async fn test_subscription_fans_out_to_all_subscribers() {
     let mut a = bus.subscribe(16);
     let mut b = bus.subscribe(16);
 
-    bus.emit(CrawlEvent::Item(json!({ "n": 1 }))).await;
+    bus.emit(CrawlEvent::Item(item(json!({ "n": 1 })))).await;
 
     assert!(matches!(a.next().await, Some(CrawlEvent::Item(_))));
     assert!(matches!(b.next().await, Some(CrawlEvent::Item(_))));
@@ -91,7 +96,7 @@ async fn test_metrics_listener() {
     })
     .await;
 
-    bus.emit(CrawlEvent::Item(json!({ "x": 1 }))).await;
+    bus.emit(CrawlEvent::Item(item(json!({ "x": 1 })))).await;
 
     assert_eq!(metrics.responses.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.items.load(Ordering::Relaxed), 1);

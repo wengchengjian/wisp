@@ -15,17 +15,17 @@ fn to_crawl_response(resp: Response, req: &Request, mode: FetchMode) -> Response
     if final_req.fetch_mode_override.is_none() {
         final_req.fetch_mode_override = Some(mode);
     }
-    Response::from_parts(
-        resp.status,
-        resp.url.clone(),
-        resp.headers.clone(),
-        resp.body.clone(),
-        resp.title.clone(),
-        resp.cookies.clone(),
-        final_req,
+    Response::from_parts(wisp_core::ResponseParts {
+        status: resp.status,
+        url: resp.url.clone(),
+        headers: resp.headers.clone(),
+        body: resp.body.clone(),
+        title: resp.title.clone(),
+        cookies: resp.cookies.clone(),
+        request: final_req,
         content_type,
-        false,
-    )
+        from_cache: false,
+    })
 }
 
 pub(super) async fn fetch_browser_response(

@@ -37,17 +37,17 @@ impl Middleware for CacheMiddleware {
         let method_str = req.method.as_str();
         match wisp_storage::load_response(&*self.store, method_str, &req.url).await {
             Ok(Some(cached)) => {
-                let resp = Response::from_parts(
-                    cached.status,
-                    req.url.clone(),
-                    cached.headers,
-                    cached.body,
-                    None,
-                    Vec::new(),
-                    req.clone(),
-                    cached.content_type,
-                    true,
-                );
+                let resp = Response::from_parts(wisp_core::ResponseParts {
+                    status: cached.status,
+                    url: req.url.clone(),
+                    headers: cached.headers,
+                    body: cached.body,
+                    title: None,
+                    cookies: Vec::new(),
+                    request: req.clone(),
+                    content_type: cached.content_type,
+                    from_cache: true,
+                });
                 return RequestMwAction::Respond(resp);
             }
             Ok(None) => {}

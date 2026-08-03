@@ -13,6 +13,7 @@ pub use output::OutputWriterPipeline;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Item;
     use crate::middleware::CrawlContext;
     use crate::middleware::ItemPipeline;
     use crate::runtime::output::OutputFormat;
@@ -31,6 +32,10 @@ mod tests {
         }
     }
 
+    fn item(value: serde_json::Value) -> Item {
+        Item::new(value, "https://example.com/page", "test", None)
+    }
+
     #[tokio::test]
     async fn output_pipeline_writes_markdown() {
         let dir = std::env::temp_dir().join("wisp_pipeline_md");
@@ -38,11 +43,8 @@ mod tests {
         let p = OutputWriterPipeline::new(OutputFormat::Markdown, dir.to_str().unwrap());
         let c = ctx();
         p.open(&c).await;
-        p.process_item(
-            json!({"url": "https://example.com/a", "html": "<h1>Hi</h1>"}),
-            &c,
-        )
-        .await;
+        p.process_item(item(json!({ "html": "<h1>Hi</h1>" })), &c)
+            .await;
         p.close(&c).await;
         let files: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -60,11 +62,8 @@ mod tests {
         let warc_path = std::env::temp_dir().join("wisp_pipeline.warc");
         let warc = OutputWriterPipeline::new(OutputFormat::Warc, warc_path.to_str().unwrap());
         warc.open(&c).await;
-        warc.process_item(
-            json!({"url": "https://example.com/a", "html": "<p>x</p>"}),
-            &c,
-        )
-        .await;
+        warc.process_item(item(json!({ "html": "<p>x</p>" })), &c)
+            .await;
         warc.close(&c).await;
         let warc_content = std::fs::read_to_string(&warc_path).unwrap();
         assert!(warc_content.starts_with("WARC/1.1"));
@@ -73,8 +72,8 @@ mod tests {
         let json_path = std::env::temp_dir().join("wisp_pipeline.json");
         let json = OutputWriterPipeline::new(OutputFormat::Json, json_path.to_str().unwrap());
         json.open(&c).await;
-        json.process_item(json!({"a": 1}), &c).await;
-        json.process_item(json!({"a": 2}), &c).await;
+        json.process_item(item(json!({ "a": 1 })), &c).await;
+        json.process_item(item(json!({ "a": 2 })), &c).await;
         json.close(&c).await;
         let json_content = std::fs::read_to_string(&json_path).unwrap();
         assert!(json_content.starts_with("["));
@@ -90,14 +89,17 @@ mod tests {
         let p = BatchItemPipeline::new(2, move |items| {
             let flushed = flushed_clone.clone();
             async move {
-                flushed.lock().await.extend(items);
+                flushed
+                    .lock()
+                    .await
+                    .extend(items.into_iter().map(|i| i.into_value()));
             }
         });
 
-        p.process_item(json!("a"), &c).await;
-        p.process_item(json!("b"), &c).await;
+        p.process_item(item(json!("a")), &c).await;
+        p.process_item(item(json!("b")), &c).await;
         assert_eq!(flushed.lock().await.len(), 2, "满 batch_size 应立即 flush");
-        p.process_item(json!("c"), &c).await;
+        p.process_item(item(json!("c")), &c).await;
         p.close(&c).await;
         assert_eq!(flushed.lock().await.len(), 3, "close 应 flush 剩余 item");
     }
@@ -109,7 +111,7 @@ mod tests {
         let p = JsonlWriterPipeline::new(path.to_str().unwrap());
         let c = ctx();
         p.open(&c).await;
-        p.process_item(json!("line1"), &c).await;
+        p.process_item(item(json!("line1")), &c).await;
         p.close(&c).await;
 
         let content = std::fs::read_to_string(&path).unwrap();

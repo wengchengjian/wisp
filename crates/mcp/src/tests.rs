@@ -1,4 +1,4 @@
-use super::server::{handle_initialize, handle_tools_call, handle_tools_list};
+use super::server::{ServerContext, handle_initialize, handle_tools_call, handle_tools_list};
 use crate::tools::ToolContext;
 use serde_json::json;
 use std::sync::Arc;
@@ -59,15 +59,11 @@ fn test_handle_initialize() {
 #[tokio::test]
 async fn test_handle_tools_call_unknown_tool() {
     let store: Arc<dyn Store> = Arc::new(wisp_storage::MemoryStore::default());
-    let engine = Engine::infra()
-        .max_pages(100)
-        .obey_robots(false)
-        .build()
-        .unwrap();
+    let ctx = ServerContext::new(store, test_fetch_client()).unwrap();
     let req = json!({
         "params": { "name": "nonexistent", "arguments": {} }
     });
-    let result = handle_tools_call(req, &store, &engine, &test_fetch_client()).await;
+    let result = handle_tools_call(req, &ctx).await;
     assert!(result.is_err());
     match result.unwrap_err() {
         WispError::Mcp(McpError::UnknownTool(n)) => assert_eq!(n, "nonexistent"),

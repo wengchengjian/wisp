@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::crawl::stop::MaxPages;
-use wisp::crawl::{Engine, SpiderBuilder};
+use wisp::crawl::{Engine, Item, SpiderBuilder};
 use wisp::fetcher::FetchMode;
 
 async fn spawn_novel_server() -> String {
@@ -60,8 +60,11 @@ fn engine() -> Engine {
         .unwrap()
 }
 
-fn assert_ten_books(items: &[serde_json::Value]) {
-    let books: HashSet<&str> = items.iter().filter_map(|v| v["title"].as_str()).collect();
+fn assert_ten_books(items: &[Item]) {
+    let books: HashSet<&str> = items
+        .iter()
+        .filter_map(|v| v.value()["title"].as_str())
+        .collect();
     assert_eq!(books.len(), 10, "应爬取 10 本书，实际 {}", books.len());
     assert!(
         items.len() >= 20,

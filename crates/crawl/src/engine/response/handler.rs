@@ -3,8 +3,9 @@
 use super::emit::{
     emit_error_event, emit_page_scraped, process_page_items, schedule_follow_requests,
 };
-use super::middleware::{apply_response_middlewares, maybe_persist_checkpoint};
+use super::middleware::apply_response_middlewares;
 use super::*;
+use crate::engine::maybe_persist_checkpoint;
 
 async fn handle_spider_page(
     ctx: &EngineContext,
@@ -65,7 +66,7 @@ fn log_handle_result(url: &str, status: u16, items: &[Value], follows: &[Request
 /// 处理已获取的响应：handle → Auto 升级 → items → events。
 ///
 /// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
-/// items 同时收集到 `ctx.items`（供 `Engine::run` 返回）和 `tx`（供 `run_stream` 消费）。
+/// items 经 `CrawlEvent::Item` 事件交付：`run_many` 消费事件收集，`run_stream` 消费事件流。
 #[tracing::instrument(level = "trace", skip(ctx, resp), fields(status = resp.status))]
 
 pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
@@ -92,8 +93,9 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     }
     maybe_persist_checkpoint(ctx, &spider, &stats).await;
 
+    let callback = resp.request.callback.clone();
     let (items, follows) = handle_spider_page(ctx, &spider, resp).await;
-    process_page_items(ctx, &spider, &stats, items).await;
+    process_page_items(ctx, &spider, &stats, &page_url, callback.as_deref(), items).await;
     schedule_follow_requests(ctx, follows).await;
     ctx.state.work_notify.notify_one();
     emit_page_scraped(ctx, &stats, &page_url).await;

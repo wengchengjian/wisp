@@ -12,6 +12,7 @@ pub use method::{FetchMode, Method};
 pub use request::Request;
 pub use response::Response;
 
+pub use response::ResponseParts;
 #[cfg(test)]
 mod tests {
     use super::*;

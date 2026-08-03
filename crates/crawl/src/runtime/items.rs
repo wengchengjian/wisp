@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::path::Path;
 use wisp_core::error::{Result, WispError};
 
+use crate::Item;
+
 /// 爬取结果集合
 pub struct Items {
     items: Vec<Value>,
@@ -13,6 +15,12 @@ impl Items {
     /// 创建 Items 集合。
     pub fn new(items: Vec<Value>) -> Self {
         Self { items }
+    }
+    /// 从 Item 集合创建（保留 payload）。
+    pub fn from_items(items: Vec<Item<Value>>) -> Self {
+        Self {
+            items: items.into_iter().map(|i| i.into_value()).collect(),
+        }
     }
     /// Item 数量。
     pub fn len(&self) -> usize {

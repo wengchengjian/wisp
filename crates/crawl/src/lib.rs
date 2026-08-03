@@ -1,6 +1,7 @@
 //! wisp crawl engine: multi-spider, streaming, checkpoint, middleware.
 
 mod crawl_stream;
+mod item;
 mod spider;
 mod stats;
 
@@ -29,6 +30,7 @@ pub use adaptive::AdaptiveTracker;
 pub use builder::{ClosureSpider, SpiderBuilder};
 pub use crawl_stream::{CrawlEvent, CrawlStream};
 pub use engine::{Engine, EngineBuilder, EngineConfig};
+pub use item::Item;
 pub use items::{Items, JsonlWriter};
 pub use page::Page;
 pub use spider::{BLOCKED_STATUS_CODES, RequestAction, Spider};

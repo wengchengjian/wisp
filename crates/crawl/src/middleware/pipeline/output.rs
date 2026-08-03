@@ -4,15 +4,16 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+use crate::Item;
 use crate::middleware::{CrawlContext, ItemPipeline};
 use crate::runtime::output::{MarkdownWriter, OutputFormat, WarcWriter};
 
 /// 按 `OutputFormat` 将 item 写入文件的通用管道。
 ///
-/// - `Json`：流式 JSON 数组（`open` 写 `[`，`close` 写 `]`）
-/// - `Jsonl`：每行一个 JSON
-/// - `Markdown`：每页一个 `.md` 文件（`path` 为目录，item 需含 `url`/`html`）
-/// - `Warc`：WARC/1.1 记录追加写入（item 需含 `url`/`html`）
+/// - `Json`：流式 JSON 数组（`open` 写 `[`，`close` 写 `]`），序列化整个 Item
+/// - `Jsonl`：每行一个 Item
+/// - `Markdown`：每页一个 `.md` 文件（`path` 为目录，使用 `item.source_url()` 与 `html`）
+/// - `Warc`：WARC/1.1 记录追加写入（使用 `item.source_url()` 与 `html`）
 pub struct OutputWriterPipeline {
     format: OutputFormat,
     path: String,
@@ -33,7 +34,7 @@ impl OutputWriterPipeline {
         }
     }
 
-    async fn write_json_item(&self, item: &Value) {
+    async fn write_json_item(&self, item: &Item<Value>) {
         use std::io::Write;
         let mut guard = self.file.lock().await;
         if let Some((ref mut file, ref mut first)) = *guard {
@@ -47,7 +48,7 @@ impl OutputWriterPipeline {
         }
     }
 
-    async fn write_jsonl_item(&self, item: &Value) {
+    async fn write_jsonl_item(&self, item: &Item<Value>) {
         use std::io::Write;
         let mut guard = self.file.lock().await;
         if let Some((ref mut file, _)) = *guard
@@ -57,21 +58,21 @@ impl OutputWriterPipeline {
         }
     }
 
-    async fn write_markdown_item(&self, item: &Value) {
+    async fn write_markdown_item(&self, item: &Item<Value>) {
         let mut guard = self.markdown.lock().await;
         if let Some(ref mut writer) = *guard {
-            let url = item.get("url").and_then(Value::as_str).unwrap_or("page");
-            if let Some(html) = item.get("html").and_then(Value::as_str) {
+            let url = item.source_url();
+            if let Some(html) = item.value().get("html").and_then(Value::as_str) {
                 let _ = writer.write_page(url, html);
             }
         }
     }
 
-    async fn write_warc_item(&self, item: &Value) {
+    async fn write_warc_item(&self, item: &Item<Value>) {
         let mut guard = self.warc.lock().await;
         if let Some(ref mut writer) = *guard {
-            let url = item.get("url").and_then(Value::as_str).unwrap_or("page");
-            if let Some(html) = item.get("html").and_then(Value::as_str) {
+            let url = item.source_url();
+            if let Some(html) = item.value().get("html").and_then(Value::as_str) {
                 let _ = writer.write_response(
                     url,
                     200,
@@ -112,7 +113,7 @@ impl ItemPipeline for OutputWriterPipeline {
         }
     }
 
-    async fn process_item(&self, item: Value, _ctx: &CrawlContext) -> Option<Value> {
+    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>> {
         match self.format {
             OutputFormat::Json => self.write_json_item(&item).await,
             OutputFormat::Jsonl => self.write_jsonl_item(&item).await,

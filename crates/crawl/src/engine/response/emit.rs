@@ -1,11 +1,14 @@
-//! Engine 子模块：response events and item collection。
+//! Engine 子模块：response events and item delivery.
 
 use super::*;
+use crate::Item;
 
 pub(super) async fn process_page_items(
     ctx: &EngineContext,
     spider: &Arc<dyn Spider>,
     stats: &Arc<SpiderStats>,
+    source_url: &str,
+    callback: Option<&str>,
     items: Vec<Value>,
 ) {
     let pipeline_crawl_ctx = if ctx.state.middleware_chain.is_empty() {
@@ -18,6 +21,7 @@ pub(super) async fn process_page_items(
             Some(i) => i,
             None => continue,
         };
+        let item = Item::new(item, source_url, spider.name(), callback);
         let item = if let Some(ref crawl_ctx) = pipeline_crawl_ctx {
             ctx.state
                 .middleware_chain
@@ -30,9 +34,8 @@ pub(super) async fn process_page_items(
             stats.items.fetch_add(1, Ordering::SeqCst);
             ctx.runtime
                 .event_bus
-                .emit(CrawlEvent::Item(processed.clone()))
+                .emit(CrawlEvent::Item(processed))
                 .await;
-            ctx.state.items.lock().await.push(processed);
         }
     }
 }

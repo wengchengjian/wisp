@@ -137,10 +137,15 @@ async fn test_delay_middleware() {
 #[tokio::test]
 async fn test_filter_fields_pipeline() {
     let pipeline = FilterFieldsPipeline::new(vec!["title", "url"]);
-    let item = serde_json::json!({"title": "Hello", "url": "http://x.com", "extra": 123});
+    let item = crate::Item::new(
+        serde_json::json!({"title": "Hello", "url": "http://x.com", "extra": 123}),
+        "http://x.com",
+        "test",
+        None,
+    );
     let result = pipeline.process_item(item, &make_ctx()).await.unwrap();
-    assert_eq!(result["title"], "Hello");
-    assert!(result.get("extra").is_none());
+    assert_eq!(result.value()["title"], "Hello");
+    assert!(result.value().get("extra").is_none());
 }
 
 #[tokio::test]
@@ -162,17 +167,17 @@ async fn test_priority_ordering() {
 // === DynamicUpgradeMiddleware 测试 ===
 
 fn make_resp(status: u16, body: &[u8]) -> Response {
-    Response::from_parts(
+    Response::from_parts(wisp_core::ResponseParts {
         status,
-        "http://example.com".into(),
-        HashMap::new(),
-        body.to_vec(),
-        None,
-        Vec::new(),
-        make_req(),
-        String::new(),
-        false,
-    )
+        url: "http://example.com".into(),
+        headers: HashMap::new(),
+        body: body.to_vec(),
+        title: None,
+        cookies: Vec::new(),
+        request: make_req(),
+        content_type: String::new(),
+        from_cache: false,
+    })
 }
 
 #[tokio::test]

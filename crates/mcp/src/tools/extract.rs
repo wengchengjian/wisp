@@ -1,8 +1,33 @@
 //! MCP extract_css 工具。
 
-use super::types::{ExtractCssArgs, ExtractCssResult};
+use crate::protocol::Tool;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use wisp_core::error::Result;
 use wisp_parser::Node;
+
+/// `extract_css` arguments.
+#[derive(Debug, Deserialize)]
+pub struct ExtractCssArgs {
+    /// HTML source.
+    pub html: String,
+    /// CSS selector.
+    pub selector: String,
+    /// Optional attribute name to extract.
+    #[serde(default)]
+    pub attr: Option<String>,
+}
+
+/// `extract_css` result.
+#[derive(Debug, Serialize)]
+pub struct ExtractCssResult {
+    /// Extracted text values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<String>,
+    /// Extracted attribute values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attrs: Vec<String>,
+}
 
 /// CSS 选择器提取元素。
 pub async fn extract_css(args: ExtractCssArgs) -> Result<ExtractCssResult> {
@@ -22,4 +47,26 @@ pub async fn extract_css(args: ExtractCssArgs) -> Result<ExtractCssResult> {
         result.texts = nodes.iter().map(|n| n.text()).collect();
     }
     Ok(result)
+}
+
+pub(crate) fn spec() -> Tool {
+    Tool::new(
+        "extract_css",
+        "用 CSS 选择器从 HTML 提取元素，返回文本/属性列表。",
+        json!({
+            "type": "object",
+            "properties": {
+                "html": { "type": "string", "description": "HTML 文本" },
+                "selector": { "type": "string", "description": "CSS 选择器" },
+                "attr": { "type": "string", "description": "可选：提取该属性而非文本" }
+            },
+            "required": ["html", "selector"]
+        }),
+        Box::new(|args, _ctx| {
+            Box::pin(async move {
+                let args = super::parse_args::<ExtractCssArgs>(&args, "extract_css")?;
+                super::to_value(extract_css(args).await?)
+            })
+        }),
+    )
 }

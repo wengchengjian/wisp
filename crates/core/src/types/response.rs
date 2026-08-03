@@ -46,32 +46,34 @@ pub struct Response {
     pub from_cache: bool,
 }
 
+/// Response 组装输入（内部使用）。
+#[doc(hidden)]
+pub struct ResponseParts {
+    pub status: u16,
+    pub url: String,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+    pub title: Option<String>,
+    pub cookies: Vec<String>,
+    pub request: Request,
+    pub content_type: String,
+    pub from_cache: bool,
+}
+
 impl Response {
     /// 从所有字段构建（内部使用，如 Engine 组装响应）。
     #[doc(hidden)]
-    // 9 参数属于内部组装 API，拆结构体会扩大公共 API 面。
-    #[expect(clippy::too_many_arguments)]
-    pub fn from_parts(
-        status: u16,
-        url: String,
-        headers: HashMap<String, String>,
-        body: Vec<u8>,
-        title: Option<String>,
-        cookies: Vec<String>,
-        request: Request,
-        content_type: String,
-        from_cache: bool,
-    ) -> Self {
+    pub fn from_parts(parts: ResponseParts) -> Self {
         Self {
-            status,
-            url,
-            headers,
-            body,
-            title,
-            cookies,
-            request,
-            content_type,
-            from_cache,
+            status: parts.status,
+            url: parts.url,
+            headers: parts.headers,
+            body: parts.body,
+            title: parts.title,
+            cookies: parts.cookies,
+            request: parts.request,
+            content_type: parts.content_type,
+            from_cache: parts.from_cache,
         }
     }
 

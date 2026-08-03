@@ -3,11 +3,43 @@
 use std::sync::Arc;
 
 use super::fetch_html::fetch_html;
-use super::types::{AdaptiveScrapeArgs, AdaptiveScrapeResult, ToolContext};
+use super::types::ToolContext;
+use crate::protocol::Tool;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use wisp_core::FetchMode;
 use wisp_core::error::Result;
 use wisp_parser::Node;
 use wisp_storage::{Store, open_store};
+
+/// `adaptive_scrape` arguments.
+#[derive(Debug, Deserialize)]
+pub struct AdaptiveScrapeArgs {
+    /// Target URL.
+    pub url: String,
+    /// CSS selector.
+    pub selector: String,
+    /// Stable element key.
+    pub key: String,
+    /// Optional snapshot store path.
+    #[serde(default)]
+    pub db_path: Option<String>,
+}
+
+/// `adaptive_scrape` result.
+#[derive(Debug, Serialize)]
+pub struct AdaptiveScrapeResult {
+    /// Target URL.
+    pub url: String,
+    /// Whether the element was found.
+    pub found: bool,
+    /// Extracted text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Extracted HTML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
+}
 
 /// 自适应抓取：CSS 失败时用快照存储重定位。
 pub async fn adaptive_scrape(
@@ -51,4 +83,27 @@ pub async fn adaptive_scrape(
             html: None,
         }),
     }
+}
+
+pub(crate) fn spec() -> Tool {
+    Tool::new(
+        "adaptive_scrape",
+        "自适应抓取：CSS 失败时用 SQLite 快照重定位元素（长期监控）。",
+        json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string" },
+                "selector": { "type": "string" },
+                "key": { "type": "string", "description": "元素稳定标识" },
+                "db_path": { "type": "string", "default": "./wisp.db" }
+            },
+            "required": ["url", "selector", "key"]
+        }),
+        Box::new(|args, ctx| {
+            Box::pin(async move {
+                let args = super::parse_args::<AdaptiveScrapeArgs>(&args, "adaptive_scrape")?;
+                super::to_value(adaptive_scrape(args, ctx).await?)
+            })
+        }),
+    )
 }

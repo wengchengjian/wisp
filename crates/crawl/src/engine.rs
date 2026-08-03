@@ -7,7 +7,7 @@
 //! - `auto_upgrade_check()` Auto 模式升级检查
 //!
 //! Task 3 重构：EngineContext 多 Spider 共享队列 + callback 路由，process_request
-//! 调 `spider.handle()` 而非 `spider.parse()`，items 收集到 `ctx.items`。
+//! 调 `spider.handle()` 而非 `spider.parse()`，items 经 `CrawlEvent::Item` 事件交付。
 //!
 //! 架构收敛：`runner` 模块已并入本模块树，Engine/EngineBuilder/EngineConfig 是唯一
 //! 公开接口，内部实现均为 crate 私有。
@@ -27,6 +27,7 @@ use super::{
     CrawlEvent, CrawlState, CrawlStats, CrawlStream, Request, Response, Spider, auto, middleware,
     scheduler,
 };
+use crate::Item;
 use crate::control;
 use crate::middleware::{ItemPipeline, Middleware, UaRotationMiddleware};
 use crate::observability::events::EventBus;
@@ -57,9 +58,9 @@ mod runtime_tests;
 mod tests;
 
 pub use builder::EngineBuilder;
-pub(crate) use checkpoint::persist_spider_checkpoint;
+pub(crate) use checkpoint::maybe_persist_checkpoint;
 pub use config::EngineConfig;
-pub(crate) use context::{EngineContext, EngineState, build_crawl_context_for};
+pub(crate) use context::{EngineContext, EngineRunDraft, EngineState, build_crawl_context_for};
 pub(crate) use fetch::fetch_dispatch;
 pub(crate) use guard::{InFlightGuard, RunGuard};
 pub(crate) use request::process_request;
@@ -167,23 +168,23 @@ impl Engine {
     pub async fn run_many<S: Spider + 'static>(
         &self,
         spiders: Vec<S>,
-    ) -> Result<(Vec<CrawlStats>, Vec<serde_json::Value>)> {
-        let spiders: Vec<Arc<dyn Spider>> = spiders
-            .into_iter()
-            .map(|s| Arc::new(s) as Arc<dyn Spider>)
-            .collect();
-        let items: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let stats = self.run_inner_many(spiders, items.clone()).await?;
-        let mut guard = items.lock().await;
-        let item_list = std::mem::take(&mut *guard);
-        Ok((stats, item_list))
+    ) -> Result<(Vec<CrawlStats>, Vec<Item>)> {
+        let (stream, outcome) = self.run_stream_many_inner(spiders);
+        let mut items = Vec::new();
+        let mut events = stream.events();
+        while let Some(event) = events.next().await {
+            if let CrawlEvent::Item(item) = event {
+                items.push(item);
+            }
+        }
+        let stats = outcome.await.map_err(|_| {
+            wisp_core::error::WispError::Engine("run outcome channel closed".into())
+        })??;
+        Ok((stats, items))
     }
 
     /// 运行单个 Spider。返回 (统计, items)。
-    pub async fn run<S: Spider + 'static>(
-        &self,
-        spider: S,
-    ) -> Result<(CrawlStats, Vec<serde_json::Value>)> {
+    pub async fn run<S: Spider + 'static>(&self, spider: S) -> Result<(CrawlStats, Vec<Item>)> {
         let (mut stats, items) = self.run_many(vec![spider]).await?;
         Ok((stats.remove(0), items))
     }
@@ -203,14 +204,25 @@ impl Engine {
 
     /// 流式运行多个 Spider：共享队列 + callback 路由，每个 Spider 独立 until/stats。
     pub fn run_stream_many<S: Spider + 'static>(&self, spiders: Vec<S>) -> CrawlStream {
+        self.run_stream_many_inner(spiders).0
+    }
+
+    pub(crate) fn run_stream_many_inner<S: Spider + 'static>(
+        &self,
+        spiders: Vec<S>,
+    ) -> (
+        CrawlStream,
+        tokio::sync::oneshot::Receiver<Result<Vec<CrawlStats>>>,
+    ) {
         let subscription = self.runtime.event_bus.subscribe(128);
         let tx = subscription.sender();
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
         let engine = self.clone();
         let spiders: Vec<Arc<dyn Spider>> = spiders
             .into_iter()
             .map(|s| Arc::new(s) as Arc<dyn Spider>)
             .collect();
-        let driver = Box::pin(run_stream_driver(engine, spiders, tx));
+        let driver = Box::pin(run_stream_driver(engine, spiders, tx, outcome_tx));
         let s = stream::unfold(
             (driver, subscription, false),
             async |(mut driver, mut subscription, driver_done)| {
@@ -230,7 +242,7 @@ impl Engine {
                 }
             },
         );
-        CrawlStream { inner: Box::pin(s) }
+        (CrawlStream { inner: Box::pin(s) }, outcome_rx)
     }
 
     /// 获取控制句柄（用于外部 pause/resume/cancel/shutdown）。

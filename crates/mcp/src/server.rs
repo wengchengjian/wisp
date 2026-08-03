@@ -12,6 +12,29 @@ use wisp_crawl::Engine;
 use wisp_fetcher::FetchClient;
 use wisp_storage::Store;
 
+/// MCP server 共享资源上下文。
+pub(super) struct ServerContext {
+    store: Arc<dyn Store>,
+    engine: Engine,
+    fetch_client: Arc<FetchClient>,
+}
+
+impl ServerContext {
+    /// 创建共享上下文：Engine 复用传入的 FetchClient。
+    pub(super) fn new(store: Arc<dyn Store>, fetch_client: Arc<FetchClient>) -> Result<Self> {
+        let engine = Engine::infra()
+            .fetch_client(fetch_client.clone())
+            .max_pages(100000)
+            .obey_robots(false)
+            .build()?;
+        Ok(Self {
+            store,
+            engine,
+            fetch_client,
+        })
+    }
+}
+
 async fn write_json_line(stdout: &mut tokio::io::Stdout, value: &Value) -> Result<()> {
     let s = serde_json::to_string(value)
         .map_err(|e| WispError::Parse(ParseError::Serialize(e.to_string())))?;
@@ -32,12 +55,7 @@ async fn write_parse_error(stdout: &mut tokio::io::Stdout, error: &str) -> Resul
     .await
 }
 
-async fn dispatch_request(
-    request: Value,
-    store: &Arc<dyn Store>,
-    engine: &Engine,
-    fetch_client: &Arc<FetchClient>,
-) -> Value {
+async fn dispatch_request(request: Value, ctx: &ServerContext) -> Value {
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let id = request.get("id").cloned();
     match method {
@@ -49,7 +67,7 @@ async fn dispatch_request(
             "jsonrpc": "2.0", "id": id,
             "result": handle_tools_list()
         }),
-        "tools/call" => match handle_tools_call(request, store, engine, fetch_client).await {
+        "tools/call" => match handle_tools_call(request, ctx).await {
             Ok(result) => json!({
                 "jsonrpc": "2.0", "id": id,
                 "result": result
@@ -76,9 +94,7 @@ async fn dispatch_request(
 
 async fn handle_request_line(
     line: &str,
-    store: &Arc<dyn Store>,
-    engine: &Engine,
-    fetch_client: &Arc<FetchClient>,
+    ctx: &ServerContext,
     stdout: &mut tokio::io::Stdout,
 ) -> Result<()> {
     let request: Value = match serde_json::from_str(line) {
@@ -89,7 +105,7 @@ async fn handle_request_line(
     };
     let id = request.get("id").cloned();
     let is_notification = id.is_none();
-    let response = dispatch_request(request, store, engine, fetch_client).await;
+    let response = dispatch_request(request, ctx).await;
     if is_notification {
         return Ok(());
     }
@@ -98,11 +114,7 @@ async fn handle_request_line(
 
 /// MCP server 主循环（stdio JSON-RPC 2.0）
 pub async fn serve(store: Arc<dyn Store>, fetch_client: Arc<FetchClient>) -> Result<()> {
-    let engine = Engine::infra()
-        .fetch_client(fetch_client.clone())
-        .max_pages(100000)
-        .obey_robots(false)
-        .build()?;
+    let ctx = ServerContext::new(store, fetch_client)?;
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -110,7 +122,7 @@ pub async fn serve(store: Arc<dyn Store>, fetch_client: Arc<FetchClient>) -> Res
     let mut lines = reader.lines();
 
     while let Some(line) = lines.next_line().await? {
-        handle_request_line(&line, &store, &engine, &fetch_client, &mut stdout).await?;
+        handle_request_line(&line, &ctx, &mut stdout).await?;
     }
 
     Ok(())
@@ -143,23 +155,18 @@ pub(super) fn handle_tools_list() -> Value {
     json!({ "tools": tools })
 }
 
-pub(super) async fn handle_tools_call(
-    request: Value,
-    store: &Arc<dyn Store>,
-    engine: &Engine,
-    fetch_client: &Arc<FetchClient>,
-) -> Result<Value> {
+pub(super) async fn handle_tools_call(request: Value, ctx: &ServerContext) -> Result<Value> {
     let params = request
         .get("params")
         .ok_or_else(|| WispError::Mcp(McpError::General("missing params".into())))?;
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
-    let ctx = tools::ToolContext {
-        store,
-        engine,
-        fetch_client,
+    let tool_ctx = tools::ToolContext {
+        store: &ctx.store,
+        engine: &ctx.engine,
+        fetch_client: &ctx.fetch_client,
     };
-    let result = tools::call_tool(name, args, &ctx).await?;
+    let result = tools::call_tool(name, args, &tool_ctx).await?;
 
     Ok(json!({
         "content": [{

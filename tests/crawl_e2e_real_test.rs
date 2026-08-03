@@ -333,7 +333,7 @@ async fn test_e2e_jsonl_export() {
     let mut writer = JsonlWriter::new(&path).unwrap();
     let mut count = 0;
     while let Some(item) = items_stream.next().await {
-        writer.write(&item).unwrap();
+        writer.write(item.value()).unwrap();
         count += 1;
     }
     writer.flush().unwrap();

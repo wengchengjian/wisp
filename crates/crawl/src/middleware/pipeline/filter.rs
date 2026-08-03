@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::Item;
 use crate::middleware::{CrawlContext, ItemPipeline};
 
 /// 字段过滤管道：仅保留指定字段。
@@ -21,16 +22,16 @@ impl FilterFieldsPipeline {
 
 #[async_trait]
 impl ItemPipeline for FilterFieldsPipeline {
-    async fn process_item(&self, item: Value, _ctx: &CrawlContext) -> Option<Value> {
-        match item {
-            Value::Object(map) => {
-                let filtered: serde_json::Map<String, Value> = map
-                    .into_iter()
-                    .filter(|(k, _)| self.fields.contains(k))
-                    .collect();
-                Some(Value::Object(filtered))
+    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>> {
+        Some(item.map_value(|value| {
+            match value {
+                Value::Object(map) => Value::Object(
+                    map.into_iter()
+                        .filter(|(k, _)| self.fields.contains(k))
+                        .collect(),
+                ),
+                other => other,
             }
-            other => Some(other),
-        }
+        }))
     }
 }

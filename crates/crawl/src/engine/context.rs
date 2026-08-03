@@ -15,6 +15,17 @@ pub(crate) struct EngineContext {
     pub state: EngineState,
 }
 
+/// 单次 run 输入草稿：由 run_inner_many 组装，build 时转为 EngineState。
+pub(crate) struct EngineRunDraft {
+    pub sched: Arc<scheduler::Scheduler>,
+    pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
+    pub follow_rx: tokio::sync::mpsc::UnboundedReceiver<Request>,
+    pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
+    pub robots_cache: Arc<crate::runtime::robots::RobotsCache>,
+    pub spiders: Vec<Arc<dyn Spider>>,
+    pub all_stats: Vec<Arc<SpiderStats>>,
+}
+
 /// 单次 run 状态：跨 task 共享的调度资源与 per-run 可变状态。
 pub(crate) struct EngineState {
     pub sched: Arc<scheduler::Scheduler>,
@@ -26,7 +37,6 @@ pub(crate) struct EngineState {
     pub cf_domain_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub spiders: Vec<Arc<dyn Spider>>,
     pub all_stats: Vec<Arc<SpiderStats>>,
-    pub items: Arc<Mutex<Vec<Value>>>,
     pub abort_flag: Arc<AtomicBool>,
     pub global_in_flight: Arc<AtomicUsize>,
     pub in_flight_requests: Arc<Mutex<HashMap<String, Vec<Request>>>>,

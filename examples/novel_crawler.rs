@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use wisp::crawl::middleware::{JsonlWriterPipeline, UaRotationMiddleware};
 use wisp::crawl::stop::MaxPages;
-use wisp::crawl::{ClosureSpider, Engine, SpiderBuilder};
+use wisp::crawl::{ClosureSpider, Engine, Item, SpiderBuilder};
 /// 清理章节正文：去广告行、空行。
 fn clean_content(text: String) -> String {
     text.lines()
@@ -148,9 +148,7 @@ fn build_engine(output: &str) -> Result<Engine, Box<dyn std::error::Error>> {
         .build()?)
 }
 
-async fn run_spider_mode(
-    engine: &Engine,
-) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+async fn run_spider_mode(engine: &Engine) -> Result<Vec<Item>, Box<dyn std::error::Error>> {
     let (stats, items) = engine.run_many(multi_spiders()).await?;
     println!("\n=== 爬取完成 ===");
     for s in &stats {
@@ -159,19 +157,17 @@ async fn run_spider_mode(
     Ok(items)
 }
 
-async fn run_handler_mode(
-    engine: &Engine,
-) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+async fn run_handler_mode(engine: &Engine) -> Result<Vec<Item>, Box<dyn std::error::Error>> {
     let (stats, items) = engine.run(handler_spider()).await?;
     println!("\n=== 爬取完成 ===");
     println!("{}", stats.summary());
     Ok(items)
 }
 
-fn print_item_summary(items: &[serde_json::Value]) {
+fn print_item_summary(items: &[Item]) {
     let books: std::collections::HashSet<&str> = items
         .iter()
-        .filter_map(|item| item["title"].as_str())
+        .filter_map(|item| item.value()["title"].as_str())
         .collect();
     println!(
         "共获取 {} 个章节条目，覆盖 {} 本书",
@@ -181,10 +177,10 @@ fn print_item_summary(items: &[serde_json::Value]) {
     for item in items.iter().take(3) {
         println!(
             "\n--- {} | {} ---",
-            item["title"].as_str().unwrap_or(""),
-            item["chapter_title"].as_str().unwrap_or("")
+            item.value()["title"].as_str().unwrap_or(""),
+            item.value()["chapter_title"].as_str().unwrap_or("")
         );
-        let content = item["content"].as_str().unwrap_or("");
+        let content = item.value()["content"].as_str().unwrap_or("");
         let preview: String = content.chars().take(100).collect();
         println!("  内容预览: {}...", preview);
     }
