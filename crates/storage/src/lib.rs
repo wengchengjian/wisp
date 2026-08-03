@@ -27,7 +27,7 @@ pub use functions::{
     save_checkpoint, save_element, save_response,
 };
 pub use models::{CachedResponse, ElementSnapshotRow};
-pub use store::Store;
+pub use store::{Store, open_store};
 
 #[cfg(test)]
 mod tests;

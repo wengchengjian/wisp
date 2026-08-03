@@ -6,27 +6,7 @@ use super::types::{AdaptiveScrapeArgs, AdaptiveScrapeResult, ToolContext};
 use wisp_core::error::Result;
 use wisp_core::{FetchMode, Request};
 use wisp_parser::Node;
-#[cfg(feature = "sqlite")]
-use wisp_storage::SqliteStore;
-use wisp_storage::{FileStore, Store};
-
-#[cfg(feature = "sqlite")]
-fn store_from_db_path(db_path: &str) -> Result<Arc<dyn Store>> {
-    if db_path != ":memory:" {
-        return Ok(Arc::new(SqliteStore::open(std::path::Path::new(db_path))?));
-    }
-    Ok(Arc::new(FileStore::default()))
-}
-
-#[cfg(not(feature = "sqlite"))]
-fn store_from_db_path(db_path: &str) -> Result<Arc<dyn Store>> {
-    if db_path == ":memory:" {
-        return Ok(Arc::new(FileStore::default()));
-    }
-    Ok(Arc::new(FileStore::with_dir(std::path::PathBuf::from(
-        db_path,
-    ))))
-}
+use wisp_storage::{Store, open_store};
 
 /// 自适应抓取：CSS 失败时用快照存储重定位。
 pub async fn adaptive_scrape(
@@ -41,7 +21,7 @@ pub async fn adaptive_scrape(
     let html = resp.text()?;
     let doc = Node::from_html(&html);
     let effective_store: Arc<dyn Store> = match args.db_path.as_deref() {
-        Some(path) if !path.is_empty() => store_from_db_path(path)?,
+        Some(path) if !path.is_empty() => open_store(path)?,
         _ => Arc::clone(ctx.store),
     };
     let tracker = wisp_crawl::AdaptiveTracker::new(effective_store);

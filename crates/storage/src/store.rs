@@ -1,8 +1,13 @@
 //! Store trait：仅底层 KV 原语（async）。
 
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::time::Duration;
 use wisp_core::error::Result;
+
+use crate::FileStore;
+#[cfg(feature = "sqlite")]
+use crate::SqliteStore;
 
 /// 存储后端 trait。仅提供底层 KV 原语，全部 `async`。
 ///
@@ -34,5 +39,83 @@ pub trait Store: Send + Sync {
         _ttl: Option<Duration>,
     ) -> Result<()> {
         self.set(namespace, key, value).await
+    }
+}
+
+/// 按路径选择并打开存储后端。
+///
+/// 空路径或 `:memory:` 使用默认 `FileStore`；其他路径在 sqlite 特性下打开
+/// SQLite 数据库文件，否则回退为 `FileStore` 目录。
+pub fn open_store(path: &str) -> Result<Arc<dyn Store>> {
+    if path.is_empty() || path == ":memory:" {
+        return Ok(Arc::new(FileStore::default()));
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        Ok(Arc::new(SqliteStore::open(std::path::Path::new(path))?))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        tracing::warn!("当前构建未启用 sqlite，使用 FileStore 目录: {path}");
+        Ok(Arc::new(FileStore::with_dir(std::path::PathBuf::from(
+            path,
+        ))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn open_store_memory_roundtrips() {
+        let store = open_store(":memory:").expect("open memory store");
+        store.set("ns", "k", b"v").await.expect("set");
+        assert_eq!(
+            store.get("ns", "k").await.expect("get").as_deref(),
+            Some(&b"v"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn open_store_empty_path_roundtrips() {
+        let store = open_store("").expect("open default store");
+        store.set("ns", "k", b"v").await.expect("set");
+        assert_eq!(
+            store.get("ns", "k").await.expect("get").as_deref(),
+            Some(&b"v"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn open_store_path_roundtrips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store");
+        let store = open_store(path.to_str().expect("utf8")).expect("open path store");
+        store.set("ns", "k", b"v").await.expect("set");
+        assert_eq!(
+            store.get("ns", "k").await.expect("get").as_deref(),
+            Some(&b"v"[..])
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn open_store_sqlite_creates_db_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store.db");
+        let store = open_store(path.to_str().expect("utf8")).expect("open sqlite store");
+        store.set("ns", "k", b"v").await.expect("set");
+        assert!(path.exists(), "sqlite 应创建数据库文件");
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    #[tokio::test]
+    async fn open_store_file_creates_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("store");
+        let store = open_store(path.to_str().expect("utf8")).expect("open file store");
+        store.set("ns", "k", b"v").await.expect("set");
+        assert!(path.is_dir(), "file store 应创建目录");
     }
 }
