@@ -65,12 +65,6 @@ impl Fetcher {
         self.mode
     }
 
-    /// 获取底层 FetchClient 引用。
-    #[must_use]
-    pub fn client(&self) -> &FetchClient {
-        &self.client
-    }
-
     /// 获取配置引用。
     #[must_use]
     pub fn config(&self) -> &FetchClientConfig {
@@ -88,8 +82,7 @@ impl Fetcher {
 
     /// POST 请求。
     pub async fn post(&self, url: &str, body: Option<&str>) -> Result<Response> {
-        let mut req = Request::post(url, body.map(std::string::ToString::to_string));
-        req.headers = self.config().headers.clone();
+        let req = Request::post(url, body.map(std::string::ToString::to_string));
         self.fetch(req).await
     }
 
