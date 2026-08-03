@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use super::Engine;
 use crate::engine;
-use crate::{CrawlStats, Request, Spider, SpiderStats};
+use crate::stats::SpiderStats;
+use crate::{CrawlStats, Request, Spider};
 
 pub(crate) use driver::run_stream_driver;
 
@@ -63,9 +64,6 @@ pub(crate) fn build_final_stats(ctx: &Arc<engine::EngineContext>) -> Vec<CrawlSt
     ctx.state
         .all_stats
         .iter()
-        .map(|stats| {
-            let status_codes = stats.status_codes_snapshot();
-            engine::snapshot_stats_for(stats, status_codes)
-        })
+        .map(|stats| stats.snapshot())
         .collect()
 }

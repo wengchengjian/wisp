@@ -533,15 +533,15 @@ fn record_status_increments_counter() {
     assert_eq!(snapshot.get(&404).copied(), Some(1));
 }
 
-/// snapshot_stats_for：应正确填充统计快照字段。
+/// SpiderStats::snapshot：应正确填充统计快照字段。
 #[test]
-fn snapshot_stats_for_populates_fields() {
+fn snapshot_populates_fields() {
     let stats = Arc::new(SpiderStats::new());
     stats.pages.store(10, Ordering::SeqCst);
     stats.items.store(50, Ordering::SeqCst);
     stats.errors.store(2, Ordering::SeqCst);
     stats.retries.store(5, Ordering::SeqCst);
-    let snapshot = snapshot_stats_for(&stats, HashMap::new());
+    let snapshot = stats.snapshot();
     assert_eq!(snapshot.pages_crawled, 10);
     assert_eq!(snapshot.items_scraped, 50);
     assert_eq!(snapshot.errors, 2);

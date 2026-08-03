@@ -89,21 +89,3 @@ pub(crate) fn build_crawl_context_for(
         errors: stats.errors.load(Ordering::SeqCst),
     }
 }
-
-/// 从单个 SpiderStats 构造 CrawlStats 快照。
-pub(crate) fn snapshot_stats_for(
-    stats: &Arc<SpiderStats>,
-    status_codes: HashMap<u16, usize>,
-) -> CrawlStats {
-    CrawlStats {
-        items_scraped: stats.items.load(Ordering::SeqCst),
-        pages_crawled: stats.pages.load(Ordering::SeqCst),
-        errors: stats.errors.load(Ordering::SeqCst),
-        duration: stats.elapsed(),
-        blocked_requests: stats.blocked.load(Ordering::SeqCst),
-        retry_count: stats.retries.load(Ordering::SeqCst),
-        status_code_counts: status_codes,
-        offsite_requests_count: stats.offsite.load(Ordering::SeqCst),
-        cache_hits: stats.cache_hits.load(Ordering::SeqCst),
-    }
-}

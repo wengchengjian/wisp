@@ -1,6 +1,6 @@
 //! 流式爬取事件与事件流包装。
 
-use crate::crawl_stats::CrawlStats;
+use crate::CrawlStats;
 use serde_json::Value;
 
 /// 爬取过程中的事件流

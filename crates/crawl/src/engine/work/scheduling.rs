@@ -5,9 +5,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{NextWork, NextWorkResult};
+use crate::Spider;
 use crate::engine;
+use crate::stats::SpiderStats;
 use crate::stop;
-use crate::{Spider, SpiderStats};
 use wisp_core::utils::sanitize_url;
 
 async fn drain_follow_queue(ctx: &engine::EngineContext) {

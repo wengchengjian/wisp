@@ -11,7 +11,8 @@ use crate::engine;
 use crate::observability::events::EngineEvent;
 use crate::robots;
 use crate::scheduler;
-use crate::{CrawlEvent, CrawlStats, Request, Spider, SpiderStats};
+use crate::stats::SpiderStats;
+use crate::{CrawlEvent, CrawlStats, Request, Spider};
 use wisp_core::error::Result;
 
 impl Engine {

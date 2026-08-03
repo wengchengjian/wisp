@@ -5,13 +5,13 @@ use std::sync::atomic::Ordering;
 
 use super::AutoscaledPool;
 use crate::observability::events::EventBus;
-use crate::observability::stats::SpiderStats;
+use crate::stats::SpiderStats;
 
 impl AutoscaledPool {
     /// 后台 autoscaler task：定期采样系统指标，调整 desired concurrency。
     ///
     /// 应在 `run_inner` 中 spawn 此 task，爬取结束后 abort。
-    pub async fn run_autoscaler(
+    pub(crate) async fn run_autoscaler(
         self: &Arc<Self>,
         stats: Vec<Arc<SpiderStats>>,
         event_bus: Option<Arc<EventBus>>,

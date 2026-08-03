@@ -59,7 +59,7 @@ mod tests;
 pub use builder::EngineBuilder;
 pub(crate) use checkpoint::persist_spider_checkpoint;
 pub use config::EngineConfig;
-pub(crate) use context::{EngineContext, EngineState, build_crawl_context_for, snapshot_stats_for};
+pub(crate) use context::{EngineContext, EngineState, build_crawl_context_for};
 pub(crate) use fetch::fetch_dispatch;
 pub(crate) use guard::{InFlightGuard, RunGuard};
 pub(crate) use request::process_request;

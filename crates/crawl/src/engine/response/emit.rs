@@ -66,11 +66,10 @@ pub(super) async fn emit_page_scraped(
     page_url: &str,
 ) {
     if let Some(ref tx) = ctx.state.tx {
-        let status_codes_snapshot = stats.status_codes_snapshot();
         let _ = tx
             .send(CrawlEvent::PageScraped {
                 url: sanitize_url(page_url),
-                stats: snapshot_stats_for(stats, status_codes_snapshot),
+                stats: stats.snapshot(),
             })
             .await;
     }

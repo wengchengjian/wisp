@@ -10,7 +10,8 @@ use crate::auto;
 use crate::engine;
 use crate::engine::Engine;
 use crate::scheduler;
-use crate::{CrawlEvent, Request, Spider, SpiderStats};
+use crate::stats::SpiderStats;
+use crate::{CrawlEvent, Request, Spider};
 use wisp_core::error::Result;
 
 impl Engine {

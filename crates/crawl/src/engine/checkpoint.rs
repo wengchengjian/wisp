@@ -12,22 +12,13 @@ pub(crate) async fn persist_spider_checkpoint(
 ) -> Result<()> {
     let pending = sched.pending_urls().await;
     let seen = sched.seen_urls().await; // 持久化 seen 去重集合
-    let snapshot = snapshot_stats_for(stats, stats.status_codes_snapshot());
+    let snapshot = stats.snapshot();
     let state = CrawlState {
         spider_name: spider_name.to_string(),
         pending_urls: pending,
         seen_urls: seen,
-        items_scraped: snapshot.items_scraped,
-        pages_crawled: snapshot.pages_crawled,
-        errors: snapshot.errors,
-        status_codes: snapshot.status_code_counts,
-        blocked: snapshot.blocked_requests,
-        retries: snapshot.retry_count,
-        offsite: snapshot.offsite_requests_count,
-        cache_hits: snapshot.cache_hits,
-        callback_pages: stats.callback_pages_snapshot(),
+        stats: snapshot,
         in_flight_urls: in_flight,
-        duration_ms: snapshot.duration.as_millis(),
         saved_at: chrono::Utc::now(),
     };
     let blob = bincode::serialize(&state).map_err(|e| {

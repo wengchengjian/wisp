@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use super::*;
 
-use crate::observability::stats::SpiderStats;
+use crate::stats::SpiderStats;
 
 #[test]
 fn test_autoscaled_pool_creation() {
@@ -39,4 +39,59 @@ async fn test_autoscaler_runs() {
     // 并发数应仍在合理范围内
     let current = pool.current_concurrency();
     assert!((2..=8).contains(&current));
+}
+
+#[tokio::test]
+async fn autoscale_scales_up_when_saturated() {
+    let pool = AutoscaledPool::new(
+        2,
+        8,
+        AutoscaleConfig {
+            sample_interval: Duration::from_millis(20),
+            scale_up_interval: Duration::from_millis(10),
+            ..Default::default()
+        },
+    );
+    let stats = Arc::new(SpiderStats::new());
+    for _ in 0..4 {
+        stats
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    let pc = Arc::clone(&pool);
+    let sc = Arc::clone(&stats);
+    let h = tokio::spawn(async move {
+        pc.run_autoscaler(vec![sc], None).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.abort();
+
+    let cur = pool.current_concurrency();
+    assert!(cur > 2, "饱和时应扩容（cur 应 > 初始 2），实际 cur={cur}");
+}
+
+#[tokio::test]
+async fn autoscale_does_not_grow_when_idle() {
+    let pool = AutoscaledPool::new(
+        2,
+        8,
+        AutoscaleConfig {
+            sample_interval: Duration::from_millis(20),
+            scale_down_interval: Duration::from_millis(10),
+            ..Default::default()
+        },
+    );
+    let stats = Arc::new(SpiderStats::new());
+
+    let pc = Arc::clone(&pool);
+    let sc = Arc::clone(&stats);
+    let h = tokio::spawn(async move {
+        pc.run_autoscaler(vec![sc], None).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.abort();
+
+    let cur = pool.current_concurrency();
+    assert_eq!(cur, 2, "空闲时不应扩容（保持 min=2），实际 cur={cur}");
 }

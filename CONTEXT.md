@@ -39,3 +39,7 @@ _Avoid_: cookie jar (implementation)
 **Tool**:
 A typed MCP operation exposing Fetch, Crawl, or adaptive behavior to clients.
 _Avoid_: MCP endpoint
+
+**Crawl stats**:
+The per-Spider counters a Crawl produces and reports when it finishes or streams events.
+_Avoid_: counters

@@ -1,6 +1,7 @@
 //! Verify checkpoint save/load round-trip.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use wisp::crawl::{CrawlState, Request};
 use wisp::storage::MemoryStore;
 
@@ -10,15 +11,16 @@ async fn test_checkpoint_save_load_roundtrip() {
 
     let mut state = CrawlState::new("test-spider".to_string());
     state.pending_urls = vec![Request::get("https://example.com/pending")];
-    state.pages_crawled = 42;
-    state.items_scraped = 100;
-    state.errors = 3;
-    state.duration_ms = 5678;
-    state.status_codes = HashMap::from([(200, 40), (404, 2)]);
-    state.blocked = 1;
-    state.retries = 2;
-    state.offsite = 3;
-    state.cache_hits = 4;
+    state.stats.pages_crawled = 42;
+    state.stats.items_scraped = 100;
+    state.stats.errors = 3;
+    state.stats.duration = Duration::from_millis(5678);
+    state.stats.status_code_counts = HashMap::from([(200, 40), (404, 2)]);
+    state.stats.blocked_requests = 1;
+    state.stats.retry_count = 2;
+    state.stats.offsite_requests_count = 3;
+    state.stats.cache_hits = 4;
+    state.stats.callback_pages = HashMap::from([("detail".to_string(), 2)]);
 
     let blob = bincode::serialize(&state).unwrap();
     wisp::storage::save_checkpoint(&store, "test-spider", &blob)
@@ -32,24 +34,25 @@ async fn test_checkpoint_save_load_roundtrip() {
     let restored: CrawlState = bincode::deserialize(&loaded).unwrap();
 
     assert_eq!(restored.spider_name, "test-spider");
-    assert_eq!(restored.pages_crawled, 42);
-    assert_eq!(restored.items_scraped, 100);
-    assert_eq!(restored.errors, 3);
-    assert_eq!(restored.duration_ms, 5678);
+    assert_eq!(restored.stats.pages_crawled, 42);
+    assert_eq!(restored.stats.items_scraped, 100);
+    assert_eq!(restored.stats.errors, 3);
+    assert_eq!(restored.stats.duration, Duration::from_millis(5678));
     assert_eq!(restored.pending_urls.len(), 1);
     assert_eq!(restored.pending_urls[0].url, "https://example.com/pending");
-    assert_eq!(restored.status_codes, HashMap::from([(200, 40), (404, 2)]));
-    assert_eq!(restored.blocked, 1);
-    assert_eq!(restored.retries, 2);
-    assert_eq!(restored.offsite, 3);
-    assert_eq!(restored.cache_hits, 4);
+    assert_eq!(
+        restored.stats.status_code_counts,
+        HashMap::from([(200, 40), (404, 2)])
+    );
+    assert_eq!(restored.stats.blocked_requests, 1);
+    assert_eq!(restored.stats.retry_count, 2);
+    assert_eq!(restored.stats.offsite_requests_count, 3);
+    assert_eq!(restored.stats.cache_hits, 4);
+    assert_eq!(restored.stats.callback_pages.get("detail"), Some(&2));
 
     let restored_stats = restored.to_stats();
     assert_eq!(restored_stats.pages_crawled, 42);
-    assert_eq!(
-        restored_stats.duration,
-        std::time::Duration::from_millis(5678)
-    );
+    assert_eq!(restored_stats.duration, Duration::from_millis(5678));
     assert_eq!(
         restored_stats.status_code_counts,
         HashMap::from([(200, 40), (404, 2)])
@@ -58,6 +61,7 @@ async fn test_checkpoint_save_load_roundtrip() {
     assert_eq!(restored_stats.retry_count, 2);
     assert_eq!(restored_stats.offsite_requests_count, 3);
     assert_eq!(restored_stats.cache_hits, 4);
+    assert_eq!(restored_stats.callback_pages.get("detail"), Some(&2));
 }
 
 #[tokio::test]
@@ -101,17 +105,17 @@ async fn test_checkpoint_load_missing_returns_none() {
 fn test_crawl_state_new_defaults() {
     let state = CrawlState::new("fresh".to_string());
     assert_eq!(state.spider_name, "fresh");
-    assert_eq!(state.pages_crawled, 0);
-    assert_eq!(state.items_scraped, 0);
-    assert_eq!(state.errors, 0);
-    assert_eq!(state.duration_ms, 0);
+    assert_eq!(state.stats.pages_crawled, 0);
+    assert_eq!(state.stats.items_scraped, 0);
+    assert_eq!(state.stats.errors, 0);
+    assert_eq!(state.stats.duration, Duration::ZERO);
     assert!(state.pending_urls.is_empty());
     assert!(state.seen_urls.is_empty());
-    assert!(state.status_codes.is_empty());
-    assert_eq!(state.blocked, 0);
-    assert_eq!(state.retries, 0);
-    assert_eq!(state.offsite, 0);
-    assert_eq!(state.cache_hits, 0);
+    assert!(state.stats.status_code_counts.is_empty());
+    assert_eq!(state.stats.blocked_requests, 0);
+    assert_eq!(state.stats.retry_count, 0);
+    assert_eq!(state.stats.offsite_requests_count, 0);
+    assert_eq!(state.stats.cache_hits, 0);
 }
 
 /// 验证 seen_urls 序列化层往返。

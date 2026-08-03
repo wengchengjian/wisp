@@ -107,13 +107,13 @@ fn checkpoint_restores_full_stats() {
     use std::collections::HashMap;
 
     let mut state = CrawlState::new("s".into());
-    state.status_codes = HashMap::from([(200, 10)]);
-    state.blocked = 5;
-    state.retries = 6;
-    state.offsite = 7;
-    state.cache_hits = 8;
+    state.stats.status_code_counts = HashMap::from([(200, 10)]);
+    state.stats.blocked_requests = 5;
+    state.stats.retry_count = 6;
+    state.stats.offsite_requests_count = 7;
+    state.stats.cache_hits = 8;
 
-    let stats = crate::SpiderStats::new();
+    let stats = crate::stats::SpiderStats::new();
     stats.restore_from(&state);
     assert_eq!(stats.blocked.load(std::sync::atomic::Ordering::SeqCst), 5);
     assert_eq!(stats.retries.load(std::sync::atomic::Ordering::SeqCst), 6);

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::AutoscaledPool;
-use crate::observability::stats::SpiderStats;
+use crate::stats::SpiderStats;
 
 impl AutoscaledPool {
     pub(super) fn sample_metrics(
