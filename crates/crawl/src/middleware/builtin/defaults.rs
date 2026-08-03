@@ -17,7 +17,7 @@ use wisp_storage::Store;
 /// 默认中间件注入配置（由 Spider 配置 + Engine 资源组装）。
 ///
 /// `default_middlewares` 据此构造中间件链；字段对应各默认中间件所需的输入。
-pub struct DefaultMiddlewareConfig {
+pub(crate) struct DefaultMiddlewareConfig {
     /// 抓取模式（决定是否注入模式升级类）
     pub fetch_mode: FetchMode,
     /// 下载延迟（>0 时注入 DelayMiddleware）
@@ -54,7 +54,7 @@ pub struct DefaultMiddlewareConfig {
 /// Auto 模式注入 Stealth 升级；DynamicUpgrade 按 `dynamic_upgrade` 开关注入，
 /// 避免静态站点为每页付出 SPA 扫描成本。
 ///
-pub fn default_middlewares(cfg: DefaultMiddlewareConfig) -> Vec<Arc<dyn Middleware>> {
+pub(crate) fn default_middlewares(cfg: DefaultMiddlewareConfig) -> Vec<Arc<dyn Middleware>> {
     let mut mws: Vec<Arc<dyn Middleware>> = Vec::new();
 
     // 1. 过滤类
