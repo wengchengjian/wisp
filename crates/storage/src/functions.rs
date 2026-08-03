@@ -8,6 +8,14 @@ const NS_CHECKPOINT: &str = "checkpoint";
 const NS_ELEMENT: &str = "element";
 const NS_RESPONSE: &str = "response";
 
+fn element_key(url: &str, key: &str) -> String {
+    format!("{url}|{key}")
+}
+
+fn response_key(method: &str, url: &str) -> String {
+    format!("{method}|{url}")
+}
+
 // === Checkpoint ===
 
 /// 保存检查点。
@@ -34,7 +42,7 @@ pub async fn save_element(
     key: &str,
     row: &ElementSnapshotRow,
 ) -> Result<()> {
-    let composite = format!("{url}|{key}");
+    let composite = element_key(url, key);
     let bytes = serde_json::to_vec(row).map_err(|e| {
         WispError::Storage(StorageError::General(format!("serialize element: {e}")))
     })?;
@@ -47,7 +55,7 @@ pub async fn load_element(
     url: &str,
     key: &str,
 ) -> Result<Option<ElementSnapshotRow>> {
-    let composite = format!("{url}|{key}");
+    let composite = element_key(url, key);
     store
         .get(NS_ELEMENT, &composite)
         .await?
@@ -68,7 +76,7 @@ pub async fn save_response(
     url: &str,
     resp: &CachedResponse,
 ) -> Result<()> {
-    let composite = format!("{method}|{url}");
+    let composite = response_key(method, url);
     let bytes = bincode::serialize(resp).map_err(|e| {
         WispError::Storage(StorageError::General(format!("serialize response: {e}")))
     })?;
@@ -83,7 +91,7 @@ pub async fn load_response(
     method: &str,
     url: &str,
 ) -> Result<Option<CachedResponse>> {
-    let composite = format!("{method}|{url}");
+    let composite = response_key(method, url);
     store
         .get(NS_RESPONSE, &composite)
         .await?
@@ -94,7 +102,7 @@ pub async fn load_response(
 
 /// 删除响应缓存。
 pub async fn delete_response(store: &dyn Store, method: &str, url: &str) -> Result<()> {
-    let composite = format!("{method}|{url}");
+    let composite = response_key(method, url);
     store.delete(NS_RESPONSE, &composite).await
 }
 
