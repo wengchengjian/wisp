@@ -129,7 +129,6 @@ async fn test_screenshot_creates_file() {
 mod adaptive_test {
     use std::sync::Arc;
     use wisp::crawl::AdaptiveTracker;
-    use wisp::crawl::adaptive::row_to_snapshot;
     use wisp::parser::Node;
     use wisp::storage::{MemoryStore, Store};
 
@@ -210,13 +209,9 @@ mod adaptive_test {
             .await
             .unwrap()
             .expect("snapshot should be saved");
-        let snapshot = row_to_snapshot(saved);
-        assert!(
-            snapshot
-                .ancestor_path
-                .iter()
-                .any(|p| p.contains("products"))
-        );
+        let ancestor_path: Vec<String> =
+            serde_json::from_value(saved.ancestor_path).expect("ancestor_path 应为字符串数组");
+        assert!(ancestor_path.iter().any(|p| p.contains("products")));
     }
 
     #[test]

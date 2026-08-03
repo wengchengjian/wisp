@@ -5,7 +5,7 @@ mod crawl_stream;
 mod spider;
 
 pub mod adaptive;
-pub mod auto;
+pub(crate) mod auto;
 pub mod builder;
 pub mod engine;
 pub mod middleware;
@@ -27,7 +27,6 @@ pub use scheduling::scheduler;
 pub use scheduling::stop;
 
 pub use adaptive::AdaptiveTracker;
-pub use auto::ModeRuleEngine;
 pub use builder::{ClosureSpider, SpiderBuilder};
 pub use crawl_stats::CrawlStats;
 pub use crawl_stream::{CrawlEvent, CrawlStream};

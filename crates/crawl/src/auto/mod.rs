@@ -228,4 +228,65 @@ mod tests {
         body[64 * 1024 + 8..64 * 1024 + 21].copy_from_slice(b"access denied");
         assert_eq!(blocked_reason(200, &body, &HashMap::new()), None);
     }
+
+    // === 从集成测试并入的独有用例 ===
+
+    #[test]
+    fn test_generalize_multi_segment_numeric_id() {
+        assert_eq!(
+            generalize_url("https://shop.com/item/99999/reviews"),
+            "/item/\\d+/reviews"
+        );
+    }
+
+    #[test]
+    fn test_generalize_api_version_and_uuid() {
+        assert_eq!(
+            generalize_url("https://api.io/v1/a1b2c3d4e5f6"),
+            "/v\\d+/[a-f0-9-]+"
+        );
+        assert_eq!(
+            generalize_url("https://shop.com/api/v2/items/7"),
+            "/api/v\\d+/items/\\d+"
+        );
+    }
+
+    #[test]
+    fn test_multiple_patterns_coexist() {
+        let mut engine = ModeRuleEngine::new();
+        engine.learn("https://shop.com/products/1", FetchMode::Dynamic);
+        engine.learn("https://shop.com/blog/hello-world", FetchMode::Http);
+
+        assert_eq!(
+            engine.resolve("https://shop.com/products/5"),
+            Some(FetchMode::Dynamic)
+        );
+        assert_eq!(
+            engine.resolve("https://shop.com/blog/hello-world"),
+            Some(FetchMode::Http)
+        );
+    }
+
+    #[test]
+    fn test_blocked_404_not_blocked() {
+        assert!(!is_blocked_response(404, b"not found", &HashMap::new()));
+    }
+
+    #[test]
+    fn test_blocked_challenge_platform_not_blocked() {
+        assert!(!is_blocked_response(
+            200,
+            b"challenge-platform/h/b",
+            &HashMap::new()
+        ));
+    }
+
+    #[test]
+    fn test_blocked_attention_required() {
+        assert!(is_blocked_response(
+            200,
+            b"Attention Required",
+            &HashMap::new()
+        ));
+    }
 }

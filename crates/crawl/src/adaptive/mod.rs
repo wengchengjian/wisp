@@ -9,5 +9,4 @@ mod tracker;
 #[cfg(test)]
 mod tests;
 
-pub use convert::{row_to_snapshot, snapshot_to_row};
 pub use tracker::AdaptiveTracker;
