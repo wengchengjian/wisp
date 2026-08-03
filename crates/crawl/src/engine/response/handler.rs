@@ -93,7 +93,7 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     maybe_persist_checkpoint(ctx, &spider, &stats).await;
 
     let (items, follows) = handle_spider_page(ctx, &spider, resp).await;
-    process_page_items(ctx, &spider, &stats, &page_url, items).await;
+    process_page_items(ctx, &spider, &stats, items).await;
     schedule_follow_requests(ctx, follows).await;
     ctx.state.work_notify.notify_one();
     emit_page_scraped(ctx, &stats, &page_url).await;

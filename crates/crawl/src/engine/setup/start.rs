@@ -3,10 +3,8 @@
 use std::sync::Arc;
 
 use crate::engine::Engine;
-use crate::observability::events::EngineEvent;
 use crate::scheduler;
-use crate::{Request, Spider};
-use wisp_core::utils::sanitize_url;
+use crate::{CrawlEvent, Request, Spider};
 
 impl Engine {
     pub(crate) async fn seed_start_urls(
@@ -18,7 +16,7 @@ impl Engine {
             let start_urls = spider.start_urls();
             self.runtime
                 .event_bus
-                .emit(EngineEvent::CrawlStarted {
+                .emit(CrawlEvent::CrawlStarted {
                     spider: spider.name().to_string(),
                     start_urls: start_urls.len(),
                 })
@@ -26,13 +24,6 @@ impl Engine {
             for url in start_urls {
                 sched
                     .push(Request::get(&url).with_spider(spider.name()))
-                    .await;
-                self.runtime
-                    .event_bus
-                    .emit(EngineEvent::RequestScheduled {
-                        url: sanitize_url(&url),
-                        depth: 0,
-                    })
                     .await;
             }
         }

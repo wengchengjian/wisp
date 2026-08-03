@@ -4,15 +4,9 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use super::AutoscaledPool;
-use crate::observability::events::{EngineEvent, EventBus};
 
 impl AutoscaledPool {
-    pub(super) async fn maybe_scale_down(
-        &self,
-        error_rate: f64,
-        saturation: f64,
-        event_bus: Option<&EventBus>,
-    ) {
+    pub(super) async fn maybe_scale_down(&self, error_rate: f64, saturation: f64) {
         if error_rate <= self.config.error_rate_threshold
             && saturation >= self.config.cpu_threshold_up
         {
@@ -33,22 +27,10 @@ impl AutoscaledPool {
         self.current.store(new_val, Ordering::SeqCst);
         *self.last_scale_down.lock() = now;
         tracing::debug!("Autoscale down (idle/err): {} -> {}", current, new_val);
-        if let Some(bus) = event_bus {
-            bus.emit(EngineEvent::ConcurrencyChanged {
-                old: current,
-                new: new_val,
-            })
-            .await;
-        }
         self.notify_work();
     }
 
-    pub(super) async fn maybe_scale_up(
-        &self,
-        error_rate: f64,
-        saturation: f64,
-        event_bus: Option<&EventBus>,
-    ) {
+    pub(super) async fn maybe_scale_up(&self, error_rate: f64, saturation: f64) {
         if saturation <= self.config.cpu_threshold_down
             || error_rate >= self.config.error_rate_threshold * 0.5
         {
@@ -67,13 +49,6 @@ impl AutoscaledPool {
         self.current.store(new_val, Ordering::SeqCst);
         *self.last_scale_up.lock() = now;
         tracing::debug!("Autoscale up (saturated): {} -> {}", current, new_val);
-        if let Some(bus) = event_bus {
-            bus.emit(EngineEvent::ConcurrencyChanged {
-                old: current,
-                new: new_val,
-            })
-            .await;
-        }
         self.notify_work();
     }
 }

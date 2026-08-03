@@ -526,7 +526,7 @@ async fn run_stream_emits_error_then_done_on_failure() {
 #[tokio::test]
 async fn event_bus_is_wired_into_run() {
     let url = spawn_html_server("<html><body>ok</body></html>").await;
-    let mut bus = EventBus::new();
+    let bus = EventBus::new();
     let metrics = Arc::new(Metrics::new());
     bus.on(metrics_listener(Arc::clone(&metrics)));
     let engine = Engine::infra()
@@ -549,7 +549,7 @@ async fn event_bus_is_wired_into_run() {
     );
     assert!(
         metrics.items.load(Ordering::SeqCst) >= 1,
-        "ItemScraped 事件应驱动 metrics"
+        "Item 事件应驱动 metrics"
     );
 }
 

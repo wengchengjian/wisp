@@ -12,10 +12,7 @@ pub(crate) async fn run_stream_driver(
     tx: tokio::sync::mpsc::Sender<CrawlEvent>,
 ) {
     let items = Arc::new(Mutex::new(Vec::new()));
-    match engine
-        .run_inner_many(spiders, Some(tx.clone()), items)
-        .await
-    {
+    match engine.run_inner_many(spiders, items).await {
         Ok(stats) => {
             let _ = tx.send(CrawlEvent::DoneMany(stats)).await;
         }
@@ -24,6 +21,7 @@ pub(crate) async fn run_stream_driver(
                 .send(CrawlEvent::Error {
                     url: "*".into(),
                     error: e.to_string(),
+                    attempt: 0,
                 })
                 .await;
             let _ = tx.send(CrawlEvent::DoneMany(Vec::new())).await;

@@ -29,7 +29,7 @@ async fn build_auto_upgrade_request(
         .learn(&req.url, FetchMode::Stealth);
     ctx.runtime
         .event_bus
-        .emit(EngineEvent::AutoUpgraded {
+        .emit(CrawlEvent::AutoUpgraded {
             url: sanitize_url(&req.url),
             from: FetchMode::Http,
             to: FetchMode::Stealth,
@@ -80,22 +80,13 @@ async fn emit_retry_request(
     retried.retry_count = retry_count;
     stats.retries.fetch_add(1, Ordering::SeqCst);
     tracing::debug!("retry {}/{}", retry_count, max_retries);
-    if let Some(ref tx) = ctx.state.tx {
-        let _ = tx
-            .send(CrawlEvent::Retry {
-                url: url_for_log.clone(),
-                attempt: retry_count,
-                max: max_retries,
-                error: e.to_string(),
-            })
-            .await;
-    }
     ctx.runtime
         .event_bus
-        .emit(EngineEvent::ErrorOccurred {
+        .emit(CrawlEvent::Retry {
             url: url_for_log,
             error: e.to_string(),
             attempt: retry_count,
+            max: max_retries,
         })
         .await;
     Some(retried)
@@ -115,7 +106,7 @@ async fn record_fetch_success(
     stats.blocked.fetch_add(1, Ordering::SeqCst);
     ctx.runtime
         .event_bus
-        .emit(EngineEvent::BlockedDetected {
+        .emit(CrawlEvent::BlockedDetected {
             url: sanitize_url(&resp.request.url),
             status: resp.status,
         })

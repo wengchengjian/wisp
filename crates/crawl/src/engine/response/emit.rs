@@ -6,7 +6,6 @@ pub(super) async fn process_page_items(
     ctx: &EngineContext,
     spider: &Arc<dyn Spider>,
     stats: &Arc<SpiderStats>,
-    page_url: &str,
     items: Vec<Value>,
 ) {
     let pipeline_crawl_ctx = if ctx.state.middleware_chain.is_empty() {
@@ -31,28 +30,16 @@ pub(super) async fn process_page_items(
             stats.items.fetch_add(1, Ordering::SeqCst);
             ctx.runtime
                 .event_bus
-                .emit(EngineEvent::ItemScraped {
-                    url: sanitize_url(page_url),
-                })
+                .emit(CrawlEvent::Item(processed.clone()))
                 .await;
-            if let Some(ref tx) = ctx.state.tx {
-                let _ = tx.send(CrawlEvent::Item(processed.clone())).await;
-            }
             ctx.state.items.lock().await.push(processed);
         }
     }
 }
 
-/// 将 follow 请求送入主循环队列并发送调度事件。
+/// 将 follow 请求送入主循环队列。
 pub(super) async fn schedule_follow_requests(ctx: &EngineContext, follows: Vec<Request>) {
     for f in follows {
-        ctx.runtime
-            .event_bus
-            .emit(EngineEvent::RequestScheduled {
-                url: sanitize_url(&f.url),
-                depth: f.depth,
-            })
-            .await;
         if ctx.state.follow_tx.send(f).is_err() {
             tracing::debug!("follow_tx closed, dropping follow request");
         }
@@ -65,28 +52,19 @@ pub(super) async fn emit_page_scraped(
     stats: &Arc<SpiderStats>,
     page_url: &str,
 ) {
-    if let Some(ref tx) = ctx.state.tx {
-        let _ = tx
-            .send(CrawlEvent::PageScraped {
-                url: sanitize_url(page_url),
-                stats: stats.snapshot(),
-            })
-            .await;
-    }
+    ctx.runtime
+        .event_bus
+        .emit(CrawlEvent::PageScraped {
+            url: sanitize_url(page_url),
+            stats: stats.snapshot(),
+        })
+        .await;
 }
 
 pub(super) async fn emit_error_event(ctx: &EngineContext, url: &str, err: &str) {
-    if let Some(ref tx) = ctx.state.tx {
-        let _ = tx
-            .send(CrawlEvent::Error {
-                url: sanitize_url(url),
-                error: err.to_string(),
-            })
-            .await;
-    }
     ctx.runtime
         .event_bus
-        .emit(EngineEvent::ErrorOccurred {
+        .emit(CrawlEvent::Error {
             url: sanitize_url(url),
             error: err.to_string(),
             attempt: 0,

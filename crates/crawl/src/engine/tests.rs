@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::engine::request::check_control_and_hook;
+use crate::observability::events::{EventBus, Subscription};
 use async_trait::async_trait;
+use futures::StreamExt;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -76,7 +78,7 @@ impl Spider for PanicSpider {
 fn make_ctx_with(
     config: crate::engine::EngineConfig,
     chain: middleware::MiddlewareChain,
-    tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
+    event_bus: EventBus,
 ) -> (EngineContext, Arc<SpiderStats>) {
     let stats = Arc::new(SpiderStats::new());
     let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
@@ -91,7 +93,7 @@ fn make_ctx_with(
             cache_store: None,
             checkpoint_store: None,
             autoscale: None,
-            event_bus: Arc::new(crate::observability::events::EventBus::new()),
+            event_bus: Arc::new(event_bus),
             ua_middleware: None,
             custom_middlewares: Vec::new(),
             pipelines: Vec::new(),
@@ -108,7 +110,6 @@ fn make_ctx_with(
             all_stats: vec![stats.clone()],
             items: Arc::new(Mutex::new(Vec::new())),
             abort_flag: Arc::new(AtomicBool::new(false)),
-            tx,
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
         },
@@ -121,7 +122,7 @@ fn make_ctx() -> (EngineContext, Arc<SpiderStats>) {
     make_ctx_with(
         test_engine_config(FetchMode::Http, 3),
         middleware::MiddlewareChain::new(),
-        None,
+        EventBus::new(),
     )
 }
 
@@ -217,7 +218,7 @@ fn make_ctx_with_retry(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
     make_ctx_with(
         test_engine_config(FetchMode::Http, max_retries),
         chain,
-        None,
+        EventBus::new(),
     )
 }
 
@@ -303,7 +304,7 @@ fn make_ctx_auto(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
         )));
     let mut config = test_engine_config(FetchMode::Auto, max_retries);
     config.transport.max_concurrent_pages = 0; // 禁用浏览器池，Stealth 模式快速失败
-    make_ctx_with(config, chain, None)
+    make_ctx_with(config, chain, EventBus::new())
 }
 
 /// Auto 模式首次连接失败时，fetch_dispatch 应主动升级 Stealth 重试。
@@ -447,42 +448,31 @@ async fn process_request_shutdown_returns_none() {
     assert!(result.is_none(), "shutdown 时应返回 None");
 }
 
-/// 构造带事件通道的 EngineContext，返回 (ctx, stats, rx) 用于消费事件。
-fn make_ctx_with_tx(
-    max_retries: u32,
-) -> (
-    EngineContext,
-    Arc<SpiderStats>,
-    tokio::sync::mpsc::Receiver<CrawlEvent>,
-) {
-    let (tx, rx) = tokio::sync::mpsc::channel::<CrawlEvent>(128);
+/// 构造带订阅的 EngineContext，返回 (ctx, stats, subscription) 用于消费事件。
+fn make_ctx_with_subscription(max_retries: u32) -> (EngineContext, Arc<SpiderStats>, Subscription) {
+    let bus = EventBus::new();
+    let sub = bus.subscribe(128);
     let mut chain = middleware::MiddlewareChain::new();
     chain
         .middlewares
         .push(Arc::new(middleware::builtin::RetryMiddleware::new(
             std::time::Duration::ZERO,
         )));
-    let (ctx, stats) = make_ctx_with(
-        test_engine_config(FetchMode::Http, max_retries),
-        chain,
-        Some(tx),
-    );
-    (ctx, stats, rx)
+    let (ctx, stats) = make_ctx_with(test_engine_config(FetchMode::Http, max_retries), chain, bus);
+    (ctx, stats, sub)
 }
 
 /// fetch 失败重试耗尽后应发送 CrawlEvent::Error。
 #[tokio::test]
 async fn process_request_emits_error_event_on_failure() {
-    let (ctx, _stats, mut rx) = make_ctx_with_tx(1);
+    let (ctx, _stats, mut sub) = make_ctx_with_subscription(1);
     let req = Request::get("http://127.0.0.1:1/");
     let result = process_request(&ctx, req).await;
     assert!(result.is_none(), "失败后应返回 None");
 
     // 应收到 Error 事件
     let mut got_error = false;
-    while let Ok(Some(event)) =
-        tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
-    {
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(500), sub.next()).await {
         if matches!(event, CrawlEvent::Error { .. }) {
             got_error = true;
             break;
@@ -494,16 +484,14 @@ async fn process_request_emits_error_event_on_failure() {
 /// 重试期间应发送 CrawlEvent::Retry 事件（max_retries=2 时至少 1 次 Retry）。
 #[tokio::test]
 async fn process_request_emits_retry_events() {
-    let (ctx, _stats, mut rx) = make_ctx_with_tx(2);
+    let (ctx, _stats, mut sub) = make_ctx_with_subscription(2);
     let req = Request::get("http://127.0.0.1:1/");
     let _ = process_request(&ctx, req).await;
 
     // 收集所有事件
     let mut retry_count = 0;
     let mut got_error = false;
-    while let Ok(Some(event)) =
-        tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
-    {
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(500), sub.next()).await {
         match event {
             CrawlEvent::Retry { attempt, max, .. } => {
                 assert_eq!(max, 2, "Retry 事件 max 应为 2");

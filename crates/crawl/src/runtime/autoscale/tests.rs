@@ -31,7 +31,7 @@ async fn test_autoscaler_runs() {
     let pool_clone = Arc::clone(&pool);
     let stats_clone = Arc::clone(&stats);
     let handle = tokio::spawn(async move {
-        pool_clone.run_autoscaler(vec![stats_clone], None).await;
+        pool_clone.run_autoscaler(vec![stats_clone]).await;
     });
     // 运行一小段时间后 abort
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -62,7 +62,7 @@ async fn autoscale_scales_up_when_saturated() {
     let pc = Arc::clone(&pool);
     let sc = Arc::clone(&stats);
     let h = tokio::spawn(async move {
-        pc.run_autoscaler(vec![sc], None).await;
+        pc.run_autoscaler(vec![sc]).await;
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     h.abort();
@@ -87,7 +87,7 @@ async fn autoscale_does_not_grow_when_idle() {
     let pc = Arc::clone(&pool);
     let sc = Arc::clone(&stats);
     let h = tokio::spawn(async move {
-        pc.run_autoscaler(vec![sc], None).await;
+        pc.run_autoscaler(vec![sc]).await;
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     h.abort();

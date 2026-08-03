@@ -2,10 +2,34 @@
 
 use crate::CrawlStats;
 use serde_json::Value;
+use wisp_fetcher::FetchMode;
 
-/// 爬取过程中的事件流
+/// 爬取过程中的事件流。
 #[derive(Debug, Clone)]
 pub enum CrawlEvent {
+    /// 爬取启动。
+    CrawlStarted {
+        /// Spider 名称。
+        spider: String,
+        /// 起始 URL 数量。
+        start_urls: usize,
+    },
+    /// 单个 Spider 爬取完成。
+    CrawlFinished {
+        /// 统计快照。
+        stats: CrawlStats,
+    },
+    /// 响应接收。
+    ResponseReceived {
+        /// 请求 URL。
+        url: String,
+        /// 状态码。
+        status: u16,
+        /// 耗时（毫秒）。
+        elapsed_ms: u64,
+        /// 是否来自缓存。
+        from_cache: bool,
+    },
     /// 爬取到的 item。
     Item(Value),
     /// 页面爬取完成。
@@ -15,15 +39,7 @@ pub enum CrawlEvent {
         /// 当前统计。
         stats: CrawlStats,
     },
-    /// 错误发生。
-    Error {
-        /// 请求 URL。
-        url: String,
-        /// 错误信息。
-        error: String,
-    },
-    /// ND-001-ERR：重试事件，让 stream 消费者感知重试发生。
-    /// `attempt` 为当前重试次数（从 1 开始），`max` 为上限，`error` 为失败原因。
+    /// 重试发生。`attempt` 从 1 开始，`max` 为重试上限。
     Retry {
         /// 请求 URL。
         url: String,
@@ -34,9 +50,39 @@ pub enum CrawlEvent {
         /// 错误信息。
         error: String,
     },
-    /// 爬取完成。
+    /// 最终失败。
+    Error {
+        /// 请求 URL。
+        url: String,
+        /// 错误信息。
+        error: String,
+        /// 失败时的重试次数。
+        attempt: u32,
+    },
+    /// 检测到封锁。
+    BlockedDetected {
+        /// 请求 URL。
+        url: String,
+        /// 状态码。
+        status: u16,
+    },
+    /// Auto 模式升级。
+    AutoUpgraded {
+        /// 请求 URL。
+        url: String,
+        /// 原模式。
+        from: FetchMode,
+        /// 新模式。
+        to: FetchMode,
+    },
+    /// Checkpoint 已保存。
+    CheckpointSaved {
+        /// 待处理请求数。
+        pending: usize,
+    },
+    /// 单 Spider 流爬取完成。
     Done(CrawlStats),
-    /// 多 Spider 流式爬取完成。
+    /// 多 Spider 流爬取完成。
     DoneMany(Vec<CrawlStats>),
 }
 

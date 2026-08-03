@@ -43,3 +43,7 @@ _Avoid_: MCP endpoint
 **Crawl stats**:
 The per-Spider counters a Crawl produces and reports when it finishes or streams events.
 _Avoid_: counters
+
+**Crawl event**:
+A fact a Crawl emits once; all listeners and stream subscribers receive the same event.
+_Avoid_: signals

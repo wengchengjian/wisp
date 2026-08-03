@@ -81,7 +81,7 @@ async fn run_request_middlewares(
             stats.record_status(cached_resp.status);
             ctx.runtime
                 .event_bus
-                .emit(EngineEvent::ResponseReceived {
+                .emit(CrawlEvent::ResponseReceived {
                     url: sanitize_url(&req.url),
                     status: cached_resp.status,
                     elapsed_ms: 0,
@@ -98,19 +98,11 @@ async fn run_request_middlewares(
 
 /// 发送抓取失败事件（stream 与 event bus），保持错误分类在调用链内。
 async fn emit_fetch_failure(ctx: &EngineContext, req: &Request, e: &wisp_core::error::WispError) {
-    if let Some(ref tx) = ctx.state.tx {
-        let _ = tx
-            .send(CrawlEvent::Error {
-                url: sanitize_url(&req.url),
-                error: format!("fetch failed: {e} - {}", sanitize_url(&req.url)),
-            })
-            .await;
-    }
     ctx.runtime
         .event_bus
-        .emit(EngineEvent::ErrorOccurred {
+        .emit(CrawlEvent::Error {
             url: sanitize_url(&req.url),
-            error: e.to_string(),
+            error: format!("fetch failed: {e} - {}", sanitize_url(&req.url)),
             attempt: req.retry_count,
         })
         .await;
@@ -149,7 +141,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option
         Ok(resp) => {
             ctx.runtime
                 .event_bus
-                .emit(EngineEvent::ResponseReceived {
+                .emit(CrawlEvent::ResponseReceived {
                     url: sanitize_url(&req.url),
                     status: resp.status,
                     elapsed_ms: fetch_started.elapsed().as_millis() as u64,

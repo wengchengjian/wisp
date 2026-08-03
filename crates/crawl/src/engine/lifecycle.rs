@@ -8,7 +8,6 @@ use tokio::sync::Mutex;
 use super::Engine;
 use super::{RunGuard, build_final_stats, run_work_loop};
 use crate::engine;
-use crate::observability::events::EngineEvent;
 use crate::robots;
 use crate::scheduler;
 use crate::stats::SpiderStats;
@@ -51,9 +50,8 @@ impl Engine {
         let pool = self.runtime.autoscale.clone()?;
         pool.set_work_notify(Arc::clone(&ctx.state.work_notify));
         let stats = all_stats.to_vec();
-        let event_bus = self.runtime.event_bus.clone();
         Some(tokio::spawn(async move {
-            pool.run_autoscaler(stats, Some(event_bus)).await;
+            pool.run_autoscaler(stats).await;
         }))
     }
 
@@ -72,7 +70,7 @@ impl Engine {
         for stats in final_stats {
             self.runtime
                 .event_bus
-                .emit(EngineEvent::CrawlFinished {
+                .emit(CrawlEvent::CrawlFinished {
                     stats: stats.clone(),
                 })
                 .await;
@@ -100,7 +98,6 @@ impl Engine {
     pub(crate) async fn run_inner_many(
         &self,
         spiders: Vec<Arc<dyn Spider>>,
-        tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
         items: Arc<Mutex<Vec<Value>>>,
     ) -> Result<Vec<CrawlStats>> {
         if spiders.is_empty() {
@@ -123,7 +120,6 @@ impl Engine {
         self.notify_spiders_start(&spiders).await;
         let ctx = self.build_engine_context(
             spiders,
-            tx,
             items,
             sched,
             follow_tx,

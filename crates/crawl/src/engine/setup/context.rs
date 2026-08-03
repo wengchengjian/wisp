@@ -11,7 +11,7 @@ use crate::engine;
 use crate::engine::Engine;
 use crate::scheduler;
 use crate::stats::SpiderStats;
-use crate::{CrawlEvent, Request, Spider};
+use crate::{Request, Spider};
 use wisp_core::error::Result;
 
 impl Engine {
@@ -33,7 +33,6 @@ impl Engine {
         rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
         robots_cache: Arc<crate::runtime::robots::RobotsCache>,
         spiders: Vec<Arc<dyn Spider>>,
-        tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
         items: Arc<Mutex<Vec<Value>>>,
         all_stats: Vec<Arc<SpiderStats>>,
     ) -> engine::EngineState {
@@ -56,7 +55,6 @@ impl Engine {
             all_stats,
             items,
             abort_flag: Arc::new(AtomicBool::new(false)),
-            tx,
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -67,7 +65,6 @@ impl Engine {
     pub(crate) fn build_engine_context(
         &self,
         spiders: Vec<Arc<dyn Spider>>,
-        tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
         items: Arc<Mutex<Vec<Value>>>,
         sched: Arc<scheduler::Scheduler>,
         follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
@@ -86,7 +83,6 @@ impl Engine {
                 rule_engine,
                 robots_cache,
                 spiders,
-                tx,
                 items,
                 all_stats,
             ),

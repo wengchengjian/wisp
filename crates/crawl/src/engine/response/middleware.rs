@@ -37,7 +37,7 @@ pub(super) async fn maybe_persist_checkpoint(
         Ok(()) => {
             ctx.runtime
                 .event_bus
-                .emit(EngineEvent::CheckpointSaved {
+                .emit(CrawlEvent::CheckpointSaved {
                     pending: ctx.state.sched.len().await,
                 })
                 .await;

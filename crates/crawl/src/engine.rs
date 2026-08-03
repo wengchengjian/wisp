@@ -29,7 +29,7 @@ use super::{
 };
 use crate::control;
 use crate::middleware::{ItemPipeline, Middleware, UaRotationMiddleware};
-use crate::observability::events::{EngineEvent, EventBus};
+use crate::observability::events::EventBus;
 use crate::runtime::autoscale::AutoscaledPool;
 use wisp_core::error::Result;
 use wisp_core::utils::sanitize_url;
@@ -92,7 +92,7 @@ pub(crate) struct EngineRuntime {
     pub checkpoint_store: Option<Arc<dyn Store>>,
     /// 自适应并发池（可选）。
     pub autoscale: Option<Arc<AutoscaledPool>>,
-    /// 引擎内部事件总线。
+    /// 引擎事件总线。
     pub event_bus: Arc<EventBus>,
     /// UA 轮换中间件实例（可选）。
     pub ua_middleware: Option<Arc<UaRotationMiddleware>>,
@@ -113,7 +113,7 @@ impl Engine {
             .map(|s| Arc::new(s) as Arc<dyn Spider>)
             .collect();
         let items: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let stats = self.run_inner_many(spiders, None, items.clone()).await?;
+        let stats = self.run_inner_many(spiders, items.clone()).await?;
         let mut guard = items.lock().await;
         let item_list = std::mem::take(&mut *guard);
         Ok((stats, item_list))
@@ -143,25 +143,29 @@ impl Engine {
 
     /// 流式运行多个 Spider：共享队列 + callback 路由，每个 Spider 独立 until/stats。
     pub fn run_stream_many<S: Spider + 'static>(&self, spiders: Vec<S>) -> CrawlStream {
-        let (tx, rx) = tokio::sync::mpsc::channel::<CrawlEvent>(128);
+        let subscription = self.runtime.event_bus.subscribe(128);
+        let tx = subscription.sender();
         let engine = self.clone();
         let spiders: Vec<Arc<dyn Spider>> = spiders
             .into_iter()
             .map(|s| Arc::new(s) as Arc<dyn Spider>)
             .collect();
-        let driver = Box::pin(run_stream_driver(engine, spiders, tx.clone()));
-        let rx = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let driver = Box::pin(run_stream_driver(engine, spiders, tx));
         let s = stream::unfold(
-            (driver, rx, false),
-            async |(mut driver, mut rx, driver_done)| {
+            (driver, subscription, false),
+            async |(mut driver, mut subscription, driver_done)| {
                 if driver_done {
-                    return rx.next().await.map(|e| (e, (driver, rx, true)));
+                    return subscription
+                        .next()
+                        .await
+                        .map(|e| (e, (driver, subscription, true)));
                 }
                 tokio::select! {
                     biased;
-                    event = rx.next() => event.map(|e| (e, (driver, rx, false))),
+                    event = subscription.next() => event.map(|e| (e, (driver, subscription, false))),
                     _ = &mut driver => {
-                        rx.next().await.map(|e| (e, (driver, rx, true)))
+                        subscription.close();
+                        subscription.next().await.map(|e| (e, (driver, subscription, true)))
                     }
                 }
             },

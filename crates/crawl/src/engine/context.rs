@@ -28,7 +28,6 @@ pub(crate) struct EngineState {
     pub all_stats: Vec<Arc<SpiderStats>>,
     pub items: Arc<Mutex<Vec<Value>>>,
     pub abort_flag: Arc<AtomicBool>,
-    pub tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
     pub global_in_flight: Arc<AtomicUsize>,
     pub in_flight_requests: Arc<Mutex<HashMap<String, Vec<Request>>>>,
 }
