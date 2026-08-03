@@ -33,7 +33,7 @@ User-defined crawl behavior: start URLs, response handling, follow requests, and
 _Avoid_: scraper
 
 **Cookie state**:
-Cookies attached to a site across Fetch modes through one shared seam.
+Cookies attached to a site across Fetch modes through one shared seam, including the session UA that earned them.
 _Avoid_: cookie jar (implementation)
 
 **Tool**:
