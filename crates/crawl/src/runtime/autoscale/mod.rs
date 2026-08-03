@@ -31,7 +31,7 @@ use parking_lot::Mutex;
 ///
 /// ND-004-CORR/ND-007-PERF：调整并发时通过 `work_notify` 唤醒主循环，
 /// 避免主循环 10ms timeout 轮询。
-pub struct AutoscaledPool {
+pub(crate) struct AutoscaledPool {
     min_concurrency: usize,
     max_concurrency: usize,
     current: Arc<AtomicUsize>,
@@ -44,7 +44,7 @@ pub struct AutoscaledPool {
 
 impl AutoscaledPool {
     /// 创建自适应并发池。
-    pub fn new(
+    pub(crate) fn new(
         min_concurrency: usize,
         max_concurrency: usize,
         config: AutoscaleConfig,
@@ -62,12 +62,12 @@ impl AutoscaledPool {
     }
 
     /// 获取当前允许的并发数（主循环使用）。
-    pub fn current_concurrency(&self) -> usize {
+    pub(crate) fn current_concurrency(&self) -> usize {
         self.current.load(Ordering::SeqCst)
     }
 
     /// 获取最大并发数上限（主循环用作 buffer_unordered 的 ceiling）。
-    pub fn max_concurrency(&self) -> usize {
+    pub(crate) fn max_concurrency(&self) -> usize {
         self.max_concurrency
     }
 
@@ -75,7 +75,7 @@ impl AutoscaledPool {
     ///
     /// 主循环在创建 pool 后调用此方法注入 Notify 引用。
     /// autoscaler 扩容时会调用 `notify_one()`，避免主循环 10ms 轮询。
-    pub fn set_work_notify(&self, notify: Arc<tokio::sync::Notify>) {
+    pub(crate) fn set_work_notify(&self, notify: Arc<tokio::sync::Notify>) {
         *self.work_notify.lock() = Some(notify);
     }
 

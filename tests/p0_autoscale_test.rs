@@ -2,7 +2,7 @@
 //! AutoscaledPool 已实现，此测试验证 Engine 正确持有 autoscale 配置。
 
 use std::time::Duration;
-use wisp::crawl::runtime::autoscale::{AutoscaleConfig, AutoscaledPool};
+use wisp::crawl::runtime::autoscale::AutoscaleConfig;
 
 fn fast_fetch_config() -> wisp::FetchClientConfig {
     wisp::FetchClientConfig {
@@ -39,13 +39,6 @@ async fn engine_builder_accepts_autoscale_with_config() {
         .autoscale_with_config(1, 4, config)
         .build();
     assert!(engine.is_ok(), "build with autoscale config should succeed");
-}
-
-#[test]
-fn autoscaled_pool_exposes_max_concurrency() {
-    let pool = AutoscaledPool::new(2, 8, AutoscaleConfig::default());
-    assert_eq!(pool.max_concurrency(), 8, "max_concurrency() 应返回上限值");
-    assert_eq!(pool.current_concurrency(), 2, "初始值应为 min");
 }
 
 // P0-1 Step 2: 验证 run_inner 启用 autoscale 后能正常完成爬取，
