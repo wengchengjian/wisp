@@ -33,13 +33,29 @@ pub(super) async fn fetch_browser_response(
     req: &Request,
     mode: FetchMode,
 ) -> Result<Response> {
-    let fetch_req = wisp_fetcher::Request {
-        url: req.url.clone(),
-        method: req.method,
-        headers: req.headers.clone(),
-        body: req.body.clone(),
-        ..Default::default()
-    };
-    let resp = fetch_client.fetch(&fetch_req, mode).await?;
+    let resp = fetch_client.fetch(req, mode).await?;
     Ok(to_crawl_response(resp, req, mode))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wisp_fetcher::FetchClientConfig;
+
+    #[tokio::test]
+    async fn browser_fetch_preserves_per_request_proxy_guard() {
+        let client = wisp_fetcher::FetchClient::new(FetchClientConfig {
+            max_concurrent_pages: 0,
+            ..Default::default()
+        })
+        .expect("build fetch client");
+        let req = Request::get("https://example.com/").with_proxy("http://127.0.0.1:8080");
+        let err = fetch_browser_response(&client, &req, FetchMode::Dynamic)
+            .await
+            .expect_err("per-request proxy 应被浏览器模式拒绝");
+        assert!(
+            err.to_string().contains("per-request proxy"),
+            "错误应说明 per-request proxy: {err}"
+        );
+    }
 }
