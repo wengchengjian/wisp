@@ -28,16 +28,18 @@ use super::{
     scheduler,
 };
 use crate::control;
-use crate::observability::events::EngineEvent;
+use crate::middleware::{ItemPipeline, Middleware, UaRotationMiddleware};
+use crate::observability::events::{EngineEvent, EventBus};
+use crate::runtime::autoscale::AutoscaledPool;
 use wisp_core::error::Result;
 use wisp_core::utils::sanitize_url;
-use wisp_fetcher::FetchMode;
+use wisp_fetcher::{FetchClient, FetchMode};
+use wisp_storage::Store;
 
 // === 公开类型 ===
 mod builder;
 mod config;
 mod lifecycle;
-mod runtime;
 mod setup;
 mod work;
 
@@ -55,14 +57,13 @@ mod runtime_tests;
 mod tests;
 
 pub use builder::EngineBuilder;
-pub(crate) use checkpoint::{load_spider_checkpoint, persist_spider_checkpoint};
+pub(crate) use checkpoint::persist_spider_checkpoint;
 pub use config::EngineConfig;
 pub(crate) use context::{EngineContext, EngineState, build_crawl_context_for, snapshot_stats_for};
 pub(crate) use fetch::fetch_dispatch;
 pub(crate) use guard::{InFlightGuard, RunGuard};
 pub(crate) use request::process_request;
 pub(crate) use response::process_response;
-pub(crate) use runtime::EngineRuntime;
 pub(crate) use work::{build_final_stats, run_stream_driver, run_work_loop};
 
 /// 爬虫引擎基础设施。长期持有，多次 run 不同 Spider。
@@ -76,6 +77,29 @@ pub struct Engine {
     pub(crate) runtime: EngineRuntime,
     /// 运行时并发保护。
     pub(crate) running: Arc<AtomicBool>,
+}
+
+/// 运行时资源：可共享、可替换，但不属于用户配置。
+#[derive(Clone)]
+pub(crate) struct EngineRuntime {
+    /// 共享 FetchClient（HTTP 连接池 + BrowserPool，跨 Spider 复用）。
+    pub fetch_client: Arc<FetchClient>,
+    /// Engine 控制状态（pause/resume/cancel/shutdown）。
+    pub control: Arc<control::EngineControl>,
+    /// 响应缓存存储（可选）。
+    pub cache_store: Option<Arc<dyn Store>>,
+    /// checkpoint 存储（可选）。
+    pub checkpoint_store: Option<Arc<dyn Store>>,
+    /// 自适应并发池（可选）。
+    pub autoscale: Option<Arc<AutoscaledPool>>,
+    /// 引擎内部事件总线。
+    pub event_bus: Arc<EventBus>,
+    /// UA 轮换中间件实例（可选）。
+    pub ua_middleware: Option<Arc<UaRotationMiddleware>>,
+    /// 用户自定义 Engine 级中间件。
+    pub custom_middlewares: Vec<Arc<dyn Middleware>>,
+    /// 共享 item pipeline。
+    pub pipelines: Vec<Arc<dyn ItemPipeline>>,
 }
 
 impl Engine {

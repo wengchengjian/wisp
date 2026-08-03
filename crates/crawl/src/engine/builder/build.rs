@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::control;
-use crate::engine::runtime::EngineRuntime;
+use crate::engine::EngineRuntime;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use wisp_core::error::Result;
