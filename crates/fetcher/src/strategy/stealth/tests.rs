@@ -29,7 +29,7 @@ fn test_from_config_custom() {
 }
 
 /// 集成测试：CF 挑战解决 + cookie 持久化。
-/// 运行方式：cargo test --lib fetcher::strategies::stealth -- --ignored
+/// 运行方式：cargo test --lib fetcher::strategy::stealth -- --ignored
 #[tokio::test]
 #[ignore = "需要 CF 保护的站点环境"]
 async fn test_stealth_strategy_solves_cf() {

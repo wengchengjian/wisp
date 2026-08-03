@@ -6,6 +6,16 @@
 mod event;
 mod extract;
 
+#[cfg(feature = "browser")]
+mod dynamic;
+#[cfg(feature = "stealth")]
+mod stealth;
+
+#[cfg(feature = "browser")]
+pub use dynamic::DynamicStrategy;
+#[cfg(feature = "stealth")]
+pub use stealth::StealthStrategy;
+
 #[cfg(test)]
 mod tests;
 

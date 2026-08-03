@@ -32,20 +32,18 @@
 pub mod client;
 pub mod cookie;
 #[cfg(feature = "browser")]
-pub mod strategies;
-#[cfg(feature = "browser")]
 pub mod strategy;
 
 mod builder;
 mod fetcher;
 
 #[cfg(feature = "browser")]
-pub use strategies::DynamicStrategy;
+pub use strategy::DynamicStrategy;
 #[cfg(feature = "stealth")]
-pub use strategies::StealthStrategy;
+pub use strategy::StealthStrategy;
 
 pub use builder::FetcherBuilder;
-pub use client::{FetchClient, FetchClientConfig};
+pub use client::{FetchClient, FetchClientConfig, FetchOptions};
 pub use fetcher::Fetcher;
 pub use wisp_core::{FetchMode, Method, Request, Response};
 

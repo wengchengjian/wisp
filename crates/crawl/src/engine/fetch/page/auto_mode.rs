@@ -35,11 +35,10 @@ async fn try_http_with_cf_cookie(
     fetch_client: &wisp_fetcher::FetchClient,
     req: &Request,
 ) -> Result<Option<Response>> {
-    let Some(resp) = fetch_client.fetch_http_with_cf_cookie(req).await? else {
+    let Some(resp) = fetch_client.try_http_with_session_cookie(req).await? else {
         return Ok(None);
     };
-    if resp.status == 200 && auto::blocked_reason(resp.status, &resp.body, &resp.headers).is_none()
-    {
+    if auto::blocked_reason(resp.status, &resp.body, &resp.headers).is_none() {
         Ok(Some(resp))
     } else {
         Ok(None)

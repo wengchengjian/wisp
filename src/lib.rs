@@ -45,7 +45,9 @@ pub use fetcher::cookie::BrowserCookieJar;
 #[cfg(feature = "stealth")]
 pub use fetcher::cookie::{CfCookieJar, CfSession};
 pub use fetcher::cookie::{Cookie, CookieJar, HttpCookieJar};
-pub use fetcher::{FetchClient, FetchClientConfig, FetchMode, Fetcher, FetcherBuilder};
+pub use fetcher::{
+    FetchClient, FetchClientConfig, FetchMode, FetchOptions, Fetcher, FetcherBuilder,
+};
 pub use fetcher::{Method, Request, Response};
 #[cfg(feature = "stealth")]
 pub use stealth::TurnstileConfig;

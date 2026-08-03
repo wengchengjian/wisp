@@ -139,7 +139,7 @@ mod tests {
     }
 
     /// 集成测试：实际浏览器导航 + wait_for_selector。
-    /// 运行方式：cargo test --lib fetcher::strategies::dynamic -- --ignored
+    /// 运行方式：cargo test --lib fetcher::strategy::dynamic -- --ignored
     #[tokio::test]
     #[ignore = "需要 Chrome 浏览器环境"]
     async fn test_dynamic_strategy_navigates() {

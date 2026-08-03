@@ -17,15 +17,15 @@ fn profile_from_name(name: &str) -> Profile {
 pub async fn fetch_page(args: FetchPageArgs, ctx: &ToolContext<'_>) -> Result<FetchPageResult> {
     wisp_core::utils::validate_url(&args.url)?;
 
-    let resp = if let Some(ref emulation) = args.emulation {
-        ctx.fetch_client
-            .fetch_http_with_emulation(&Request::get(&args.url), profile_from_name(emulation))
-            .await?
-    } else {
-        ctx.fetch_client
-            .fetch(&Request::get(&args.url), FetchMode::Http)
-            .await?
-    };
+    let emulation = args.emulation.as_deref().map(profile_from_name);
+    let resp = ctx
+        .fetch_client
+        .fetch_with(
+            &Request::get(&args.url),
+            FetchMode::Http,
+            &wisp_fetcher::FetchOptions { emulation },
+        )
+        .await?;
     let html = resp.text()?;
 
     Ok(FetchPageResult {

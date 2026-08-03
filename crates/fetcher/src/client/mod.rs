@@ -8,7 +8,7 @@ mod config;
 mod fetch_client;
 
 pub use config::FetchClientConfig;
-pub use fetch_client::FetchClient;
+pub use fetch_client::{FetchClient, FetchOptions};
 
 #[cfg(test)]
 mod tests {

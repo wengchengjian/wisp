@@ -10,12 +10,10 @@ use std::time::Duration;
 use crate::cookie::CfCookieJar;
 use crate::cookie::CompositeCookieJar;
 use crate::cookie::{CookieJar, HttpCookieJar};
-#[cfg(feature = "browser")]
-use crate::strategies::DynamicStrategy;
 #[cfg(feature = "stealth")]
-use crate::strategies::StealthStrategy;
+use crate::strategy::StealthStrategy;
 #[cfg(feature = "browser")]
-use crate::strategy::BrowserFetchStrategy;
+use crate::strategy::{BrowserFetchStrategy, DynamicStrategy};
 #[cfg(feature = "browser")]
 use wisp_browser::BrowserPool;
 #[cfg(feature = "browser")]
@@ -25,9 +23,16 @@ use wisp_core::{FetchMode, Request, Response};
 use wisp_http::Client;
 use wreq_util::Profile;
 
+/// 单次 Fetch 的传输选项；`Default` 表示无额外选项。
+#[derive(Debug, Clone, Default)]
+pub struct FetchOptions {
+    /// HTTP TLS 指纹模拟（仅 HTTP 模式生效）。
+    pub emulation: Option<Profile>,
+}
+
 /// 统一请求客户端：封装 HTTP Client 和 BrowserPool。
 ///
-/// 对外深 seam 是 [`FetchClient::fetch`]；per-request proxy 与 cookie 状态都在内部管理。
+/// 对外深 seam 是 [`FetchClient::fetch`] / [`FetchClient::fetch_with`]；per-request proxy 与 cookie 状态都在内部管理。
 pub struct FetchClient {
     http: Arc<Client>,
     http_jar: Arc<HttpCookieJar>,
@@ -88,8 +93,24 @@ impl FetchClient {
 
     /// 按模式分发请求；Auto 属于 crawl Engine，不由 FetchClient 处理。
     pub async fn fetch(&self, req: &Request, mode: FetchMode) -> Result<Response> {
+        self.fetch_with(req, mode, &FetchOptions::default()).await
+    }
+
+    /// 按模式分发请求并携带单次传输选项；Auto 属于 crawl Engine，不由 FetchClient 处理。
+    pub async fn fetch_with(
+        &self,
+        req: &Request,
+        mode: FetchMode,
+        options: &FetchOptions,
+    ) -> Result<Response> {
         match mode {
-            FetchMode::Http => self.fetch_http(req).await,
+            FetchMode::Http => {
+                if let Some(emulation) = options.emulation {
+                    self.fetch_http_with_emulation(req, emulation).await
+                } else {
+                    self.fetch_http(req).await
+                }
+            }
             FetchMode::Auto => Err(WispError::Config(
                 "Auto mode is owned by wisp_crawl Engine; use Http/Dynamic/Stealth explicitly"
                     .into(),
@@ -100,7 +121,7 @@ impl FetchClient {
 
     /// Auto 快速路径：若共享 cookie seam 已有会话 cookie，则走 HTTP。
     #[doc(hidden)]
-    pub async fn fetch_http_with_cf_cookie(&self, req: &Request) -> Result<Option<Response>> {
+    pub async fn try_http_with_session_cookie(&self, req: &Request) -> Result<Option<Response>> {
         let Some(url_parsed) = url::Url::parse(&req.url).ok() else {
             return Ok(None);
         };
@@ -143,7 +164,7 @@ impl FetchClient {
     ///
     /// MCP `fetch_page` 的 per-call emulation 需要独立 Client，因为 wreq 的
     /// TLS 指纹属于客户端级配置；共享 cookie jar 和 HTTP 配置仍从本客户端读取。
-    pub async fn fetch_http_with_emulation(
+    async fn fetch_http_with_emulation(
         &self,
         req: &Request,
         emulation: Profile,
