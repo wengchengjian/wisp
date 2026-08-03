@@ -102,6 +102,66 @@ pub(crate) struct EngineRuntime {
     pub pipelines: Vec<Arc<dyn ItemPipeline>>,
 }
 
+/// Engine 运行时资源草稿：Builder 持有，build 时补上 control。
+#[derive(Clone)]
+pub(crate) struct EngineRuntimeDraft {
+    /// 共享 FetchClient（HTTP 连接池 + BrowserPool，跨 Spider 复用）。
+    pub fetch_client: Option<Arc<FetchClient>>,
+    /// 响应缓存存储（可选）。
+    pub cache_store: Option<Arc<dyn Store>>,
+    /// checkpoint 存储（可选）。
+    pub checkpoint_store: Option<Arc<dyn Store>>,
+    /// 自适应并发池（可选）。
+    pub autoscale: Option<Arc<AutoscaledPool>>,
+    /// 引擎事件总线。
+    pub event_bus: EventBus,
+    /// UA 轮换中间件实例（可选）。
+    pub ua_middleware: Option<Arc<UaRotationMiddleware>>,
+    /// 用户自定义 Engine 级中间件。
+    pub custom_middlewares: Vec<Arc<dyn Middleware>>,
+    /// 共享 item pipeline。
+    pub pipelines: Vec<Arc<dyn ItemPipeline>>,
+}
+
+impl EngineRuntimeDraft {
+    /// 创建空资源草稿。
+    pub(crate) fn new() -> Self {
+        Self {
+            fetch_client: None,
+            cache_store: None,
+            checkpoint_store: None,
+            autoscale: None,
+            event_bus: EventBus::new(),
+            ua_middleware: None,
+            custom_middlewares: Vec::new(),
+            pipelines: Vec::new(),
+        }
+    }
+
+    /// 补上 control 后成为完整运行时。
+    pub(crate) fn into_runtime(self, control: Arc<control::EngineControl>) -> EngineRuntime {
+        EngineRuntime {
+            fetch_client: self
+                .fetch_client
+                .expect("fetch client resolved before into_runtime"),
+            control,
+            cache_store: self.cache_store,
+            checkpoint_store: self.checkpoint_store,
+            autoscale: self.autoscale,
+            event_bus: Arc::new(self.event_bus),
+            ua_middleware: self.ua_middleware,
+            custom_middlewares: self.custom_middlewares,
+            pipelines: self.pipelines,
+        }
+    }
+}
+
+impl Default for EngineRuntimeDraft {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Engine {
     /// 运行多个 Spider：共享队列 + callback 路由，每个 Spider 独立 until/stats。
     pub async fn run_many<S: Spider + 'static>(

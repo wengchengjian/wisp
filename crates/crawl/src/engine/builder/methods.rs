@@ -1,6 +1,7 @@
 //! EngineBuilder 配置方法。
 
-use super::*;
+use super::EngineBuilder;
+use crate::observability::events::{EventBus, EventCallback};
 use std::sync::Arc;
 use std::time::Duration;
 use wisp_fetcher::{FetchClient, FetchClientConfig, FetchMode};
@@ -14,7 +15,7 @@ impl EngineBuilder {
 
     /// 使用已有 FetchClient（MCP 等需要共享 HTTP/BrowserPool 的场景）。
     pub fn fetch_client(mut self, client: Arc<FetchClient>) -> Self {
-        self.fetch_client = Some(client);
+        self.draft.fetch_client = Some(client);
         self
     }
 
@@ -44,14 +45,14 @@ impl EngineBuilder {
 
     /// 启用响应缓存（注入 CacheMiddleware，默认 TTL 5 分钟）。
     pub fn cache_store(mut self, store: Arc<dyn wisp_storage::Store>) -> Self {
-        self.cache_store = Some(store);
+        self.draft.cache_store = Some(store);
         self.config.cache_enabled = true;
         self
     }
 
     /// 设置检查点存储（定期保存爬取进度）。
     pub fn checkpoint(mut self, s: Arc<dyn wisp_storage::Store>, interval: usize) -> Self {
-        self.checkpoint_store = Some(s);
+        self.draft.checkpoint_store = Some(s);
         self.config.checkpoint_interval = interval;
         self.config.checkpoint_enabled = true;
         self
@@ -59,7 +60,7 @@ impl EngineBuilder {
 
     /// 启用自适应并发池。min 为初始/下限，max 为上限。
     pub fn autoscale(mut self, min: usize, max: usize) -> Self {
-        self.autoscale = Some(crate::runtime::autoscale::AutoscaledPool::new(
+        self.draft.autoscale = Some(crate::runtime::autoscale::AutoscaledPool::new(
             min,
             max,
             crate::runtime::autoscale::AutoscaleConfig::default(),
@@ -74,7 +75,7 @@ impl EngineBuilder {
         max: usize,
         config: crate::runtime::autoscale::AutoscaleConfig,
     ) -> Self {
-        self.autoscale = Some(crate::runtime::autoscale::AutoscaledPool::new(
+        self.draft.autoscale = Some(crate::runtime::autoscale::AutoscaledPool::new(
             min, max, config,
         ));
         self
@@ -118,7 +119,7 @@ impl EngineBuilder {
 
     /// 设置 UA 轮换策略；不调用则请求不带 User-Agent。
     pub fn ua_rotation(mut self, ua: crate::middleware::UaRotationMiddleware) -> Self {
-        self.ua_middleware = Some(Arc::new(ua));
+        self.draft.ua_middleware = Some(Arc::new(ua));
         self.config.ua_rotation = true;
         self
     }
@@ -137,13 +138,13 @@ impl EngineBuilder {
 
     /// 添加自定义 Engine 级中间件。
     pub fn middleware(mut self, mw: Arc<dyn crate::middleware::Middleware>) -> Self {
-        self.custom_middlewares.push(mw);
+        self.draft.custom_middlewares.push(mw);
         self
     }
 
     /// 添加共享 item pipeline（所有 Spider 的 item 汇入同一链）。
     pub fn pipeline(mut self, p: Arc<dyn crate::middleware::ItemPipeline>) -> Self {
-        self.pipelines.push(p);
+        self.draft.pipelines.push(p);
         self
     }
 
@@ -155,13 +156,13 @@ impl EngineBuilder {
 
     /// 设置引擎内部事件总线。
     pub fn event_bus(mut self, bus: EventBus) -> Self {
-        self.event_bus = bus;
+        self.draft.event_bus = bus;
         self
     }
 
     /// 注册一个引擎事件监听器（等价于 `event_bus` + `bus.on(listener)`）。
     pub fn event_listener(self, listener: impl EventCallback + Send + Sync + 'static) -> Self {
-        self.event_bus.on(listener);
+        self.draft.event_bus.on(listener);
         self
     }
 }

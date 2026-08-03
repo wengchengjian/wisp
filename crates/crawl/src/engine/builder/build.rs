@@ -1,8 +1,7 @@
 //! EngineBuilder 构建逻辑。
 
-use super::*;
+use super::{Engine, EngineBuilder};
 use crate::control;
-use crate::engine::EngineRuntime;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use wisp_core::error::Result;
@@ -16,24 +15,17 @@ impl EngineBuilder {
                 "max_concurrent must be > 0".into(),
             ));
         }
-        let fetch_client = match self.fetch_client {
+        let fetch_client = match self.draft.fetch_client {
             Some(client) => {
                 self.config.transport = client.config().clone();
                 client
             }
             None => Arc::new(FetchClient::new(self.config.transport.clone())?),
         };
-        let runtime = EngineRuntime {
-            fetch_client,
-            control: Arc::new(control::EngineControl::new()),
-            cache_store: self.cache_store,
-            checkpoint_store: self.checkpoint_store,
-            autoscale: self.autoscale,
-            event_bus: Arc::new(self.event_bus),
-            ua_middleware: self.ua_middleware,
-            custom_middlewares: self.custom_middlewares,
-            pipelines: self.pipelines,
-        };
+        self.draft.fetch_client = Some(fetch_client);
+        let runtime = self
+            .draft
+            .into_runtime(Arc::new(control::EngineControl::new()));
         Ok(Engine {
             config: self.config,
             runtime,
