@@ -24,6 +24,10 @@ _Avoid_: scraping run
 Maximum follow hops a Spider allows; declared by the Spider and enforced by Engine.
 _Avoid_: depth limit
 
+**Engine**:
+The Crawl module that schedules Fetches, runs middleware, and enforces stop conditions.
+_Avoid_: runner
+
 **Spider**:
 User-defined crawl behavior: start URLs, response handling, follow requests, and stopping.
 _Avoid_: scraper

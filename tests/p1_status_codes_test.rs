@@ -12,8 +12,8 @@ async fn status_codes_concurrent_increment_is_correct() {
             let s = stats.clone();
             tokio::spawn(async move {
                 for _ in 0..100 {
-                    wisp::crawl::record_status(&s, 200);
-                    wisp::crawl::record_status(&s, 404);
+                    s.record_status(200);
+                    s.record_status(404);
                 }
             })
         })
@@ -38,9 +38,9 @@ async fn status_codes_snapshot_reflects_recorded_status() {
         "fresh stats snapshot 应为空"
     );
 
-    wisp::crawl::record_status(&stats, 200);
-    wisp::crawl::record_status(&stats, 200);
-    wisp::crawl::record_status(&stats, 500);
+    stats.record_status(200);
+    stats.record_status(200);
+    stats.record_status(500);
 
     let snap = stats.status_codes_snapshot();
     assert_eq!(snap.len(), 2, "应含 2 个状态码");

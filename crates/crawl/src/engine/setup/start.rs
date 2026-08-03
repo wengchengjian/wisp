@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use crate::engine::Engine;
 use crate::observability::events::EngineEvent;
-use crate::runner::Engine;
 use crate::scheduler;
 use crate::{Request, Spider};
 use wisp_core::utils::sanitize_url;

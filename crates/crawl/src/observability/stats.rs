@@ -112,6 +112,16 @@ impl SpiderStats {
         }
     }
 
+    /// 记录一个 HTTP 状态码（无锁累加）。
+    pub fn record_status(&self, status: u16) {
+        self.status_codes
+            .entry(status)
+            .and_modify(|c| {
+                c.fetch_add(1, Ordering::Relaxed);
+            })
+            .or_insert(AtomicUsize::new(1));
+    }
+
     /// 无锁快照状态码计数为 HashMap<u16, usize>。
     pub fn status_codes_snapshot(&self) -> HashMap<u16, usize> {
         self.status_codes

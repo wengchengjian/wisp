@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::engine;
-use crate::runner::Engine;
+use crate::engine::Engine;
 use crate::scheduler;
 use crate::{CrawlState, Request, Spider, SpiderStats};
 

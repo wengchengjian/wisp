@@ -2,13 +2,12 @@
 
 use super::*;
 use crate::engine::request::check_control_and_hook;
-use crate::runner::EngineRuntime;
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::time::Duration;
 
-fn test_engine_config(fetch_mode: FetchMode, max_retries: u32) -> crate::runner::EngineConfig {
-    let mut config = crate::runner::EngineConfig {
+fn test_engine_config(fetch_mode: FetchMode, max_retries: u32) -> crate::engine::EngineConfig {
+    let mut config = crate::engine::EngineConfig {
         fetch_mode,
         max_retries,
         max_concurrent: 8,
@@ -75,7 +74,7 @@ impl Spider for PanicSpider {
 
 /// 构造最小 EngineContext（单 Spider，Http 模式，无事件通道）。
 fn make_ctx_with(
-    config: crate::runner::EngineConfig,
+    config: crate::engine::EngineConfig,
     chain: middleware::MiddlewareChain,
     tx: Option<tokio::sync::mpsc::Sender<CrawlEvent>>,
 ) -> (EngineContext, Arc<SpiderStats>) {
@@ -526,9 +525,9 @@ async fn process_request_emits_retry_events() {
 #[test]
 fn record_status_increments_counter() {
     let stats = Arc::new(SpiderStats::new());
-    record_status(&stats, 200);
-    record_status(&stats, 200);
-    record_status(&stats, 404);
+    stats.record_status(200);
+    stats.record_status(200);
+    stats.record_status(404);
     let snapshot = stats.status_codes_snapshot();
     assert_eq!(snapshot.get(&200).copied(), Some(2));
     assert_eq!(snapshot.get(&404).copied(), Some(1));

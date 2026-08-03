@@ -11,7 +11,6 @@ pub mod engine;
 pub mod middleware;
 pub mod observability;
 pub mod page;
-pub mod runner;
 pub mod runtime;
 pub mod scheduling;
 
@@ -32,10 +31,9 @@ pub use auto::ModeRuleEngine;
 pub use builder::{ClosureSpider, SpiderBuilder};
 pub use crawl_stats::CrawlStats;
 pub use crawl_stream::{CrawlEvent, CrawlStream};
-pub use engine::{fetch_page, fetch_page_inner, record_status};
+pub use engine::{Engine, EngineBuilder, EngineConfig};
 pub use items::{Items, JsonlWriter};
 pub use page::Page;
-pub use runner::{Engine, EngineBuilder, EngineConfig};
 pub use spider::{BLOCKED_STATUS_CODES, RequestAction, Spider};
 pub use state::CrawlState;
 pub use stop::{

@@ -78,7 +78,7 @@ async fn run_request_middlewares(
         }
         middleware::RequestMwAction::Respond(cached_resp) => {
             stats.cache_hits.fetch_add(1, Ordering::SeqCst);
-            record_status(stats, cached_resp.status);
+            stats.record_status(cached_resp.status);
             ctx.runtime
                 .event_bus
                 .emit(EngineEvent::ResponseReceived {

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::auto;
+use crate::engine::Engine;
 use crate::middleware;
-use crate::runner::Engine;
 use wisp_fetcher::FetchClient;
 
 impl Engine {

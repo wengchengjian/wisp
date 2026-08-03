@@ -12,8 +12,7 @@ use wisp_core::error::Result;
 use wisp_core::{Request, Response};
 use wisp_fetcher::FetchMode;
 
-#[doc(hidden)]
-pub async fn fetch_page(
+pub(crate) async fn fetch_page(
     fetch_client: &wisp_fetcher::FetchClient,
     req: &Request,
     mode: FetchMode,
@@ -32,8 +31,7 @@ pub async fn fetch_page(
     fetch_page_inner(fetch_client, req, mode).await
 }
 
-#[doc(hidden)]
-pub async fn fetch_page_inner(
+pub(crate) async fn fetch_page_inner(
     fetch_client: &wisp_fetcher::FetchClient,
     req: &Request,
     mode: FetchMode,

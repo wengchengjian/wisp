@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::auto;
 use crate::engine;
-use crate::runner::Engine;
+use crate::engine::Engine;
 use crate::scheduler;
 use crate::{CrawlEvent, Request, Spider, SpiderStats};
 use wisp_core::error::Result;

@@ -108,7 +108,7 @@ async fn record_fetch_success(
     spider: &Arc<dyn Spider>,
     resp: &Response,
 ) {
-    record_status(stats, resp.status);
+    stats.record_status(resp.status);
     if !spider.is_blocked(resp) {
         return;
     }

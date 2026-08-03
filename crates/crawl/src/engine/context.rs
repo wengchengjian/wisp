@@ -1,7 +1,6 @@
 //! Engine 子模块：context。
 
 use super::*;
-use crate::runner::{EngineConfig, EngineRuntime};
 
 // === EngineContext: 打包单次 run 状态 ===
 
@@ -89,18 +88,6 @@ pub(crate) fn build_crawl_context_for(
         pages_crawled: stats.pages.load(Ordering::SeqCst),
         errors: stats.errors.load(Ordering::SeqCst),
     }
-}
-
-/// 同步记录状态码计数（DashMap entry 原子累加，无 await）。
-#[doc(hidden)]
-pub fn record_status(stats: &Arc<SpiderStats>, status: u16) {
-    stats
-        .status_codes
-        .entry(status)
-        .and_modify(|c| {
-            c.fetch_add(1, Ordering::Relaxed);
-        })
-        .or_insert(AtomicUsize::new(1));
 }
 
 /// 从单个 SpiderStats 构造 CrawlStats 快照。
