@@ -30,8 +30,8 @@ pub struct Page {
 impl Page {
     /// 从响应创建页面上下文，并立即解析 HTML。
     ///
-    /// # Panics
-    /// 传入的 `Response` 必须尚未调用过 `parse()`/`css()` 等便捷方法。
+    /// 注意：`ResponseExt` 的查询方法每次调用都会重新解析；`Page` 只解析一次，
+    /// 之后所有查询复用同一份文档。
     pub fn new(resp: Response) -> Self {
         let doc = resp.parse();
         Self {
