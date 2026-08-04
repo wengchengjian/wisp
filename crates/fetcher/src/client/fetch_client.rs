@@ -48,6 +48,9 @@ pub struct FetchClient {
     browser_strategies: HashMap<FetchMode, Arc<dyn BrowserFetchStrategy>>,
     config: FetchClientConfig,
     cookie_jar: Arc<dyn CookieJar>,
+    /// CF 快速路径专用的共享 HTTP 客户端（Chrome 指纹 + 全局代理），懒加载。
+    /// 与每次重建相比，可复用连接、减少握手，更贴近真实浏览器行为。
+    emulated_http: std::sync::OnceLock<Arc<Client>>,
 }
 
 impl FetchClient {
@@ -92,6 +95,7 @@ impl FetchClient {
             browser_strategies,
             config,
             cookie_jar,
+            emulated_http: std::sync::OnceLock::new(),
         })
     }
 
@@ -148,17 +152,59 @@ impl FetchClient {
     #[doc(hidden)]
     pub async fn try_http_with_session_cookie(&self, req: &Request) -> Result<Option<Response>> {
         let Some(url_parsed) = url::Url::parse(&req.url).ok() else {
+            tracing::debug!(
+                "try_http_with_session_cookie: URL 解析失败, url={}",
+                req.url
+            );
             return Ok(None);
         };
         let Some(cookie_header) = self.cookie_jar.header(&url_parsed).await else {
+            tracing::debug!(
+                "try_http_with_session_cookie: cookie jar 无 cookie, url={}, host={:?}",
+                req.url,
+                url_parsed.host_str()
+            );
             return Ok(None);
         };
         let mut http_req = req.clone();
-        http_req.headers.insert("Cookie".to_string(), cookie_header);
+        http_req
+            .headers
+            .insert("Cookie".to_string(), cookie_header.clone());
         if let Some(ua) = self.cookie_jar.ua(&url_parsed).await {
             http_req.headers.insert("User-Agent".to_string(), ua);
         }
-        let resp = self.fetch_http(&http_req).await?;
+        // 补全浏览器导航特征头，尽量贴近签发 cf_clearance 时的浏览器请求，
+        // 减少 CF 因「非浏览器请求」判定 cf_clearance 无效而 403。
+        http_req
+            .headers
+            .entry("Sec-Fetch-Site".to_string())
+            .or_insert_with(|| "same-origin".to_string());
+        http_req
+            .headers
+            .entry("Sec-Fetch-Mode".to_string())
+            .or_insert_with(|| "navigate".to_string());
+        http_req
+            .headers
+            .entry("Sec-Fetch-Dest".to_string())
+            .or_insert_with(|| "document".to_string());
+        http_req
+            .headers
+            .entry("Upgrade-Insecure-Requests".to_string())
+            .or_insert_with(|| "1".to_string());
+        // 使用与浏览器尽可能接近的 TLS 指纹（自动对齐浏览器版本，见 select_cf_profile）。
+        let resp = self.cf_http_client()?.fetch(&http_req).await?;
+        let ua = http_req
+            .headers
+            .get("User-Agent")
+            .cloned()
+            .unwrap_or_default();
+        tracing::info!(
+            "try_http_with_session_cookie: url={} status={} cookie={} ua={}",
+            req.url,
+            resp.status,
+            cookie_header,
+            ua
+        );
         if resp.status == 200 {
             Ok(Some(resp))
         } else {
@@ -168,8 +214,11 @@ impl FetchClient {
 
     pub(crate) async fn fetch_http(&self, req: &Request) -> Result<Response> {
         self.ensure_domain_allowed(req)?;
-        if let Some(proxy) = req.proxy.as_deref() {
-            let client = self.proxy_client(proxy)?;
+        // 请求级代理优先，否则回退到全局配置代理。这样 HTTP 与浏览器走同一出口 IP，
+        // 才能复用浏览器签发的 CF 会话 cookie（cf_clearance 绑定签发时的 IP）。
+        let proxy = req.proxy.clone().or_else(|| self.config.proxy.clone());
+        if let Some(proxy) = proxy {
+            let client = self.proxy_client(&proxy)?;
             return client.fetch(req).await;
         }
         self.http.fetch(req).await
@@ -200,10 +249,44 @@ impl FetchClient {
         let mut http = self.config.http.clone();
         http.emulation = Some(emulation);
         http.cookie_jar = Some(self.http_jar.jar());
-        if let Some(proxy) = req.proxy.as_deref() {
-            http.proxy = Some(proxy.to_string());
+        // 请求级代理优先，否则回退全局配置代理（与 fetch_http 保持一致出口 IP）。
+        if let Some(proxy) = req.proxy.clone().or_else(|| self.config.proxy.clone()) {
+            http.proxy = Some(proxy);
         }
         Client::from_config(http)?.fetch(req).await
+    }
+
+    /// CF 快速路径共享 HTTP 客户端：Chrome 指纹（自动对齐浏览器版本）+ 全局代理，
+    /// 懒加载并复用，避免每次重建连接。
+    fn cf_http_client(&self) -> Result<Arc<Client>> {
+        if let Some(client) = self.emulated_http.get() {
+            return Ok(client.clone());
+        }
+        let mut http = self.config.http.clone();
+        http.emulation = Some(self.select_cf_profile());
+        http.cookie_jar = Some(self.http_jar.jar());
+        if let Some(proxy) = self.config.proxy.clone() {
+            http.proxy = Some(proxy);
+        }
+        let client = Arc::new(Client::from_config(http)?);
+        let _ = self.emulated_http.set(client.clone());
+        Ok(client)
+    }
+
+    /// 选择 CF 快速路径的 TLS 指纹档位。
+    ///
+    /// 优先用浏览器池探测到的真实 Chrome 主版本自动选档（≤ 版本的最大最接近档位），
+    /// 浏览器未启动 / 未探测 / 低于最低档时回归 `Chrome149`，避免硬编码指纹漂移。
+    fn select_cf_profile(&self) -> Profile {
+        #[cfg(feature = "browser")]
+        if let Some(major) = self
+            .browser_pool
+            .as_ref()
+            .and_then(|pool| pool.chrome_major())
+        {
+            return select_chrome_profile(major);
+        }
+        Profile::Chrome149
     }
 
     fn proxy_client(&self, proxy: &str) -> Result<Arc<Client>> {
@@ -339,6 +422,28 @@ impl FetchClient {
     }
 }
 
+/// 在 wreq 内置的 Chrome 档位里，选出「≤ major 的最大档位」。
+///
+/// 通过 Debug 变体名（如 `Chrome149`）解析各档版本号，遍历 `Profile::VARIANTS`，
+/// 因此新增档位会自动纳入，无需硬编码映射。低于最低档（Chrome100）时视为选不到。
+fn select_chrome_profile(major: u32) -> Profile {
+    let mut best: Option<Profile> = None;
+    let mut best_version = 0u32;
+    for profile in Profile::VARIANTS {
+        let Some(version) = format!("{profile:?}")
+            .strip_prefix("Chrome")
+            .and_then(|s| s.parse().ok())
+        else {
+            continue;
+        };
+        if version <= major && version > best_version {
+            best_version = version;
+            best = Some(*profile);
+        }
+    }
+    best.unwrap_or(Profile::Chrome149)
+}
+
 #[cfg(feature = "browser")]
 impl Drop for FetchClient {
     fn drop(&mut self) {
@@ -405,5 +510,88 @@ mod tests {
             .proxy_client("http://127.0.0.1:8080")
             .expect("cached proxy client");
         assert!(Arc::ptr_eq(&proxy, &cached));
+    }
+
+    #[test]
+    fn select_chrome_profile_picks_closest_available() {
+        // 浏览器 150 无对应档：选 ≤150 的最大档 Chrome149。
+        assert_eq!(select_chrome_profile(150), Profile::Chrome149);
+        // 浏览器 200：仍封顶到 Chrome149。
+        assert_eq!(select_chrome_profile(200), Profile::Chrome149);
+        // 浏览器 148：精确命中 Chrome148。
+        assert_eq!(select_chrome_profile(148), Profile::Chrome148);
+        // 浏览器 120：命中 Chrome120。
+        assert_eq!(select_chrome_profile(120), Profile::Chrome120);
+        // 完全相同的主版本命中自身。
+        assert_eq!(select_chrome_profile(149), Profile::Chrome149);
+    }
+
+    /// 验证「浏览器未启动」场景下，CF 快速路径指纹回退到 Chrome149。
+    #[cfg(feature = "browser")]
+    #[test]
+    fn select_cf_profile_falls_back_when_browser_not_launched() {
+        // max_concurrent_pages > 0 会创建 BrowserPool，但浏览器懒启动、此时尚未 acquire，
+        // 因此 chrome_major 为 None —— 正是「浏览器未启动」的初始状态。
+        let config = FetchClientConfig {
+            max_concurrent_pages: 4,
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+
+        // 前置断言：浏览器池存在，但未探测到版本（未启动）。
+        let pool = client.browser_pool().expect("browser pool configured");
+        assert_eq!(pool.chrome_major(), None, "浏览器未启动时不应有探测版本");
+
+        // 核心断言：未启动 → 回退 Chrome149。
+        assert_eq!(
+            client.select_cf_profile(),
+            Profile::Chrome149,
+            "浏览器未启动时应回归 Chrome149"
+        );
+    }
+
+    #[test]
+    fn select_chrome_profile_falls_back_below_minimum() {
+        // 低于最低档（Chrome100）：视为选不到，回归 Chrome149 默认。
+        assert_eq!(select_chrome_profile(99), Profile::Chrome149);
+        assert_eq!(select_chrome_profile(0), Profile::Chrome149);
+    }
+
+    /// 集成测试：浏览器启动成功 → 自动探测版本 → 自动选档。
+    ///
+    /// 不预设浏览器版本（环境 Chrome 版本未知），由 BrowserPool 懒启动后探测真实主版本，
+    /// 再断言 `select_cf_profile` 基于探测结果选档（而非无条件回归 149）。
+    /// 需要真实 Chrome 环境，默认忽略。
+    #[cfg(feature = "browser")]
+    #[tokio::test]
+    #[ignore = "需要 Chrome 浏览器环境"]
+    async fn test_select_cf_profile_uses_probed_browser_version() {
+        let config = FetchClientConfig {
+            max_concurrent_pages: 4,
+            ..Default::default()
+        };
+        let client = FetchClient::new(config).expect("build client");
+        let pool = client
+            .browser_pool()
+            .expect("browser pool configured")
+            .clone();
+
+        // 触发浏览器懒启动；启动后应探测到真实主版本。
+        let _handle = pool.acquire().await.expect("Chrome 环境应能启动浏览器");
+        let major = pool.chrome_major();
+        assert!(major.is_some(), "浏览器启动后应探测到真实主版本");
+        let major = major.unwrap();
+        assert!(
+            (100..=200).contains(&major),
+            "探测到的主版本应在合理范围: {major}"
+        );
+
+        // 核心断言：select_cf_profile 应读取探测结果选档，而非无条件回归 149。
+        let expected = select_chrome_profile(major);
+        assert_eq!(
+            client.select_cf_profile(),
+            expected,
+            "指纹档位应基于探测到的版本 {major} 选出"
+        );
     }
 }

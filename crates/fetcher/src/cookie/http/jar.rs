@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use url::Url;
+use wreq::cookie::CookieStore;
 
 use crate::cookie::{Cookie, CookieJar};
 
@@ -50,8 +51,11 @@ impl Default for HttpCookieJar {
 #[async_trait]
 impl CookieJar for HttpCookieJar {
     async fn get(&self, url: &Url) -> Vec<Cookie> {
-        // wreq::cookie::Jar 不暴露按 uri 返回 Vec<Cookie> 的 API，
-        // 使用 get_all + 手动按 domain/path 过滤，保持 trait 语义清晰。
+        // wreq::cookie::Jar 不暴露按 uri 返回 Vec<Cookie>（含完整元数据）的 API，
+        // 只能 get_all + 手动按 domain/path 过滤。该方法仅供浏览器注入/复合合并等
+        // 低频路径使用（需完整 name/value/domain/path/secure 等元数据），非每请求热路径。
+        // 注：wreq 会经 cookie_provider 直接写入共享 jar，外部无法再用独立 host 索引
+        // 与之保持同步，因此这里不引入自定义二级索引，避免正确性漂移。
         let host = url.host_str().unwrap_or("");
         let path = url.path();
         self.jar
@@ -81,6 +85,34 @@ impl CookieJar for HttpCookieJar {
                 }),
             })
             .collect()
+    }
+
+    async fn header(&self, url: &Url) -> Option<String> {
+        // 覆盖默认实现（默认基于 get() 的全量扫描）。
+        // wreq 的 Jar 内部本就是按 host 的二级索引（RwLock<HashMap<domain, ...>>），
+        // `cookies()` 直接走该索引做 domain/path/secure/过期过滤，天然与 wreq 的
+        // 直接写入保持一致，且避免 get_all 全量扫描 —— 这是 Auto 快速路径的每请求热路径。
+        let Ok(uri) = url.as_str().parse::<wreq::Uri>() else {
+            return None;
+        };
+        match self.jar.cookies(&uri, wreq::Version::HTTP_11) {
+            wreq::cookie::Cookies::Empty => None,
+            wreq::cookie::Cookies::Compressed(v) => v.to_str().ok().map(|s| s.to_string()),
+            wreq::cookie::Cookies::Uncompressed(v) => {
+                let joined = v
+                    .iter()
+                    .filter_map(|h| h.to_str().ok())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                if joined.is_empty() {
+                    None
+                } else {
+                    Some(joined)
+                }
+            }
+            // Cookies 为非穷尽（#[non_exhaustive]）枚举，未来可能新增变体。
+            _ => None,
+        }
     }
 
     async fn set(&self, cookie: Cookie) {

@@ -105,6 +105,7 @@ mod tests {
             expires: None,
         };
         jar.set(cookie).await;
+        jar.flush(); // 落盘为去抖异步任务，测试需显式同步落盘后断言文件存在
 
         // 文件应存在
         let file_path = dir.path().join("cf_sessions.json");

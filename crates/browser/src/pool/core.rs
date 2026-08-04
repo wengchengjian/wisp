@@ -25,6 +25,9 @@ pub struct BrowserPool {
     /// 最大并发 page 数（`Semaphore` 不暴露 max_permits，自行存储）。
     max_concurrent_pages: usize,
     launch_options: LaunchOptions,
+    /// 探测到的浏览器主版本号（Chrome major），供 HTTP 快速路径指纹选档。
+    /// 浏览器未启动或探测失败时为 `None`。
+    chrome_major: std::sync::RwLock<Option<u32>>,
 }
 
 impl BrowserPool {
@@ -38,6 +41,7 @@ impl BrowserPool {
             page_permits: Arc::new(Semaphore::new(max_concurrent_pages)),
             max_concurrent_pages,
             launch_options,
+            chrome_major: std::sync::RwLock::new(None),
         })
     }
 
@@ -117,6 +121,12 @@ impl BrowserPool {
             return Ok(Arc::clone(b));
         }
         let browser = Arc::new(Browser::launch(self.launch_options.clone()).await?);
+        // 启动成功后探测浏览器版本，供 HTTP 快速路径指纹选档（失败静默，保留原值）。
+        if let Ok(major) = browser.version_major().await
+            && let Ok(mut guard) = self.chrome_major.write()
+        {
+            *guard = major;
+        }
         *guard = Some(Arc::clone(&browser));
         Ok(browser)
     }
@@ -148,5 +158,12 @@ impl BrowserPool {
     /// 最大并发 page 数。
     pub fn max_concurrent_pages(&self) -> usize {
         self.max_concurrent_pages
+    }
+
+    /// 探测到的 Chrome 主版本号；浏览器未启动或解析失败时为 `None`。
+    ///
+    /// 供 HTTP 快速路径选择最接近的 TLS 指纹档位。
+    pub fn chrome_major(&self) -> Option<u32> {
+        self.chrome_major.read().ok().and_then(|g| *g)
     }
 }

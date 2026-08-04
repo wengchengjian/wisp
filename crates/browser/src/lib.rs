@@ -84,6 +84,27 @@ impl Browser {
         Page::create(Arc::clone(&self.session), self.headless).await
     }
 
+    /// 探测浏览器主版本号（如 Chrome 150.0.4577.63 -> 150）。
+    ///
+    /// 通过 CDP `Browser.getVersion` 读取 `product` 字段（形如 `Chrome/150.0.4577.63`），
+    /// 解析出主版本号。解析失败返回 `Ok(None)`，不视为错误。
+    pub async fn version_major(&self) -> Result<Option<u32>> {
+        let info = self
+            .session
+            .execute("Browser.getVersion", json!({}))
+            .await?;
+        let product = info
+            .get("product")
+            .and_then(|p| p.as_str())
+            .unwrap_or_default();
+        let major = product
+            .strip_prefix("Chrome/")
+            .and_then(|v| v.split('.').next())
+            .and_then(|v| v.parse().ok());
+        tracing::debug!("Browser.getVersion product={:?} major={:?}", product, major);
+        Ok(major)
+    }
+
     /// Close the browser.
     pub async fn close(mut self) -> Result<()> {
         // 先尝试优雅关闭（CDP Browser.close）
