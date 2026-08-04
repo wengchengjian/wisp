@@ -18,3 +18,5 @@ base64 = { workspace = true }
 futures = { workspace = true }
 wreq = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
+async-trait = { workspace = true }

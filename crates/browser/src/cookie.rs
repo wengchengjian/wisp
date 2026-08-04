@@ -1,4 +1,4 @@
-//! BrowserCookieJar 的 CDP 实现。
+//! Browser cookie jar（CDP 实现）— 通过 CDP 读写浏览器 cookie。
 
 use std::sync::Arc;
 
@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use url::Url;
 
-use crate::cookie::{Cookie, CookieJar};
-use wisp_browser::cdp::CdpSession;
+use crate::cdp::CdpSession;
+use wisp_core::cookie::{Cookie, CookieJar};
 use wisp_core::error::Result;
 
 /// 浏览器 cookie jar（通过 CDP）。
@@ -46,7 +46,7 @@ impl BrowserCookieJar {
     }
 
     /// 从 CDP Network.getCookies 返回的 JSON 转 Cookie。
-    pub(super) fn value_to_cookie(v: &Value, default_domain: &str) -> Option<Cookie> {
+    fn value_to_cookie(v: &Value, default_domain: &str) -> Option<Cookie> {
         Cookie::from_cdp_value(v, default_domain)
     }
 }
@@ -106,5 +106,57 @@ impl CookieJar for BrowserCookieJar {
         // 注意：这会清除所有域名的 cookie，仅用于失效会话场景。
         let _ = self.cmd("Network.clearBrowserCookies", json!({})).await;
         tracing::debug!("BrowserCookieJar::clear cleared all browser cookies (url={url})");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use wisp_core::cookie::{Cookie, CookieJar};
+
+    #[test]
+    fn value_to_cookie_extracts_fields() {
+        let v = json!({
+            "name": "session",
+            "value": "abc",
+            "domain": "example.com",
+            "path": "/",
+            "secure": true,
+            "httpOnly": true,
+            "sameSite": "Lax",
+            "expires": 1234567890.0,
+        });
+        let cookie = BrowserCookieJar::value_to_cookie(&v, "fallback").expect("完整字段应解析成功");
+        assert_eq!(cookie.name, "session");
+        assert_eq!(cookie.value, "abc");
+        assert_eq!(cookie.domain, "example.com");
+        assert_eq!(cookie.path, "/");
+        assert!(cookie.secure);
+        assert!(cookie.http_only);
+        assert_eq!(cookie.same_site.as_deref(), Some("Lax"));
+        assert_eq!(cookie.expires, Some(1234567890.0));
+    }
+
+    #[test]
+    fn value_to_cookie_uses_default_domain_when_missing() {
+        let v = json!({
+            "name": "x",
+            "value": "y",
+        });
+        let cookie =
+            BrowserCookieJar::value_to_cookie(&v, "default.com").expect("仅 name/value 也应解析");
+        assert_eq!(cookie.domain, "default.com");
+        assert_eq!(cookie.path, "/");
+        assert!(!cookie.secure);
+        assert!(!cookie.http_only);
+        assert!(cookie.same_site.is_none());
+        assert!(cookie.expires.is_none());
+    }
+
+    #[test]
+    fn value_to_cookie_returns_none_for_missing_name() {
+        let v = json!({ "value": "y" });
+        assert!(BrowserCookieJar::value_to_cookie(&v, "x").is_none());
     }
 }

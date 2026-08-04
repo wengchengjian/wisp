@@ -3447,6 +3447,7 @@ dependencies = [
 name = "wisp-browser"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64",
  "futures",
  "serde_json",
@@ -3455,6 +3456,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "tungstenite",
+ "url",
  "which",
  "wisp-core",
  "wreq",
@@ -3465,7 +3467,9 @@ dependencies = [
 name = "wisp-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "encoding_rs",
+ "parking_lot",
  "proptest",
  "rand 0.10.2",
  "regex",

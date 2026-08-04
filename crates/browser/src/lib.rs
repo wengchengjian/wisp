@@ -2,6 +2,8 @@
 
 /// CDP WebSocket 会话管理。
 pub mod cdp;
+/// Browser cookie jar（CDP 实现）。
+pub mod cookie;
 /// DOM 元素封装。
 pub mod element;
 /// Chrome for Testing 自动下载安装。
@@ -18,6 +20,7 @@ pub mod pool;
 mod process;
 
 pub use cdp::CdpSession;
+pub use cookie::BrowserCookieJar;
 pub use page::Page;
 pub use pool::BrowserPool;
 
