@@ -26,7 +26,7 @@ async fn refetch_or_error(
         refetch_depth,
         sanitize_url(&new_req.url)
     );
-    match fetch_dispatch(ctx, new_req).await {
+    match fetch_with_retry(ctx, new_req).await {
         Ok(r) => Some(r),
         Err(e) => {
             let err_msg = format!("refetch failed: {e}");

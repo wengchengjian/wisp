@@ -3,7 +3,7 @@
 //! 核心拆解：
 //! - `EngineContext` 打包单次 run 状态（替代 20+ 个 Arc 变量传递）
 //! - `process_request()` 处理单个请求（替代 200 行嵌套闭包）
-//! - `fetch_dispatch()` 抓取分发循环（transport 级重试 fallback）
+//! - `fetch_with_retry()` 抓取 + 同步重试循环（transport 级错误恢复编排）
 //! - `auto_upgrade_check()` Auto 模式升级检查
 //!
 //! Task 3 重构：EngineContext 多 Spider 共享队列 + callback 路由，process_request
@@ -61,7 +61,7 @@ pub use builder::EngineBuilder;
 pub(crate) use checkpoint::maybe_persist_checkpoint;
 pub use config::EngineConfig;
 pub(crate) use context::{EngineContext, EngineRunDraft, EngineState, build_crawl_context_for};
-pub(crate) use fetch::fetch_dispatch;
+pub(crate) use fetch::fetch_with_retry;
 pub(crate) use guard::{InFlightGuard, RunGuard};
 pub(crate) use request::process_request;
 pub(crate) use response::process_response;

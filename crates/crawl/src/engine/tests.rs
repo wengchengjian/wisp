@@ -230,23 +230,23 @@ fn make_ctx_with_retry(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
     )
 }
 
-/// ND-002-CORR 回归测试：fetch_dispatch 必须实际执行重试。
+/// ND-002-CORR 回归测试：fetch_with_retry 必须实际执行重试。
 ///
 /// 原实现通过 `follow_tx → sched.push` 重新入队，被 `seen_exact` 去重静默丢弃，
-/// 导致 RetryMiddleware 完全不工作。修复后 fetch_dispatch 在函数内同步循环重试，
+/// 导致 RetryMiddleware 完全不工作。修复后 fetch_with_retry 在函数内同步循环重试，
 /// retry_count 和 stats.retries 必须实际递增。
 ///
 /// 使用不可达端口（127.0.0.1:1）触发 `connection refused`（即时返回，不依赖网络），
 /// 该错误匹配 `is_retryable_network_error`（含 "connection refused"）。
 #[tokio::test]
-async fn fetch_dispatch_actually_retries_on_network_error() {
+async fn fetch_with_retry_actually_retries_on_network_error() {
     // max_retries=2：应重试 2 次后失败
     let (ctx, stats) = make_ctx_with_retry(2);
 
     // 指向不可达端口触发 connection refused
     let req = CrawlRequest::get("http://127.0.0.1:1/");
 
-    let (resp, err) = match fetch_dispatch(&ctx, &req).await {
+    let (resp, err) = match fetch_with_retry(&ctx, &req).await {
         Ok(resp) => (Some(resp), None),
         Err(e) => (None, Some(e.to_string())),
     };
@@ -281,11 +281,11 @@ async fn fetch_dispatch_actually_retries_on_network_error() {
 
 /// ND-002-CORR 回归测试：max_retries=0 时不重试，直接失败。
 #[tokio::test]
-async fn fetch_dispatch_no_retry_when_max_retries_zero() {
+async fn fetch_with_retry_no_retry_when_max_retries_zero() {
     let (ctx, stats) = make_ctx_with_retry(0);
 
     let req = CrawlRequest::get("http://127.0.0.1:1/");
-    let (resp, err) = match fetch_dispatch(&ctx, &req).await {
+    let (resp, err) = match fetch_with_retry(&ctx, &req).await {
         Ok(resp) => (Some(resp), None),
         Err(e) => (None, Some(e.to_string())),
     };
@@ -315,21 +315,21 @@ fn make_ctx_auto(max_retries: u32) -> (EngineContext, Arc<SpiderStats>) {
     make_ctx_with(config, chain, EventBus::new())
 }
 
-/// Auto 模式首次连接失败时，fetch_dispatch 应主动升级 Stealth 重试。
+/// Auto 模式首次连接失败时，fetch_with_retry 应主动升级 Stealth 重试。
 ///
 /// 连接层拦截（TLS reset/连接拒绝）无法被响应中间件 StealthUpgradeMiddleware
-/// 检测（因为没有 HTTP 响应）。fetch_dispatch 在错误处理中主动升级：
+/// 检测（因为没有 HTTP 响应）。fetch_with_retry 在错误处理中主动升级：
 /// 1. HTTP 模式失败 → learn(rule_engine, Stealth) + set override + continue
 /// 2. Stealth 模式失败（此处 browser pool 未配置）→ 走正常错误流程
 ///
 /// 验证：rule_engine 学到了该 URL 需要 Stealth（resolve 返回 Some）。
 #[tokio::test]
-async fn fetch_dispatch_auto_upgrades_to_stealth_on_first_failure() {
+async fn fetch_with_retry_auto_upgrades_to_stealth_on_first_failure() {
     let (ctx, _stats) = make_ctx_auto(0);
 
     let url = "http://127.0.0.1:1/auto-upgrade-test";
     let req = CrawlRequest::get(url);
-    let (resp, err) = match fetch_dispatch(&ctx, &req).await {
+    let (resp, err) = match fetch_with_retry(&ctx, &req).await {
         Ok(resp) => (Some(resp), None),
         Err(e) => (None, Some(e.to_string())),
     };
@@ -354,7 +354,7 @@ async fn fetch_dispatch_auto_upgrades_to_stealth_on_first_failure() {
 /// 后续请求走 resolve 缓存直接用 Stealth，如果 Stealth 也失败（如无 Chrome），
 /// 不应再次触发 AutoFallback（否则每个请求都打印升级日志）。
 #[tokio::test]
-async fn fetch_dispatch_no_duplicate_autofallback_for_learned_url() {
+async fn fetch_with_retry_no_duplicate_autofallback_for_learned_url() {
     let (ctx, _stats) = make_ctx_auto(0);
 
     let url = "http://127.0.0.1:1/learned-url";
@@ -367,7 +367,7 @@ async fn fetch_dispatch_no_duplicate_autofallback_for_learned_url() {
     }
 
     let req = CrawlRequest::get(url);
-    let (resp, err) = match fetch_dispatch(&ctx, &req).await {
+    let (resp, err) = match fetch_with_retry(&ctx, &req).await {
         Ok(resp) => (Some(resp), None),
         Err(e) => (None, Some(e.to_string())),
     };

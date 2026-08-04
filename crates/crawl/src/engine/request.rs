@@ -142,7 +142,7 @@ pub(crate) async fn process_request(ctx: &EngineContext, req: CrawlRequest) -> O
     }
 
     let fetch_started = std::time::Instant::now();
-    match fetch_dispatch(ctx, &req).await {
+    match fetch_with_retry(ctx, &req).await {
         Ok(resp) => {
             ctx.runtime
                 .event_bus

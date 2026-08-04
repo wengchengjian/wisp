@@ -113,7 +113,51 @@ async fn record_fetch_success(
         .await;
 }
 
-/// 抓取分发：单次 fetch，**内置同步重试循环**。
+/// 错误恢复决策结果。
+///
+/// `handle_fetch_error` 的返回值，让重试循环骨架只关心"重试还是失败"，
+/// 把 Auto 升级 / 中间件重试 / 兜底失败三个决策点内聚在一处。
+enum ErrorRecovery {
+    /// 用新请求重试（Auto 升级或中间件 Retry）。
+    Retry(CrawlRequest),
+    /// 放弃重试，返回错误（已完成 stats.errors++ + on_error 副作用）。
+    Fail(wisp_core::error::WispError),
+}
+
+/// 处理 fetch 错误：按优先级链决策恢复策略。
+///
+/// 决策顺序（优先级递减）：
+/// 1. **Auto 升级**：Auto 模式首次连接失败且规则引擎尚未学习 Stealth → 升级 Stealth 重试
+/// 2. **中间件 Retry**：`RetryMiddleware` 决定重试且未达上限 → 构造重试请求
+/// 3. **兜底失败**：记录 errors、回调 `spider.on_error`、返回错误
+///
+/// 副作用：兜底失败路径会 `stats.errors.fetch_add(1)` 并调用 `spider.on_error`。
+async fn handle_fetch_error(
+    ctx: &EngineContext,
+    stats: &Arc<SpiderStats>,
+    spider: &Arc<dyn Spider>,
+    req: &CrawlRequest,
+    max_retries: u32,
+    e: wisp_core::error::WispError,
+) -> ErrorRecovery {
+    // ① Auto 升级（优先级最高）
+    if should_auto_upgrade(ctx, req).await {
+        return ErrorRecovery::Retry(build_auto_upgrade_request(ctx, req, &e).await);
+    }
+    // ② 中间件 Retry 决策
+    let action = run_error_middleware(ctx, spider, stats, req, &e).await;
+    if matches!(action, middleware::ErrorAction::Retry)
+        && let Some(retried) = emit_retry_request(ctx, stats, req, max_retries, &e).await
+    {
+        return ErrorRecovery::Retry(retried);
+    }
+    // ③ 兜底失败：记录副作用后返回
+    stats.errors.fetch_add(1, Ordering::SeqCst);
+    spider.on_error(req, &e.to_string()).await;
+    ErrorRecovery::Fail(e)
+}
+
+/// 抓取 + 同步重试循环：单次 fetch，内置错误恢复编排。
 ///
 /// 重试逻辑由 engine 统一管理（修复 ND-002-CORR：原 follow_tx 重试路径被 scheduler
 /// seen 去重破坏，静默丢失重试请求）：
@@ -126,7 +170,7 @@ async fn record_fetch_success(
 /// 两套计数器独立：`retry_count` 跨多次 fetch 失败累加，`refetch_depth` 在单次
 /// process_response 内累加。互不干扰。
 #[tracing::instrument(level = "trace", skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
-pub(crate) async fn fetch_dispatch(ctx: &EngineContext, req: &CrawlRequest) -> Result<Response> {
+pub(crate) async fn fetch_with_retry(ctx: &EngineContext, req: &CrawlRequest) -> Result<Response> {
     let stats = ctx.state.stats_for(req).ok_or_else(|| {
         wisp_core::error::WispError::Engine("request has no matching spider".into())
     })?;
@@ -152,21 +196,13 @@ pub(crate) async fn fetch_dispatch(ctx: &EngineContext, req: &CrawlRequest) -> R
                 return Ok(resp);
             }
             Err(e) => {
-                if should_auto_upgrade(ctx, req_ref).await {
-                    owned = Some(build_auto_upgrade_request(ctx, req_ref, &e).await);
-                    continue;
+                match handle_fetch_error(ctx, &stats, &spider, req_ref, max_retries, e).await {
+                    ErrorRecovery::Retry(retried) => {
+                        owned = Some(retried);
+                        continue;
+                    }
+                    ErrorRecovery::Fail(e) => return Err(e),
                 }
-                let action = run_error_middleware(ctx, &spider, &stats, req_ref, &e).await;
-                if matches!(action, middleware::ErrorAction::Retry)
-                    && let Some(retried) =
-                        emit_retry_request(ctx, &stats, req_ref, max_retries, &e).await
-                {
-                    owned = Some(retried);
-                    continue;
-                }
-                stats.errors.fetch_add(1, Ordering::SeqCst);
-                spider.on_error(req_ref, &e.to_string()).await;
-                return Err(e);
             }
         }
     }

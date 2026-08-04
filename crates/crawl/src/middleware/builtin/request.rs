@@ -68,7 +68,7 @@ impl Middleware for UaRotationMiddleware {
 ///
 /// 职责单一（修复 ND-002-CORR）：
 /// - **只决定**：这个错误是否值得重试（业务决策）
-/// - **不维护**：重试计数和上限由 engine 在 `fetch_dispatch` 内统一管理
+/// - **不维护**：重试计数和上限由 engine 在 `fetch_with_retry` 内统一管理
 ///
 /// engine 读取 `EngineConfig.max_retries` 作为上限，维护 `req.retry_count` 计数。
 /// 中间件只返回 `ErrorAction::Retry` 或 `Propagate`，不再读取/写入 `meta["_retry"]`。
@@ -99,7 +99,7 @@ impl Middleware for RetryMiddleware {
     ) -> ErrorAction {
         // fetch_page 返回 Err 都是网络层错误（DNS/连接/TLS/超时等），
         // HTTP 业务错误（4xx/5xx）会返回 Ok(resp)，由 BlockedRetryMiddleware 通过 Refetch 处理。
-        // 因此这里默认重试所有 fetch 错误，计数和上限由 engine 在 fetch_dispatch 内统一管理。
+        // 因此这里默认重试所有 fetch 错误，计数和上限由 engine 在 fetch_with_retry 内统一管理。
         if !self.retry_delay.is_zero() {
             tokio::time::sleep(self.retry_delay).await;
         }

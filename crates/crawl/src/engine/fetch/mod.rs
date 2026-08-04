@@ -5,4 +5,4 @@ use super::*;
 mod dispatch;
 mod page;
 
-pub(crate) use dispatch::fetch_dispatch;
+pub(crate) use dispatch::fetch_with_retry;
