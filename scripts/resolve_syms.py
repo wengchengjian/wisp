@@ -1,6 +1,6 @@
 """Resolve samply frame addresses (relative to module base) to symbols using the .syms.json sidecar.
 
-Usage: python tools/resolve_syms.py <profile.json> <syms.json> [--top N]
+Usage: python scripts/resolve_syms.py <profile.json> <syms.json> [--top N]
 """
 import json
 import sys

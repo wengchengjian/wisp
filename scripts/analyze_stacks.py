@@ -1,6 +1,6 @@
 """Resolve samply profile stacks to real symbols using nativeSymbols and dump hot callsites.
 
-Usage: python tools/analyze_stacks.py <profile.json> [--process SUBSTR] [--top N] [--stacks N]
+Usage: python scripts/analyze_stacks.py <profile.json> [--process SUBSTR] [--top N] [--stacks N]
 """
 import json
 import sys

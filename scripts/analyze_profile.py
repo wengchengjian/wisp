@@ -1,6 +1,6 @@
 """Aggregate samply profile leaf frames to find hotspots.
 
-Usage: python tools/analyze_profile.py <profile.json> [--top N] [--process SUBSTR]
+Usage: python scripts/analyze_profile.py <profile.json> [--top N] [--process SUBSTR]
 """
 import json
 import sys
