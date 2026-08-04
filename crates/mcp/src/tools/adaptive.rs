@@ -12,7 +12,7 @@ use serde_json::json;
 use wisp_core::FetchMode;
 use wisp_core::error::Result;
 use wisp_parser::Node;
-use wisp_storage::{Store, open_store};
+use wisp_storage::Store;
 
 /// `adaptive_scrape` arguments.
 #[derive(Debug, Deserialize)]
@@ -56,10 +56,7 @@ pub async fn adaptive_scrape(
     )
     .await?;
     let doc = Node::from_html(&page.html);
-    let effective_store: Arc<dyn Store> = match args.db_path.as_deref() {
-        Some(path) if !path.is_empty() => open_store(path)?,
-        _ => Arc::clone(ctx.store),
-    };
+    let effective_store = ctx.get_or_open_store(args.db_path.as_deref())?;
     let tracker = wisp_crawl::AdaptiveTracker::new(effective_store);
     let found = tracker
         .css_adaptive(
