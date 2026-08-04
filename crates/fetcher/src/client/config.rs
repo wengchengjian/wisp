@@ -33,7 +33,7 @@ pub struct FetchClientConfig {
     pub max_concurrent_pages: usize,
     /// Turnstile 解决器参数配置。
     #[cfg(feature = "stealth")]
-    pub turnstile: wisp_stealth::TurnstileConfig,
+    pub turnstile: wisp_core::TurnstileConfig,
     /// CF 会话缓存 TTL（默认 30 分钟）。
     pub cf_cookie_ttl: Duration,
     /// CF 会话持久化目录（默认 "wisp-data"）。
@@ -71,9 +71,26 @@ impl Default for FetchClientConfig {
             domain_blocker: None,
             max_concurrent_pages: 4,
             #[cfg(feature = "stealth")]
-            turnstile: wisp_stealth::TurnstileConfig::default(),
+            turnstile: wisp_core::TurnstileConfig::default(),
             cf_cookie_ttl: Duration::from_mins(30),
             cf_data_dir: PathBuf::from("wisp-data"),
+        }
+    }
+}
+
+impl FetchClientConfig {
+    /// 转换为浏览器领域的 Stealth 配置（StealthStrategy 已迁入 wisp-browser）。
+    ///
+    /// 仅 stealth feature 下可用；解耦 browser 对高层 `FetchClientConfig` 的依赖。
+    #[cfg(feature = "stealth")]
+    pub fn stealth_config(&self) -> wisp_browser::stealth::StealthConfig {
+        wisp_browser::stealth::StealthConfig {
+            challenge_timeout: self.challenge_timeout,
+            turnstile: self.turnstile.clone(),
+            human_mode: self.human_mode,
+            wait_for: self.wait_for.clone(),
+            extra_wait_ms: self.extra_wait_ms,
+            timeout: self.timeout,
         }
     }
 }

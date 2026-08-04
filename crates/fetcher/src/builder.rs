@@ -92,7 +92,7 @@ impl FetcherBuilder {
     /// 设置 Turnstile 解决器参数。
     #[must_use]
     #[cfg(feature = "stealth")]
-    pub fn turnstile_config(mut self, cfg: wisp_stealth::TurnstileConfig) -> Self {
+    pub fn turnstile_config(mut self, cfg: wisp_core::TurnstileConfig) -> Self {
         self.config.turnstile = cfg;
         self
     }

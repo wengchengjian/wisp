@@ -3450,6 +3450,7 @@ dependencies = [
  "async-trait",
  "base64",
  "futures",
+ "rand 0.10.2",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3528,7 +3529,6 @@ dependencies = [
  "wisp-core",
  "wisp-http",
  "wisp-parser",
- "wisp-stealth",
  "wreq",
  "wreq-util",
 ]
@@ -3584,10 +3584,6 @@ dependencies = [
 name = "wisp-stealth"
 version = "0.1.0"
 dependencies = [
- "rand 0.10.2",
- "serde_json",
- "tokio",
- "tracing",
  "wisp-browser",
  "wisp-core",
 ]

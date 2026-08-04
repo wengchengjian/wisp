@@ -8,13 +8,12 @@ license.workspace = true
 [features]
 default = []
 browser = ["dep:wisp-browser"]
-stealth = ["browser", "dep:wisp-stealth"]
+stealth = ["browser"]
 
 [dependencies]
 wisp-core = { workspace = true }
 wisp-http = { workspace = true }
 wisp-browser = { workspace = true, optional = true }
-wisp-stealth = { workspace = true, optional = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

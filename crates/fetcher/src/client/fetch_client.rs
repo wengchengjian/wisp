@@ -75,7 +75,10 @@ impl FetchClient {
             #[cfg(feature = "stealth")]
             map.insert(
                 FetchMode::Stealth,
-                Arc::new(StealthStrategy::from_config(&config, cookie_jar.clone())),
+                Arc::new(StealthStrategy::from_config(
+                    &config.stealth_config(),
+                    cookie_jar.clone(),
+                )),
             );
             map
         };

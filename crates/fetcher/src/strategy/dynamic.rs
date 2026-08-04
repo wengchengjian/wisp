@@ -5,7 +5,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::client::FetchClientConfig;
-use crate::strategy::{BrowserFetchStrategy, extract_browser_response};
+use crate::strategy::BrowserFetchStrategy;
+use wisp_browser::extract::extract_browser_response;
 use wisp_browser::Page;
 use wisp_core::error::Result;
 use wisp_core::{Request, Response};
