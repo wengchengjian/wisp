@@ -7,3 +7,11 @@ wisp-data/
 .superpowers/
 __pycache__/
 *.pyc
+
+# 爬虫产物
+/books/
+*.jsonl
+bz_*.html
+
+# 临时探测脚本
+examples/bz_probe.rs
