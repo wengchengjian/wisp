@@ -115,6 +115,84 @@ process_response      约 60.9%（与 process_request 嵌套，非可加占比�
 | http_cached_replay | 约 9.2 ms | 缓存回放约是完整抓取吞吐的 2.8 倍 |
 
 > 2026-08-01 完整基准：默认 criterion 配置（warm-up 3s、measurement 5s、sample 10）。
+
+## 4.5 当前基线（2026-08-04，master 合并 StealthStrategy 迁移 + MCP 薄壳化 + multi-spider 后，Windows + release profile）
+
+运行方式：`cargo bench --bench bench --profile release -- --save-baseline 2026-08-04`。
+
+> 与 08-01 基线对比：**scheduler / parser 微基准正常**（scheduler_push 几乎一致、text_extraction 更快），
+> 但 **novel_flow 系列整体变慢 30%~2.7x**。该差异为 08-01 之后多次重构（crate split、
+> multi-spider refactor、typed item delivery、引擎 item 单 seam 化）的累积，非本次 stealth 迁移
+> 单独引入（本次改动不触及 novel_flow 的 HTTP 路径）。**待确认是否真实回归**，见 §7 已知优化边界。
+
+### novel_flow（release）
+
+```text
+novel_flow/multi_spider_10books
+    time: [32.475 ms 34.184 ms 37.416 ms]
+```
+
+折算：
+
+| 指标 | 值 |
+| --- | --- |
+| pages/s | 约 9,000 |
+| items/s | 约 8,800 |
+| ms/page | 约 0.110 |
+
+### 非网络微基准（release）
+
+| 路径 | 08-01 | 08-04 | 变化 |
+| --- | --- | --- | --- |
+| text_extraction（100KB 页面） | 约 156 µs | 148.95 µs | ✅ 更快 |
+| scheduler_push_1000 | 约 258 µs | 272.99 µs | ✅ 几乎一致 (+6%) |
+| scheduler_concurrent_push_4x250 | 约 955 µs | 964.90 µs | ✅ 几乎一致 (+1%) |
+
+### 配置对照（release，novel_flow_variants）
+
+| 变体 | 08-01 | 08-04 | 变化 |
+| --- | --- | --- | --- |
+| auto_default | 约 28.1 ms | 38.699 ms | ⚠️ 慢 ~38% |
+| http_with_transport | 约 22.8 ms | 37.684 ms | ⚠️ 慢 ~65% |
+| http_minimal | 约 23.7 ms | 64.796 ms | ⚠️ 慢 ~2.7x |
+| http_cached_replay | 约 9.2 ms | 11.728 ms | ⚠️ 慢 ~27% |
+
+### 4.6 热点路径 Profiling（2026-08-04，samply + TimingLayer，本地 HTTP/1.1 小说站）
+
+**结论：框架逻辑无回归，热点仍是 fetch（网络路径）。** 08-04 记录的
+novel_flow 30%~2.7x 变慢处于测量噪声带内（CPU 频率缩放），非本次重构引入的框架逻辑回归。
+
+证据：
+
+1. **阶段耗时占比与 08-01 基线一致**（`WISP_TIMING=1`，novel_flow/multi_spider）：
+
+   | 阶段 | 占比 | 08-01 基线 |
+   | --- | --- | --- |
+   | fetch_with_retry | 约 94% | 约 95% |
+   | fetch | 约 92% | 约 95% |
+   | spider.handle | 约 17-19% | 约 23% |
+   | run_response_middlewares | 约 6.1-6.2% | 约 6.5% |
+   | StealthUpgradeMiddleware | 约 3.3-3.4% | 约 4.1% |
+
+   handle/parse/middleware 等框架逻辑占比基本未变，不是回归来源。
+
+2. **确定性微基准稳定**：scheduler_push（+10% vs 08-04）、scheduler_concurrent（-18.5%）、
+   text_extraction 均落在噪声带内。scheduler 不是瓶颈。
+
+3. **samply 热点符号为符号解析伪影**：本地服务器为纯 HTTP/1.1 TCP（无 TLS、无 ALPN），
+   wreq 默认 `HttpVersionPref::All`，对 `http://` 明文连接只能走 HTTP/1.1（h2c prior-knowledge
+   仅在 `http2_only` 时启用）。因此 profile 中解析出的 `recv_data → schedule_implicit_reset →
+   reclaim_reserved_capacity`（h2 栈）与 `ReverseInner::try_search_full`（regex）均非真实热点，
+   是 Windows PDB 符号解析失败（`fun_13a690` 占 85% 叶帧）导致的误归因。
+
+4. **criterion 对比噪声巨大**：同一环境 novel_flow 方差达 ±30%（p=0.49），
+   `http_minimal` 跨 session 波动 39~64ms。绝对墙钟不稳定，不能据此判定回归。
+
+**优化边界**：真实热点是 fetch（网络），其成本由 wreq 的 tower 层
+（ConfigServiceLayer/TimeoutLayer/FollowRedirectLayer，`ClientBuilder::build` 无条件叠加，无公开开关）
+与连接复用决定。要进一步压低 fetch 开销需绕开 wreq 高层构造（直接使用 connector/service 或 hyper），
+属于后续大改，见 §7。
+
 ## 5. 中间件清单
 
 默认链（Auto、缓存关闭、DynamicUpgrade 关闭、启用 UA/headers/cookie）：

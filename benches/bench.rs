@@ -492,17 +492,48 @@ fn bench_novel_flow(c: &mut Criterion) {
 fn bench_novel_flow_variants(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let base = rt.block_on(spawn_novel_server(10, 30, 8));
+    let timing = timing();
     let mut group = c.benchmark_group("novel_flow_variants");
     group.sample_size(10);
 
     group.bench_function("auto_default", |b| {
-        b.iter(|| rt.block_on(run_novel_once(&base, FetchMode::Auto, None, true)))
+        b.iter(|| {
+            if let Some(t) = timing {
+                t.reset();
+            }
+            let n = rt.block_on(run_novel_once(&base, FetchMode::Auto, None, true));
+            if let Some(t) = timing {
+                println!("auto_default Stage Timing:");
+                t.print_summary();
+            }
+            n
+        })
     });
     group.bench_function("http_with_transport", |b| {
-        b.iter(|| rt.block_on(run_novel_once(&base, FetchMode::Http, None, true)))
+        b.iter(|| {
+            if let Some(t) = timing {
+                t.reset();
+            }
+            let n = rt.block_on(run_novel_once(&base, FetchMode::Http, None, true));
+            if let Some(t) = timing {
+                println!("http_with_transport Stage Timing:");
+                t.print_summary();
+            }
+            n
+        })
     });
     group.bench_function("http_minimal", |b| {
-        b.iter(|| rt.block_on(run_novel_once(&base, FetchMode::Http, None, false)))
+        b.iter(|| {
+            if let Some(t) = timing {
+                t.reset();
+            }
+            let n = rt.block_on(run_novel_once(&base, FetchMode::Http, None, false));
+            if let Some(t) = timing {
+                println!("http_minimal Stage Timing:");
+                t.print_summary();
+            }
+            n
+        })
     });
 
     // 缓存回放：同一 Engine 复用 MemoryStore，衡量稳定态缓存命中吞吐。
@@ -516,11 +547,19 @@ fn bench_novel_flow_variants(c: &mut Criterion) {
         .unwrap();
     group.bench_function("http_cached_replay", |b| {
         b.iter(|| {
-            rt.block_on(async {
+            if let Some(t) = timing {
+                t.reset();
+            }
+            let n = rt.block_on(async {
                 let spiders = novel_spiders(&base, 10);
                 let (_, items) = cache_engine.run_many(spiders).await.unwrap();
-                black_box(items.len());
-            })
+                black_box(items.len())
+            });
+            if let Some(t) = timing {
+                println!("http_cached_replay Stage Timing:");
+                t.print_summary();
+            }
+            n
         })
     });
     group.finish();
