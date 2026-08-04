@@ -9,8 +9,7 @@ use super::protocol::TOOLS;
 use crate::tools;
 use wisp_core::error::{McpError, ParseError, Result, WispError};
 use wisp_crawl::Engine;
-use wisp_fetcher::FetchClient;
-use wisp_storage::Store;
+use wisp_crawl::{FetchClient, Store};
 
 /// MCP server 共享资源上下文。
 pub(super) struct ServerContext {

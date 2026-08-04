@@ -1,6 +1,5 @@
 //! MCP stealth_fetch 工具：复用共享 FetchClient + StealthStrategy。
 
-use super::fetch_html::fetch_html;
 use super::types::ToolContext;
 use crate::protocol::{Tool, TypedRun};
 use serde::{Deserialize, Serialize};
@@ -9,6 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use wisp_core::FetchMode;
 use wisp_core::error::Result;
+use wisp_crawl::scenario;
 
 /// `stealth_fetch` arguments.
 #[derive(Debug, Deserialize)]
@@ -35,11 +35,11 @@ pub async fn stealth_fetch(
     args: StealthFetchArgs,
     ctx: &ToolContext<'_>,
 ) -> Result<StealthFetchResult> {
-    let page = fetch_html(
+    let page = scenario::fetch_page_html(
         ctx,
         &args.url,
         FetchMode::Stealth,
-        &wisp_fetcher::FetchOptions::default(),
+        &wisp_crawl::FetchOptions::default(),
     )
     .await?;
     Ok(StealthFetchResult {

@@ -7,7 +7,7 @@ use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
 use wisp_core::error::Result;
-use wisp_parser::Node;
+use wisp_crawl::scenario;
 
 /// `extract_css` arguments.
 #[derive(Debug, Deserialize)]
@@ -34,22 +34,11 @@ pub struct ExtractCssResult {
 
 /// CSS 选择器提取元素。
 pub async fn extract_css(args: ExtractCssArgs) -> Result<ExtractCssResult> {
-    let doc = Node::from_html(&args.html);
-    let nodes = doc.select(&args.selector);
-
-    let mut result = ExtractCssResult {
-        texts: Vec::new(),
-        attrs: Vec::new(),
-    };
-    if let Some(attr) = args.attr.as_deref() {
-        result.attrs = nodes
-            .iter()
-            .map(|n| n.attr(attr).unwrap_or_default())
-            .collect();
-    } else {
-        result.texts = nodes.iter().map(|n| n.text()).collect();
-    }
-    Ok(result)
+    let result = scenario::extract_css(&args.html, &args.selector, args.attr.as_deref())?;
+    Ok(ExtractCssResult {
+        texts: result.texts,
+        attrs: result.attrs,
+    })
 }
 
 fn extract_css_run<'a>(

@@ -3507,6 +3507,7 @@ dependencies = [
  "wisp-parser",
  "wisp-proxy",
  "wisp-storage",
+ "wreq-util",
 ]
 
 [[package]]
@@ -3551,7 +3552,6 @@ dependencies = [
 name = "wisp-mcp"
 version = "0.1.0"
 dependencies = [
- "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -3559,9 +3559,7 @@ dependencies = [
  "wisp-core",
  "wisp-crawl",
  "wisp-fetcher",
- "wisp-parser",
  "wisp-storage",
- "wreq-util",
 ]
 
 [[package]]

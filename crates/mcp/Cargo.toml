@@ -7,21 +7,18 @@ license.workspace = true
 
 [features]
 default = ["browser"]
-browser = ["wisp-fetcher/browser"]
-stealth = ["wisp-fetcher/stealth"]
-sqlite = ["wisp-storage/sqlite"]
+browser = ["wisp-crawl/browser"]
+stealth = ["wisp-crawl/stealth"]
+sqlite = ["wisp-crawl/sqlite"]
 
 [dependencies]
 wisp-core = { workspace = true }
 wisp-crawl = { workspace = true }
-wisp-fetcher = { workspace = true }
-wisp-storage = { workspace = true }
-wisp-parser = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
-regex = { workspace = true }
 tokio = { workspace = true }
-wreq-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+wisp-fetcher = { workspace = true }
+wisp-storage = { workspace = true }

@@ -9,6 +9,7 @@ license.workspace = true
 default = []
 browser = ["wisp-fetcher/browser"]
 stealth = ["browser", "wisp-fetcher/stealth"]
+sqlite = ["wisp-storage/sqlite"]
 
 [dependencies]
 wisp-core = { workspace = true }
@@ -32,6 +33,7 @@ parking_lot = { workspace = true }
 chrono = { workspace = true }
 htmd = { workspace = true }
 url = { workspace = true }
+wreq-util = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

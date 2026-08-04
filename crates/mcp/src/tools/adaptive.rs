@@ -3,14 +3,12 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use super::fetch_html::fetch_html;
 use super::types::ToolContext;
 use crate::protocol::{Tool, TypedRun};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use wisp_core::FetchMode;
 use wisp_core::error::Result;
-use wisp_parser::Node;
+use wisp_crawl::scenario;
 
 /// `adaptive_scrape` arguments.
 #[derive(Debug, Deserialize)]
@@ -46,40 +44,20 @@ pub async fn adaptive_scrape(
     args: AdaptiveScrapeArgs,
     ctx: &ToolContext<'_>,
 ) -> Result<AdaptiveScrapeResult> {
-    let page = fetch_html(
+    let result = scenario::adaptive_scrape(
         ctx,
         &args.url,
-        FetchMode::Http,
-        &wisp_fetcher::FetchOptions::default(),
+        &args.selector,
+        &args.key,
+        args.db_path.as_deref(),
     )
     .await?;
-    let doc = Node::from_html(&page.html);
-    let effective_store = ctx.get_or_open_store(args.db_path.as_deref())?;
-    let tracker = wisp_crawl::AdaptiveTracker::new(effective_store);
-    let found = tracker
-        .css_adaptive(
-            &doc,
-            &args.selector,
-            &args.key,
-            &page.url,
-            true,
-            wisp_parser::DEFAULT_TOLERANCE,
-        )
-        .await?;
-    match found {
-        Some(node) => Ok(AdaptiveScrapeResult {
-            url: page.url,
-            found: true,
-            text: Some(node.text()),
-            html: Some(node.html()),
-        }),
-        None => Ok(AdaptiveScrapeResult {
-            url: page.url,
-            found: false,
-            text: None,
-            html: None,
-        }),
-    }
+    Ok(AdaptiveScrapeResult {
+        url: result.url,
+        found: result.found,
+        text: result.text,
+        html: result.html,
+    })
 }
 
 fn adaptive_scrape_run<'a>(

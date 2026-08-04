@@ -13,6 +13,7 @@ pub mod middleware;
 pub mod observability;
 pub mod page;
 pub mod runtime;
+pub mod scenario;
 pub mod scheduling;
 
 // 兼容 re-export：保持 `wisp::crawl::stop::MaxPages` 等子模块路径可用
@@ -40,7 +41,11 @@ pub use stop::{
 };
 
 // 统一类型：直接使用 fetcher 的 Request/Response/Method
-pub use wisp_fetcher::{CrawlRequest, Method, Request, Response};
+pub use wisp_fetcher::{CrawlRequest, FetchClient, FetchOptions, Method, Request, Response};
+// 薄壳层（mcp 等）所需底层类型：经 crawl 统一出口，避免直接依赖 fetcher/parser/storage
+pub use wisp_parser::{DEFAULT_TOLERANCE, Node};
+pub use wisp_storage::{open_store, Store};
+pub use wreq_util::Profile;
 
 #[cfg(test)]
 mod tests;

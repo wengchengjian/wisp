@@ -4,7 +4,6 @@ pub(crate) mod adaptive;
 pub(crate) mod crawl;
 pub(crate) mod extract;
 pub(crate) mod fetch;
-mod fetch_html;
 pub(crate) mod gateway;
 #[cfg(feature = "stealth")]
 pub(crate) mod stealth;
