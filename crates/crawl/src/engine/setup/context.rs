@@ -60,6 +60,7 @@ impl Engine {
                 spiders: draft.spiders,
                 all_stats: draft.all_stats,
                 abort_flag: Arc::new(AtomicBool::new(false)),
+                pipeline_error: Arc::new(Mutex::new(None)),
                 global_in_flight: Arc::new(AtomicUsize::new(0)),
                 in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
             },

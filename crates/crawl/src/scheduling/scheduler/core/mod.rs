@@ -5,7 +5,7 @@ mod snapshot;
 
 use super::dedup::{DedupStrategy, fingerprint};
 use super::queue::{HeapInner, PrioritizedRequest};
-use crate::Request;
+use crate::CrawlRequest;
 use dashmap::DashSet;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
@@ -64,7 +64,7 @@ impl Scheduler {
         }
     }
 
-    fn insert_seen(&self, req: &Request) -> bool {
+    fn insert_seen(&self, req: &CrawlRequest) -> bool {
         match self.strategy {
             DedupStrategy::Exact => self.seen_exact.insert(req.url.clone()),
             DedupStrategy::Fingerprint => self.seen_fp.insert(fingerprint(&req.url)),
@@ -90,7 +90,7 @@ impl Scheduler {
         }
     }
 
-    async fn enqueue(&self, req: Request) {
+    async fn enqueue(&self, req: CrawlRequest) {
         let mut g = self.heap.lock().await;
         let seq = g.seq;
         g.heap.push(PrioritizedRequest { req, seq });
@@ -99,7 +99,7 @@ impl Scheduler {
     }
 
     /// Push a request (deduplicates by URL).
-    pub async fn push(&self, req: Request) {
+    pub async fn push(&self, req: CrawlRequest) {
         if !self.insert_seen(&req) {
             return;
         }
@@ -108,7 +108,7 @@ impl Scheduler {
     }
 
     /// Pop the highest-priority request.
-    pub async fn pop(&self) -> Option<Request> {
+    pub async fn pop(&self) -> Option<CrawlRequest> {
         let mut g = self.heap.lock().await;
         let req = g.heap.pop().map(|p| p.req);
         if req.is_some() {

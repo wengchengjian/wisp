@@ -69,7 +69,7 @@ async fn test_stopped_spider_url_not_silently_dropped() {
         fn start_urls(&self) -> Vec<String> {
             vec!["http://127.0.0.1:1/never-fetched".into()]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             (vec![], vec![])
         }
         // MaxPages(0)：pages >= 0 恒为真，Spider 立即停止，start_url 不会被派发。
@@ -111,10 +111,10 @@ async fn test_fetch_retry_count_semantics() {
             // 端口 1 不可达，连接被拒绝，触发 error 分支重试。
             vec!["http://127.0.0.1:1/unreachable".into()]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             (vec![], vec![])
         }
-        async fn on_error(&self, _req: &Request, _err: &str) {
+        async fn on_error(&self, _req: &CrawlRequest, _err: &str) {
             self.count.fetch_add(1, Ordering::SeqCst);
         }
     }

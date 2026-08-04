@@ -2,9 +2,11 @@
 
 use super::fetch_html::fetch_html;
 use super::types::ToolContext;
-use crate::protocol::Tool;
+use crate::protocol::{Tool, TypedRun};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::future::Future;
+use std::pin::Pin;
 use wisp_core::FetchMode;
 use wisp_core::error::Result;
 
@@ -48,8 +50,15 @@ pub async fn stealth_fetch(
     })
 }
 
+fn stealth_fetch_run<'a>(
+    args: StealthFetchArgs,
+    ctx: &'a ToolContext<'a>,
+) -> Pin<Box<dyn Future<Output = Result<StealthFetchResult>> + Send + 'a>> {
+    Box::pin(stealth_fetch(args, ctx))
+}
+
 pub(crate) fn spec() -> Tool {
-    Tool::new(
+    Tool::from_handler(
         "stealth_fetch",
         "浏览器隐身抓取（CF 挑战解决 + 人类行为模拟，复用共享浏览器池）。",
         json!({
@@ -59,11 +68,6 @@ pub(crate) fn spec() -> Tool {
             },
             "required": ["url"]
         }),
-        Box::new(|args, ctx| {
-            Box::pin(async move {
-                let args = super::parse_args::<StealthFetchArgs>(&args, "stealth_fetch")?;
-                super::to_value(stealth_fetch(args, ctx).await?)
-            })
-        }),
+        stealth_fetch_run as TypedRun<StealthFetchArgs, StealthFetchResult>,
     )
 }

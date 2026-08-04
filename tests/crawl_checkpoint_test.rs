@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use wisp::crawl::{CrawlState, Request};
+use wisp::crawl::{CrawlRequest, CrawlState};
 use wisp::storage::MemoryStore;
 
 #[tokio::test]
@@ -10,7 +10,7 @@ async fn test_checkpoint_save_load_roundtrip() {
     let store = MemoryStore::default();
 
     let mut state = CrawlState::new("test-spider".to_string());
-    state.pending_urls = vec![Request::get("https://example.com/pending")];
+    state.pending_urls = vec![CrawlRequest::get("https://example.com/pending")];
     state.stats.pages_crawled = 42;
     state.stats.items_scraped = 100;
     state.stats.errors = 3;
@@ -123,7 +123,7 @@ fn test_crawl_state_new_defaults() {
 async fn checkpoint_restore_preserves_seen_urls() {
     let store = MemoryStore::default();
     let mut state = CrawlState::new("test_spider".into());
-    state.pending_urls = vec![Request::get("https://example.com/pending")];
+    state.pending_urls = vec![CrawlRequest::get("https://example.com/pending")];
     state.seen_urls = HashSet::from(["https://example.com/already-crawled".to_string()]);
     let blob = bincode::serialize(&state).unwrap();
     wisp::storage::save_checkpoint(&store, "test_spider", &blob)

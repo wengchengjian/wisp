@@ -1,7 +1,7 @@
 //! Stealth 模式策略：CF bypass + 人类行为模拟 + cookie 复用。
 //!
 //! ARCH: 从 `FetchClient::do_browser_work_inner`（solve_cf=true 分支）提取。
-//! CfCookieJar 由本策略独占持有。
+//! CfCookieJar 由本策略独占持有；导航由 `Page::goto` 统一负责。
 
 mod cookie;
 mod extract;
@@ -62,17 +62,11 @@ impl StealthStrategy {
 impl BrowserFetchStrategy for StealthStrategy {
     async fn fetch(&self, page: &mut Page, req: &Request) -> Result<Response> {
         let url = &req.url;
-        Self::enable_network(page, url).await?;
-
-        let mut event_rx = page.session().subscribe_events();
-        let sid = page.session_id().to_string();
-
         let domain = url::Url::parse(url)
             .ok()
             .and_then(|u| u.host_str().map(std::string::ToString::to_string));
         self.inject_cf_cookies(page, domain.as_deref(), url).await;
-
-        let nav_status = Self::navigate_and_capture_status(page, url, &mut event_rx, &sid).await?;
+        let nav_status = page.goto(url).await?;
         let nav_status = self.solve_cf(page, url, nav_status).await?;
         self.simulate_human(page).await?;
         self.persist_cf_session(page, domain.as_deref(), url).await;

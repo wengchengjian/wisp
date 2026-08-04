@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use wisp::crawl::{Engine, Request, Response, Spider};
+use wisp::crawl::{CrawlRequest, Engine, Response, Spider};
 use wisp::fetcher::{FetchMode, Fetcher};
 
 struct ProbeServer {
@@ -129,7 +129,7 @@ impl Spider for StaticSpider {
         vec![self.url.clone()]
     }
 
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
 }

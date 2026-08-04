@@ -1,6 +1,7 @@
 //! engine 单元测试与回归测试。
 
 use super::*;
+use crate::CrawlRequest;
 use crate::engine::request::check_control_and_hook;
 use crate::observability::events::{EventBus, Subscription};
 use async_trait::async_trait;
@@ -35,7 +36,7 @@ impl Spider for DummySpider {
     fn start_urls(&self) -> Vec<String> {
         vec![]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
 }
@@ -53,7 +54,7 @@ impl Spider for NamedSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
 }
@@ -69,7 +70,7 @@ impl Spider for PanicSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         panic!("handler panic")
     }
 }
@@ -81,7 +82,7 @@ fn make_ctx_with(
     event_bus: EventBus,
 ) -> (EngineContext, Arc<SpiderStats>) {
     let stats = Arc::new(SpiderStats::new());
-    let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+    let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<CrawlRequest>();
     let fetch_client = Arc::new(
         wisp_fetcher::FetchClient::new(config.transport.clone()).expect("build fetch client"),
     );
@@ -109,6 +110,7 @@ fn make_ctx_with(
             spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
             all_stats: vec![stats.clone()],
             abort_flag: Arc::new(AtomicBool::new(false)),
+            pipeline_error: Arc::new(Mutex::new(None)),
             global_in_flight: Arc::new(AtomicUsize::new(0)),
             in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
         },
@@ -134,7 +136,7 @@ fn make_resp(from_cache: bool) -> Response {
         body: vec![],
         title: None,
         cookies: Vec::new(),
-        request: Request::get("http://example.com/page"),
+        request: CrawlRequest::get("http://example.com/page"),
         content_type: String::new(),
         from_cache,
     })
@@ -185,11 +187,11 @@ async fn save_checkpoint_persists_seen_urls() {
     // push 两个 URL：进入 heap 与 seen 集合
     ctx.state
         .sched
-        .push(Request::get("https://example.com/a"))
+        .push(CrawlRequest::get("https://example.com/a"))
         .await;
     ctx.state
         .sched
-        .push(Request::get("https://example.com/b"))
+        .push(CrawlRequest::get("https://example.com/b"))
         .await;
 
     stats.pages.store(5, std::sync::atomic::Ordering::SeqCst);
@@ -242,7 +244,7 @@ async fn fetch_dispatch_actually_retries_on_network_error() {
     let (ctx, stats) = make_ctx_with_retry(2);
 
     // 指向不可达端口触发 connection refused
-    let req = Request::get("http://127.0.0.1:1/");
+    let req = CrawlRequest::get("http://127.0.0.1:1/");
 
     let (resp, err) = match fetch_dispatch(&ctx, &req).await {
         Ok(resp) => (Some(resp), None),
@@ -282,7 +284,7 @@ async fn fetch_dispatch_actually_retries_on_network_error() {
 async fn fetch_dispatch_no_retry_when_max_retries_zero() {
     let (ctx, stats) = make_ctx_with_retry(0);
 
-    let req = Request::get("http://127.0.0.1:1/");
+    let req = CrawlRequest::get("http://127.0.0.1:1/");
     let (resp, err) = match fetch_dispatch(&ctx, &req).await {
         Ok(resp) => (Some(resp), None),
         Err(e) => (None, Some(e.to_string())),
@@ -326,7 +328,7 @@ async fn fetch_dispatch_auto_upgrades_to_stealth_on_first_failure() {
     let (ctx, _stats) = make_ctx_auto(0);
 
     let url = "http://127.0.0.1:1/auto-upgrade-test";
-    let req = Request::get(url);
+    let req = CrawlRequest::get(url);
     let (resp, err) = match fetch_dispatch(&ctx, &req).await {
         Ok(resp) => (Some(resp), None),
         Err(e) => (None, Some(e.to_string())),
@@ -364,7 +366,7 @@ async fn fetch_dispatch_no_duplicate_autofallback_for_learned_url() {
         assert_eq!(rule_engine.auto_rule_count(), 1);
     }
 
-    let req = Request::get(url);
+    let req = CrawlRequest::get(url);
     let (resp, err) = match fetch_dispatch(&ctx, &req).await {
         Ok(resp) => (Some(resp), None),
         Err(e) => (None, Some(e.to_string())),
@@ -394,7 +396,7 @@ async fn check_control_cancelled_url_returns_false() {
     let (ctx, _stats) = make_ctx();
     let url = "http://example.com/cancelled";
     ctx.runtime.control.cancel(url).await;
-    let req = Request::get(url);
+    let req = CrawlRequest::get(url);
     assert!(
         !check_control_and_hook(&ctx, &req, &ctx.state.spiders[0]).await,
         "cancelled URL 应返回 false"
@@ -406,7 +408,7 @@ async fn check_control_cancelled_url_returns_false() {
 async fn check_control_shutdown_returns_false() {
     let (ctx, _stats) = make_ctx();
     ctx.runtime.control.shutdown();
-    let req = Request::get("http://example.com/any");
+    let req = CrawlRequest::get("http://example.com/any");
     assert!(
         !check_control_and_hook(&ctx, &req, &ctx.state.spiders[0]).await,
         "shutdown 后应返回 false"
@@ -421,7 +423,7 @@ async fn check_control_pause_then_shutdown_returns_false() {
     // 先 pause，再 shutdown（避免 wait_if_paused 永久阻塞）
     ctx.runtime.control.pause(url).await;
     ctx.runtime.control.shutdown();
-    let req = Request::get(url);
+    let req = CrawlRequest::get(url);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         check_control_and_hook(&ctx, &req, &ctx.state.spiders[0]),
@@ -437,7 +439,7 @@ async fn process_request_cancelled_url_returns_none() {
     let (ctx, stats) = make_ctx();
     let url = "http://example.com/cancelled";
     ctx.runtime.control.cancel(url).await;
-    let req = Request::get(url);
+    let req = CrawlRequest::get(url);
     let result = process_request(&ctx, req).await;
     assert!(result.is_none(), "cancelled URL 应返回 None");
     // pages 不应递增（未抓取）
@@ -449,7 +451,7 @@ async fn process_request_cancelled_url_returns_none() {
 async fn process_request_shutdown_returns_none() {
     let (ctx, _stats) = make_ctx();
     ctx.runtime.control.shutdown();
-    let req = Request::get("http://example.com/any");
+    let req = CrawlRequest::get("http://example.com/any");
     let result = process_request(&ctx, req).await;
     assert!(result.is_none(), "shutdown 时应返回 None");
 }
@@ -472,7 +474,7 @@ fn make_ctx_with_subscription(max_retries: u32) -> (EngineContext, Arc<SpiderSta
 #[tokio::test]
 async fn process_request_emits_error_event_on_failure() {
     let (ctx, _stats, mut sub) = make_ctx_with_subscription(1);
-    let req = Request::get("http://127.0.0.1:1/");
+    let req = CrawlRequest::get("http://127.0.0.1:1/");
     let result = process_request(&ctx, req).await;
     assert!(result.is_none(), "失败后应返回 None");
 
@@ -491,7 +493,7 @@ async fn process_request_emits_error_event_on_failure() {
 #[tokio::test]
 async fn process_request_emits_retry_events() {
     let (ctx, _stats, mut sub) = make_ctx_with_subscription(2);
-    let req = Request::get("http://127.0.0.1:1/");
+    let req = CrawlRequest::get("http://127.0.0.1:1/");
     let _ = process_request(&ctx, req).await;
 
     // 收集所有事件
@@ -551,7 +553,7 @@ fn ambiguous_callback_does_not_route_to_first_spider() {
         Arc::new(NamedSpider { name: "b".into() }) as Arc<dyn Spider>,
     ];
     ctx.state.all_stats = vec![Arc::new(SpiderStats::new()), Arc::new(SpiderStats::new())];
-    let req = Request::get("http://example.com/detail").with_callback("detail");
+    let req = CrawlRequest::get("http://example.com/detail").with_callback("detail");
     assert_eq!(
         ctx.state.spider_index_for(&req),
         None,
@@ -576,7 +578,7 @@ impl Spider for DomainRestrictedSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
     fn allowed_domains(&self) -> HashSet<String> {
@@ -588,7 +590,7 @@ impl Spider for DomainRestrictedSpider {
 async fn offsite_request_increments_offsite_counter() {
     let (mut ctx, stats) = make_ctx();
     ctx.state.spiders = vec![Arc::new(DomainRestrictedSpider) as Arc<dyn Spider>];
-    let req = Request::get("https://blocked.example.com/");
+    let req = CrawlRequest::get("https://blocked.example.com/");
     assert!(process_request(&ctx, req).await.is_none());
     assert_eq!(stats.offsite.load(Ordering::SeqCst), 1);
 }

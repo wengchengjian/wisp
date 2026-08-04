@@ -55,3 +55,15 @@ _Avoid_: signals
 **Item**:
 A structured value a Spider produces from a Response, carrying source URL, Spider, callback, and stable id; delivered through Item pipelines and Crawl events.
 _Avoid_: result row
+
+**Item output**:
+The module that serializes Items to Json, Jsonl, Markdown, or Warc; OutputWriterPipeline, Items, and MCP are adapters over the same interface.
+_Avoid_: exporter
+
+**Page navigation**:
+The Page-owned seam that enables Network, navigates, waits for load, and returns the document status code; Dynamic and Stealth call it instead of reading CDP events.
+_Avoid_: CDP event loop
+
+**Crawl request**:
+The transport Request plus Spider/Engine state (callback, spider, priority, depth, meta, retry count, mode override) that Engine schedules and middleware mutates; transport stays transport-only.
+_Avoid_: combined request

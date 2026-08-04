@@ -20,7 +20,6 @@ pub use observability::events;
 pub use observability::state;
 pub use runtime::autoscale;
 pub use runtime::control;
-pub use runtime::items;
 pub use runtime::output;
 pub use runtime::robots;
 pub use scheduling::scheduler;
@@ -31,8 +30,8 @@ pub use builder::{ClosureSpider, SpiderBuilder};
 pub use crawl_stream::{CrawlEvent, CrawlStream};
 pub use engine::{Engine, EngineBuilder, EngineConfig};
 pub use item::Item;
-pub use items::{Items, JsonlWriter};
 pub use page::Page;
+pub use runtime::output::{ItemOutput, Items, OutputFormat};
 pub use spider::{BLOCKED_STATUS_CODES, RequestAction, Spider};
 pub use stats::{CrawlState, CrawlStats};
 pub use stop::{
@@ -41,7 +40,7 @@ pub use stop::{
 };
 
 // 统一类型：直接使用 fetcher 的 Request/Response/Method
-pub use wisp_fetcher::{Method, Request, Response};
+pub use wisp_fetcher::{CrawlRequest, Method, Request, Response};
 
 #[cfg(test)]
 mod tests;

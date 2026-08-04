@@ -1,10 +1,12 @@
 //! MCP 工具定义与输入参数 JSON Schema。
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::pin::Pin;
 use std::sync::LazyLock;
 
-use crate::tools::ToolContext;
+use crate::tools::{ToolContext, parse_args, to_value};
 use wisp_core::error::Result;
 
 /// 工具执行闭包：解析参数、调用 typed handler、输出 Value。
@@ -16,6 +18,10 @@ pub(crate) type ToolRun = Box<
         + Send
         + Sync,
 >;
+
+/// typed handler：接收已解析参数，返回 BoxFuture。
+pub(crate) type TypedRun<A, O> =
+    for<'a> fn(A, &'a ToolContext<'a>) -> Pin<Box<dyn Future<Output = Result<O>> + Send + 'a>>;
 
 /// MCP 工具定义。
 pub struct Tool {
@@ -29,13 +35,25 @@ pub struct Tool {
 }
 
 impl Tool {
-    /// 创建工具 spec：元数据公开，执行逻辑收进同一模块。
-    pub(crate) fn new(
+    /// 创建工具 spec：解析/序列化由本模块统一负责。
+    pub(crate) fn from_handler<Args, Output>(
         name: &'static str,
         description: &'static str,
         input_schema: Value,
-        run: ToolRun,
-    ) -> Self {
+        run: TypedRun<Args, Output>,
+    ) -> Self
+    where
+        Args: DeserializeOwned + Send + 'static,
+        Output: Serialize + Send + 'static,
+    {
+        let run: ToolRun = Box::new(move |args, ctx| {
+            let name = name;
+            Box::pin(async move {
+                let args = parse_args::<Args>(&args, name)?;
+                let output = run(args, ctx).await?;
+                to_value(output)
+            })
+        });
         Self {
             name,
             description,

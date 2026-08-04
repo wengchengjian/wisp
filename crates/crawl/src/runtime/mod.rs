@@ -2,10 +2,9 @@
 
 pub mod autoscale;
 pub mod control;
-pub mod items;
 pub mod output;
 pub mod robots;
 
 pub use control::EngineControl;
-pub use items::{Items, JsonlWriter};
+pub use output::{ItemOutput, Items, OutputFormat};
 pub use robots::RobotsCache;

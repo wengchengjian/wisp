@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use wisp::crawl::{Engine, Request, Response, Spider};
+use wisp::crawl::{CrawlRequest, Engine, Response, Spider};
 use wisp::storage::{MemoryStore, Store};
 
 struct CacheSpider;
@@ -18,7 +18,7 @@ impl Spider for CacheSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://httpbin.org/get".to_string()]
     }
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         let text = resp.text().unwrap_or_default();
         assert!(text.contains("httpbin.org"), "响应应来自 httpbin");
         (vec![], vec![])

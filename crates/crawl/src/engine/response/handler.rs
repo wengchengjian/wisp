@@ -1,4 +1,4 @@
-//! Engine 子模块：response handler。
+//! Engine 子模块：response handler.
 
 use super::emit::{
     emit_error_event, emit_page_scraped, process_page_items, schedule_follow_requests,
@@ -11,7 +11,7 @@ async fn handle_spider_page(
     ctx: &EngineContext,
     spider: &Arc<dyn Spider>,
     resp: Response,
-) -> (Vec<Value>, Vec<Request>) {
+) -> (Vec<Value>, Vec<CrawlRequest>) {
     let page_url = resp.url.clone();
     let status = resp.status;
     let spider_for_handle = Arc::clone(spider);
@@ -46,7 +46,7 @@ async fn handle_spider_page(
     }
 }
 
-fn log_handle_result(url: &str, status: u16, items: &[Value], follows: &[Request]) {
+fn log_handle_result(url: &str, status: u16, items: &[Value], follows: &[CrawlRequest]) {
     if items.is_empty() && follows.is_empty() {
         tracing::warn!(
             "handle 返回空 (items=0, follows=0): url={}, status={}",
@@ -68,7 +68,6 @@ fn log_handle_result(url: &str, status: u16, items: &[Value], follows: &[Request
 /// Task 3 关键改动：调用 `spider.handle(resp)`（callback 路由）而非 `spider.parse(resp)`。
 /// items 经 `CrawlEvent::Item` 事件交付：`run_many` 消费事件收集，`run_stream` 消费事件流。
 #[tracing::instrument(level = "trace", skip(ctx, resp), fields(status = resp.status))]
-
 pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let spider = match ctx.state.spider_for(&resp.request) {
         Some(s) => s,
@@ -95,7 +94,7 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
 
     let callback = resp.request.callback.clone();
     let (items, follows) = handle_spider_page(ctx, &spider, resp).await;
-    process_page_items(ctx, &spider, &stats, &page_url, callback.as_deref(), items).await;
+    let _ = process_page_items(ctx, &spider, &stats, &page_url, callback.as_deref(), items).await;
     schedule_follow_requests(ctx, follows).await;
     ctx.state.work_notify.notify_one();
     emit_page_scraped(ctx, &stats, &page_url).await;

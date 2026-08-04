@@ -5,7 +5,7 @@ mod sitemap;
 
 use crate::builder::closure::BlockedFn;
 use crate::stop::StopCondition;
-use crate::{NeverStop, Request, Response};
+use crate::{CrawlRequest, NeverStop, Response};
 use futures::future::BoxFuture;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// 用 `Arc<dyn Fn(...) -> BoxFuture>` 让闭包可 Clone + 异步 + Send + Sync。
 /// 每个 handler 捕获不同状态都满足同一签名。
 pub type Handler =
-    Arc<dyn Fn(Response) -> BoxFuture<'static, (Vec<Value>, Vec<Request>)> + Send + Sync>;
+    Arc<dyn Fn(Response) -> BoxFuture<'static, (Vec<Value>, Vec<CrawlRequest>)> + Send + Sync>;
 
 /// 闭包式 Spider 构建器。
 ///
@@ -86,7 +86,7 @@ impl SpiderBuilder {
     pub fn on<F, Fut>(mut self, label: &str, handler: F) -> Self
     where
         F: Fn(Response) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = (Vec<Value>, Vec<Request>)> + Send + 'static,
+        Fut: Future<Output = (Vec<Value>, Vec<CrawlRequest>)> + Send + 'static,
     {
         let boxed: Handler = Arc::new(move |resp| Box::pin(handler(resp)));
         self.handlers.insert(label.to_string(), boxed);

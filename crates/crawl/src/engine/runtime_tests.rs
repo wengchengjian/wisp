@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 
-use crate::{CrawlState, Request};
+use crate::{CrawlRequest, CrawlState};
 
 #[test]
 fn engine_builder_transport_config() {
@@ -30,8 +30,8 @@ fn engine_builder_transport_config() {
 
 #[test]
 fn merge_checkpoint_states_deduplicates_urls() {
-    let req_a = Request::get("https://example.com/a");
-    let req_b = Request::get("https://example.com/b");
+    let req_a = CrawlRequest::get("https://example.com/a");
+    let req_b = CrawlRequest::get("https://example.com/b");
 
     let mut s1 = CrawlState::new("spider-a".into());
     s1.pending_urls = vec![req_a.clone(), req_b.clone()];

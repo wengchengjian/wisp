@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{CrawlContext, ErrorAction, Middleware, RequestMwAction};
-use crate::Request;
+use crate::CrawlRequest;
 use wisp_core::error::WispError;
 
 // === 请求修改类 ===
@@ -46,7 +46,11 @@ impl Middleware for UaRotationMiddleware {
         20
     }
 
-    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> RequestMwAction {
+    async fn process_request(
+        &self,
+        req: &mut CrawlRequest,
+        _ctx: &CrawlContext,
+    ) -> RequestMwAction {
         if self.agents.is_empty() {
             return RequestMwAction::Continue;
         }
@@ -89,7 +93,7 @@ impl Middleware for RetryMiddleware {
 
     async fn process_error(
         &self,
-        _req: &Request,
+        _req: &CrawlRequest,
         _err: &WispError,
         _ctx: &CrawlContext,
     ) -> ErrorAction {
@@ -123,7 +127,11 @@ impl Middleware for ProxyInjectionMiddleware {
         30
     }
 
-    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> RequestMwAction {
+    async fn process_request(
+        &self,
+        req: &mut CrawlRequest,
+        _ctx: &CrawlContext,
+    ) -> RequestMwAction {
         if let Some(proxy) = self.pool.next() {
             req.proxy = Some(proxy);
             RequestMwAction::Modified
@@ -151,7 +159,11 @@ impl Middleware for HeadersMiddleware {
         10
     }
 
-    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> RequestMwAction {
+    async fn process_request(
+        &self,
+        req: &mut CrawlRequest,
+        _ctx: &CrawlContext,
+    ) -> RequestMwAction {
         if self.headers.is_empty() {
             return RequestMwAction::Continue;
         }

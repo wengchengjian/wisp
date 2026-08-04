@@ -4,9 +4,10 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
 
+use crate::CrawlRequest;
 use crate::auto;
+use wisp_core::Response;
 use wisp_core::error::Result;
-use wisp_core::{Request, Response};
 use wisp_fetcher::FetchMode;
 
 const CF_DOMAIN_LOCK_LIMIT: usize = 1024;
@@ -33,9 +34,12 @@ fn cf_domain_lock(
 /// 尝试用共享 cookie seam 中已有的 CF cookie 走 HTTP 抓取（快速路径）。
 async fn try_http_with_cf_cookie(
     fetch_client: &wisp_fetcher::FetchClient,
-    req: &Request,
+    req: &CrawlRequest,
 ) -> Result<Option<Response>> {
-    let Some(resp) = fetch_client.try_http_with_session_cookie(req).await? else {
+    let Some(resp) = fetch_client
+        .try_http_with_session_cookie(&req.request)
+        .await?
+    else {
         return Ok(None);
     };
     if auto::blocked_reason(resp.status, &resp.body, &resp.headers).is_none() {
@@ -47,7 +51,7 @@ async fn try_http_with_cf_cookie(
 
 pub(super) async fn fetch_stealth_override(
     fetch_client: &wisp_fetcher::FetchClient,
-    req: &Request,
+    req: &CrawlRequest,
     cf_domain_locks: &dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 ) -> Result<Response> {
     let domain = url::Url::parse(&req.url)
@@ -76,7 +80,7 @@ pub(super) async fn fetch_stealth_override(
 /// Auto 模式：先尝试 HTTP+cookie，再查规则缓存，最后 HTTP 先行等待中间件升级。
 pub(super) async fn fetch_auto(
     fetch_client: &wisp_fetcher::FetchClient,
-    req: &Request,
+    req: &CrawlRequest,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
 ) -> Result<Response> {
     if let Some(resp) = try_http_with_cf_cookie(fetch_client, req).await? {

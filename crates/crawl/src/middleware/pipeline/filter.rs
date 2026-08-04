@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::Item;
 use crate::middleware::{CrawlContext, ItemPipeline};
+use wisp_core::error::Result;
 
 /// 字段过滤管道：仅保留指定字段。
 pub struct FilterFieldsPipeline {
@@ -22,8 +23,12 @@ impl FilterFieldsPipeline {
 
 #[async_trait]
 impl ItemPipeline for FilterFieldsPipeline {
-    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>> {
-        Some(item.map_value(|value| {
+    async fn process_item(
+        &self,
+        item: Item<Value>,
+        _ctx: &CrawlContext,
+    ) -> Result<Option<Item<Value>>> {
+        Ok(Some(item.map_value(|value| {
             match value {
                 Value::Object(map) => Value::Object(
                     map.into_iter()
@@ -32,6 +37,6 @@ impl ItemPipeline for FilterFieldsPipeline {
                 ),
                 other => other,
             }
-        }))
+        })))
     }
 }

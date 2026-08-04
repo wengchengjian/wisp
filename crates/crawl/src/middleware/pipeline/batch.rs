@@ -8,9 +8,10 @@ use tokio::sync::Mutex;
 
 use crate::Item;
 use crate::middleware::{CrawlContext, ItemPipeline};
+use wisp_core::error::Result;
 
 type FlushFn =
-    Box<dyn Fn(Vec<Item<Value>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+    Box<dyn Fn(Vec<Item<Value>>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
 
 /// 通用批量处理 Pipeline：内部缓冲，满 batch_size 条自动调用 flush_fn 批量提交。
 ///
@@ -24,6 +25,7 @@ type FlushFn =
 /// let pipeline = BatchItemPipeline::new(100, async |items| {
 ///     // 批量写入逻辑
 ///     println!("flushing {} items", items.len());
+///     Ok(())
 /// });
 /// ```
 pub struct BatchItemPipeline {
@@ -36,11 +38,11 @@ impl BatchItemPipeline {
     /// 创建批量 Pipeline。
     ///
     /// - `batch_size`：缓冲区大小，满时自动 flush
-    /// - `flush_fn`：批量提交逻辑（接收一批 items）
+    /// - `flush_fn`：批量提交逻辑（接收一批 items，返回错误时中止 Run）
     pub fn new<F, Fut>(batch_size: usize, flush_fn: F) -> Self
     where
         F: Fn(Vec<Item<Value>>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
     {
         Self {
             buffer: Mutex::new(Vec::with_capacity(batch_size)),
@@ -52,17 +54,21 @@ impl BatchItemPipeline {
 
 #[async_trait]
 impl ItemPipeline for BatchItemPipeline {
-    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>> {
+    async fn process_item(
+        &self,
+        item: Item<Value>,
+        _ctx: &CrawlContext,
+    ) -> Result<Option<Item<Value>>> {
         let mut buf = self.buffer.lock().await;
         buf.push(item.clone());
         if buf.len() >= self.batch_size {
             let batch = std::mem::take(&mut *buf);
-            (self.flush_fn)(batch).await;
+            (self.flush_fn)(batch).await?;
         }
-        Some(item)
+        Ok(Some(item))
     }
 
-    async fn close(&self, _ctx: &CrawlContext) {
+    async fn close(&self, _ctx: &CrawlContext) -> Result<()> {
         let mut buf = self.buffer.lock().await;
         if !buf.is_empty() {
             let remaining = buf.len();
@@ -71,9 +77,10 @@ impl ItemPipeline for BatchItemPipeline {
                 remaining
             );
             let batch = std::mem::take(&mut *buf);
-            (self.flush_fn)(batch).await;
+            (self.flush_fn)(batch).await?;
         } else {
             tracing::debug!("BatchItemPipeline::close: buffer empty, nothing to flush");
         }
+        Ok(())
     }
 }

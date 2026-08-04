@@ -4,7 +4,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use super::SpiderBuilder;
-use crate::Request;
+use crate::CrawlRequest;
 
 /// Sitemap `<loc>` 提取正则：匹配 `<loc>URL</loc>` 中的 URL（允许前后空白）。
 static RE_SITEMAP_LOC: LazyLock<Regex> =
@@ -34,11 +34,11 @@ impl SpiderBuilder {
                 let label = label.clone();
                 async move {
                     let text = resp.text().unwrap_or_default();
-                    let follows: Vec<Request> = RE_SITEMAP_LOC
+                    let follows: Vec<CrawlRequest> = RE_SITEMAP_LOC
                         .captures_iter(&text)
                         .filter_map(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
                         .filter(|u| !u.is_empty())
-                        .map(|url| Request::get(&url).with_callback(&label))
+                        .map(|url| CrawlRequest::get(&url).with_callback(&label))
                         .collect();
                     (vec![], follows)
                 }

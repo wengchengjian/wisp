@@ -159,39 +159,42 @@ async fn test_closure_spider_handle_routes_by_callback() {
     assert_eq!(items[0]["handler"], "default");
 
     // 2. callback="detail" → detail handler
-    let resp_detail = Response::from_http(
+    let mut resp_detail = Response::from_http(
         200,
         "https://example.com/detail/1".into(),
         Default::default(),
         b"<html></html>".to_vec(),
         String::new(),
-        Request::get("https://example.com/detail/1").with_callback("detail"),
+        Request::get("https://example.com/detail/1"),
     );
+    resp_detail.request.callback = Some("detail".to_string());
     let (items, _) = spider.handle(resp_detail).await;
     assert_eq!(items[0]["handler"], "detail");
 
     // 3. callback="content" → content handler
-    let resp_content = Response::from_http(
+    let mut resp_content = Response::from_http(
         200,
         "https://example.com/content/1".into(),
         Default::default(),
         b"<html><h1>Title</h1></html>".to_vec(),
         String::new(),
-        Request::get("https://example.com/content/1").with_callback("content"),
+        Request::get("https://example.com/content/1"),
     );
+    resp_content.request.callback = Some("content".to_string());
     let (items, _) = spider.handle(resp_content).await;
     assert_eq!(items[0]["handler"], "content");
     assert_eq!(items[0]["title"], "Title");
 
     // 4. callback="unknown" → 回退到 default handler
-    let resp_unknown = Response::from_http(
+    let mut resp_unknown = Response::from_http(
         200,
         "https://example.com/unknown".into(),
         Default::default(),
         b"<html></html>".to_vec(),
         String::new(),
-        Request::get("https://example.com/unknown").with_callback("unknown"),
+        Request::get("https://example.com/unknown"),
     );
+    resp_unknown.request.callback = Some("unknown".to_string());
     let (items, _) = spider.handle(resp_unknown).await;
     assert_eq!(items[0]["handler"], "default");
 }

@@ -7,7 +7,7 @@
 
 use serde_json::Value;
 use std::time::Duration;
-use wisp::crawl::{Engine, Request, Response, SpiderBuilder};
+use wisp::crawl::{CrawlRequest, Engine, Request, Response, SpiderBuilder};
 use wisp::http::Client;
 use wisp::parser::ResponseExt;
 use wreq_util::Profile;
@@ -71,7 +71,7 @@ async fn test_quotes_full_crawl_10_pages() {
                 .collect();
 
             // 跟踪分页
-            let follows: Vec<Request> = doc
+            let follows: Vec<CrawlRequest> = doc
                 .select_one(".next a")
                 .and_then(|a| a.attr("href"))
                 .and_then(|href| resp.follow(&href))
@@ -296,7 +296,7 @@ async fn test_spider_builder_engine_integration() {
             }).collect();
 
             // 跟踪下一页
-            let follows: Vec<Request> = doc.select_one("li.next a")
+            let follows: Vec<CrawlRequest> = doc.select_one("li.next a")
                 .and_then(|a| a.attr("href"))
                 .and_then(|href| resp.follow(&href))
                 .into_iter().collect();

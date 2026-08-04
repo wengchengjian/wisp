@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use wisp::crawl::{Engine, Request, Response, Spider};
+use wisp::crawl::{CrawlRequest, Engine, Response, Spider};
 
 struct ConcurrencySpider;
 
@@ -17,7 +17,7 @@ impl Spider for ConcurrencySpider {
             .map(|i| format!("https://httpbin.org/delay/0.1?i={}", i))
             .collect()
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
     async fn on_start(&self) {}

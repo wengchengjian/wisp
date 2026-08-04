@@ -38,7 +38,7 @@ impl Spider for CountSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![self.url.clone()]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![serde_json::json!({"name": self.name})], vec![])
     }
 }
@@ -117,7 +117,7 @@ async fn test_engine_run_returns_items() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.url.clone()]
         }
-        async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             let doc = resp.parse();
             let items: Vec<Value> = doc
                 .select("p")

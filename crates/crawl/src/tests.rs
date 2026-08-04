@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use wisp_core::utils::resolve_href;
 use wisp_parser::ResponseExt;
@@ -36,7 +37,7 @@ fn test_spider_default_is_blocked_detects_status_codes() {
         fn start_urls(&self) -> Vec<String> {
             vec![]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             (vec![], vec![])
         }
     }
@@ -142,7 +143,7 @@ async fn test_stream_emits_item_and_done() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.start_url.clone()]
         }
-        async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             let node = resp.parse();
             let text = node.select("p").text().join("");
             (vec![serde_json::json!({ "text": text })], vec![])
@@ -185,7 +186,7 @@ async fn test_stream_items_helper() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.start_url.clone()]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             (vec![serde_json::json!({ "v": 1 })], vec![])
         }
     }
@@ -200,6 +201,47 @@ async fn test_stream_items_helper() {
         count += 1;
     }
     assert!(count >= 1, "items() 应产出至少 1 个 item");
+}
+
+#[tokio::test]
+async fn pipeline_error_aborts_run_with_typed_error() {
+    let base = spawn_html_server("<p>1</p>").await;
+    struct OneSpider {
+        start_url: String,
+    }
+    #[async_trait]
+    impl Spider for OneSpider {
+        fn name(&self) -> &str {
+            "one"
+        }
+        fn start_urls(&self) -> Vec<String> {
+            vec![self.start_url.clone()]
+        }
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
+            (vec![serde_json::json!({ "v": 1 })], vec![])
+        }
+    }
+    struct FailingPipeline;
+    #[async_trait]
+    impl middleware::ItemPipeline for FailingPipeline {
+        async fn process_item(
+            &self,
+            _item: Item<Value>,
+            _ctx: &middleware::CrawlContext,
+        ) -> wisp_core::error::Result<Option<Item<Value>>> {
+            Err(wisp_core::error::WispError::Io(std::io::Error::other(
+                "pipeline boom",
+            )))
+        }
+    }
+    let engine = Engine::infra()
+        .max_pages(1)
+        .obey_robots(false)
+        .pipeline(Arc::new(FailingPipeline))
+        .build()
+        .unwrap();
+    let err = engine.run(OneSpider { start_url: base }).await.unwrap_err();
+    assert!(err.to_string().contains("pipeline boom"));
 }
 
 #[test]

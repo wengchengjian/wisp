@@ -18,8 +18,8 @@ pub(crate) struct EngineContext {
 /// 单次 run 输入草稿：由 run_inner_many 组装，build 时转为 EngineState。
 pub(crate) struct EngineRunDraft {
     pub sched: Arc<scheduler::Scheduler>,
-    pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
-    pub follow_rx: tokio::sync::mpsc::UnboundedReceiver<Request>,
+    pub follow_tx: tokio::sync::mpsc::UnboundedSender<CrawlRequest>,
+    pub follow_rx: tokio::sync::mpsc::UnboundedReceiver<CrawlRequest>,
     pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
     pub robots_cache: Arc<crate::runtime::robots::RobotsCache>,
     pub spiders: Vec<Arc<dyn Spider>>,
@@ -29,8 +29,8 @@ pub(crate) struct EngineRunDraft {
 /// 单次 run 状态：跨 task 共享的调度资源与 per-run 可变状态。
 pub(crate) struct EngineState {
     pub sched: Arc<scheduler::Scheduler>,
-    pub follow_tx: tokio::sync::mpsc::UnboundedSender<Request>,
-    pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Request>>>,
+    pub follow_tx: tokio::sync::mpsc::UnboundedSender<CrawlRequest>,
+    pub follow_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<CrawlRequest>>>,
     pub work_notify: Arc<tokio::sync::Notify>,
     pub middleware_chain: Arc<middleware::MiddlewareChain>,
     pub rule_engine: Arc<Mutex<auto::ModeRuleEngine>>,
@@ -38,13 +38,14 @@ pub(crate) struct EngineState {
     pub spiders: Vec<Arc<dyn Spider>>,
     pub all_stats: Vec<Arc<SpiderStats>>,
     pub abort_flag: Arc<AtomicBool>,
+    pub pipeline_error: Arc<Mutex<Option<wisp_core::error::WispError>>>,
     pub global_in_flight: Arc<AtomicUsize>,
-    pub in_flight_requests: Arc<Mutex<HashMap<String, Vec<Request>>>>,
+    pub in_flight_requests: Arc<Mutex<HashMap<String, Vec<CrawlRequest>>>>,
 }
 
 impl EngineState {
     /// 返回请求应路由到的 Spider 索引；`Request.spider` 优先，否则按 callback 归属查找。
-    pub fn spider_index_for(&self, req: &Request) -> Option<usize> {
+    pub fn spider_index_for(&self, req: &CrawlRequest) -> Option<usize> {
         if let Some(name) = req.spider.as_deref() {
             return self.spiders.iter().position(|s| s.name() == name);
         }
@@ -72,12 +73,12 @@ impl EngineState {
         }
     }
 
-    pub fn spider_for(&self, req: &Request) -> Option<Arc<dyn Spider>> {
+    pub fn spider_for(&self, req: &CrawlRequest) -> Option<Arc<dyn Spider>> {
         self.spider_index_for(req)
             .map(|i| Arc::clone(&self.spiders[i]))
     }
 
-    pub fn stats_for(&self, req: &Request) -> Option<Arc<SpiderStats>> {
+    pub fn stats_for(&self, req: &CrawlRequest) -> Option<Arc<SpiderStats>> {
         self.spider_index_for(req)
             .map(|i| Arc::clone(&self.all_stats[i]))
     }

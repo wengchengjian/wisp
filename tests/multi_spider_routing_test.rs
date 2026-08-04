@@ -2,7 +2,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::crawl::Engine;
 use wisp::crawl::stop::MaxPages;
-use wisp::crawl::{Request, Spider, SpiderBuilder};
+use wisp::crawl::{CrawlRequest, Spider, SpiderBuilder};
 use wisp::fetcher::FetchMode;
 
 #[test]
@@ -21,7 +21,7 @@ fn closure_spider_accepts_only_owned_callbacks() {
     assert!(home.accepts_callback(None));
     assert!(!home.accepts_callback(Some("unknown")));
 
-    let req = Request::get("https://example.com/book/1").with_callback("detail");
+    let req = CrawlRequest::get("https://example.com/book/1").with_callback("detail");
     assert!(spider.accepts_callback(req.callback.as_deref()));
 }
 

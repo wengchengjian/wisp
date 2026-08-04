@@ -5,7 +5,7 @@ mod common;
 use futures::StreamExt;
 use serde_json::{Value, json};
 use wisp::crawl::CrawlEvent;
-use wisp::crawl::{Engine, Request, Response, Spider, SpiderBuilder};
+use wisp::crawl::{CrawlRequest, Engine, Request, Response, Spider, SpiderBuilder};
 use wisp::parser::Node;
 use wisp::parser::ResponseExt;
 
@@ -35,7 +35,7 @@ async fn test_spider_builder_parse_with_follow() {
                 .into_iter()
                 .map(|t| json!({"title": t}))
                 .collect();
-            let follows = vec![Request::get("https://example.com/page2")];
+            let follows = vec![CrawlRequest::get("https://example.com/page2")];
             (items, follows)
         })
         .build();

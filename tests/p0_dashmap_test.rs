@@ -25,7 +25,7 @@ impl Spider for MultiDomainSpider {
             "http://127.0.0.1:1/domain-a/page2".into(),
         ]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         self.counter.fetch_add(1, Ordering::SeqCst);
         (vec![], vec![])
     }

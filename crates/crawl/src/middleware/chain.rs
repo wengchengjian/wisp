@@ -8,8 +8,8 @@ use tracing::Instrument;
 use super::{
     CrawlContext, ErrorAction, ItemPipeline, Middleware, RequestMwAction, ResponseMwAction,
 };
-use crate::{Item, Request, Response};
-use wisp_core::error::WispError;
+use crate::{CrawlRequest, Item, Response};
+use wisp_core::error::{Result, WispError};
 
 /// 中间件链：按 priority 排序后顺序执行所有中间件。
 pub(crate) struct MiddlewareChain {
@@ -51,7 +51,7 @@ impl MiddlewareChain {
     #[tracing::instrument(level = "trace", skip(self, req, ctx))]
     pub(crate) async fn run_request_middlewares(
         &self,
-        req: &mut Request,
+        req: &mut CrawlRequest,
         ctx: &CrawlContext,
     ) -> RequestMwAction {
         for mw in &self.middlewares {
@@ -84,7 +84,7 @@ impl MiddlewareChain {
     /// 执行错误中间件链。任一返回 Retry 则重试。
     pub(crate) async fn run_error_middlewares(
         &self,
-        req: &Request,
+        req: &CrawlRequest,
         err: &WispError,
         ctx: &CrawlContext,
     ) -> ErrorAction {
@@ -102,30 +102,32 @@ impl MiddlewareChain {
         &self,
         item: Item<Value>,
         ctx: &CrawlContext,
-    ) -> Option<Item<Value>> {
+    ) -> Result<Option<Item<Value>>> {
         let mut current = Some(item);
         for pipeline in &self.pipelines {
             match current {
                 Some(item) => {
-                    current = pipeline.process_item(item, ctx).await;
+                    current = pipeline.process_item(item, ctx).await?;
                 }
-                None => return None,
+                None => return Ok(None),
             }
         }
-        current
+        Ok(current)
     }
 
     /// 打开所有 pipeline（爬取开始前调用）。
-    pub(crate) async fn run_pipelines_open(&self, ctx: &CrawlContext) {
+    pub(crate) async fn run_pipelines_open(&self, ctx: &CrawlContext) -> Result<()> {
         for pipeline in &self.pipelines {
-            pipeline.open(ctx).await;
+            pipeline.open(ctx).await?;
         }
+        Ok(())
     }
 
     /// 关闭所有 pipeline（爬取结束后调用）。
-    pub(crate) async fn run_pipelines_close(&self, ctx: &CrawlContext) {
+    pub(crate) async fn run_pipelines_close(&self, ctx: &CrawlContext) -> Result<()> {
         for pipeline in &self.pipelines {
-            pipeline.close(ctx).await;
+            pipeline.close(ctx).await?;
         }
+        Ok(())
     }
 }

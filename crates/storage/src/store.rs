@@ -70,9 +70,9 @@ mod tests {
     #[tokio::test]
     async fn open_store_memory_roundtrips() {
         let store = open_store(":memory:").expect("open memory store");
-        store.set("ns", "k", b"v").await.expect("set");
+        store.set("ns", "k_memory", b"v").await.expect("set");
         assert_eq!(
-            store.get("ns", "k").await.expect("get").as_deref(),
+            store.get("ns", "k_memory").await.expect("get").as_deref(),
             Some(&b"v"[..])
         );
     }
@@ -80,9 +80,9 @@ mod tests {
     #[tokio::test]
     async fn open_store_empty_path_roundtrips() {
         let store = open_store("").expect("open default store");
-        store.set("ns", "k", b"v").await.expect("set");
+        store.set("ns", "k_empty", b"v").await.expect("set");
         assert_eq!(
-            store.get("ns", "k").await.expect("get").as_deref(),
+            store.get("ns", "k_empty").await.expect("get").as_deref(),
             Some(&b"v"[..])
         );
     }

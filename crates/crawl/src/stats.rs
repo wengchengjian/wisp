@@ -72,14 +72,14 @@ pub struct CrawlState {
     /// Spider 名称。
     pub spider_name: String,
     /// 待处理 URL 列表。
-    pub pending_urls: Vec<crate::Request>,
+    pub pending_urls: Vec<crate::CrawlRequest>,
     /// 已访问 URL 集合。
     pub seen_urls: HashSet<String>,
     /// 统计快照。
     pub stats: CrawlStats,
     /// 保存时仍在处理中的请求（重启后重新入队，保证至少一次语义）。
     #[serde(default)]
-    pub in_flight_urls: Vec<crate::Request>,
+    pub in_flight_urls: Vec<crate::CrawlRequest>,
     /// 保存时间。
     pub saved_at: chrono::DateTime<chrono::Utc>,
 }

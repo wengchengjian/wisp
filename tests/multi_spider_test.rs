@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use wisp::crawl::{Engine, MaxPages, Request, Response, Spider, StopCondition, StopContext};
+use wisp::crawl::{CrawlRequest, Engine, MaxPages, Response, Spider, StopCondition, StopContext};
 
 #[test]
 fn test_max_pages_condition() {
@@ -50,7 +50,7 @@ async fn test_multiple_runs_independent_stats() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.url.clone()]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }
@@ -68,7 +68,7 @@ async fn test_multiple_runs_independent_stats() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.url.clone()]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }
@@ -120,9 +120,9 @@ async fn test_until_stops_one_spider_without_affecting_other() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.url.clone()]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             // follow 一个 URL，验证 until 会阻止它被处理
-            (vec![], vec![Request::get(&format!("{}/2", self.url))])
+            (vec![], vec![CrawlRequest::get(&format!("{}/2", self.url))])
         }
         fn until(&self) -> Arc<dyn StopCondition> {
             Arc::new(MaxPages(1))
@@ -141,7 +141,7 @@ async fn test_until_stops_one_spider_without_affecting_other() {
         fn start_urls(&self) -> Vec<String> {
             vec![self.url.clone()]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             self.parsed.fetch_add(1, Ordering::SeqCst);
             (vec![], vec![])
         }

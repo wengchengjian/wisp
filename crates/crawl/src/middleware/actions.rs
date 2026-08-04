@@ -1,6 +1,6 @@
 //! 请求/响应/错误阶段中间件动作类型。
 
-use crate::{Request, Response};
+use crate::{CrawlRequest, Response};
 
 // === 请求阶段动作 ===
 
@@ -54,7 +54,7 @@ pub enum ResponseMwAction {
     /// 终止整个爬取，附带原因
     Abort(String),
     /// 用修改后的请求重新获取（用于 Cookie 挑战、JS 重定向等需要"检测→修改→重发"的场景）
-    Refetch(Request),
+    Refetch(CrawlRequest),
 }
 
 impl PartialEq for ResponseMwAction {

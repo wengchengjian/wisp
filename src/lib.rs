@@ -75,8 +75,8 @@ pub use storage::SqliteStore;
 
 // === 爬虫引擎 ===
 pub use crawl::{
-    ClosureSpider, CrawlEvent, CrawlStream, Engine, EngineConfig, Items, JsonlWriter, Spider,
-    SpiderBuilder,
+    ClosureSpider, CrawlEvent, CrawlRequest, CrawlStream, Engine, EngineConfig, ItemOutput, Items,
+    OutputFormat, Spider, SpiderBuilder,
 };
 
 // === 底层类型（FetchClientConfig 公共字段需要） ===

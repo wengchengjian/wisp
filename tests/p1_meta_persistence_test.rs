@@ -1,11 +1,11 @@
 //! P1-7: Request.meta 随 bincode checkpoint 持久化。
 
 use serde_json::json;
-use wisp::crawl::Request;
+use wisp::crawl::CrawlRequest;
 
 #[test]
 fn meta_survives_bincode_roundtrip() {
-    let req = Request::get("https://example.com/page").with_meta(json!({
+    let req = CrawlRequest::get("https://example.com/page").with_meta(json!({
         "source_page": "https://example.com/list",
         "page_index": 42,
         "tags": ["a", "b"],
@@ -13,7 +13,7 @@ fn meta_survives_bincode_roundtrip() {
     }));
 
     let bytes = bincode::serialize(&req).expect("serialize");
-    let restored: Request = bincode::deserialize(&bytes).expect("deserialize");
+    let restored: CrawlRequest = bincode::deserialize(&bytes).expect("deserialize");
 
     assert_eq!(restored.url, "https://example.com/page");
     assert_eq!(restored.meta, req.meta, "meta 必须往返保持一致");
@@ -25,16 +25,16 @@ fn meta_survives_bincode_roundtrip() {
 
 #[test]
 fn meta_default_null_when_absent() {
-    let req = Request::get("https://example.com/x");
+    let req = CrawlRequest::get("https://example.com/x");
     let bytes = bincode::serialize(&req).expect("serialize");
-    let restored: Request = bincode::deserialize(&bytes).expect("deserialize");
+    let restored: CrawlRequest = bincode::deserialize(&bytes).expect("deserialize");
     assert_eq!(restored.meta, serde_json::Value::Null);
 }
 
 #[test]
 fn meta_edge_cases_empty_collections_and_bools() {
     // 空对象、空数组、布尔值 — 这些是 JSON 边界用例
-    let req = Request::get("https://example.com/edge").with_meta(json!({
+    let req = CrawlRequest::get("https://example.com/edge").with_meta(json!({
         "empty_obj": {},
         "empty_arr": [],
         "flag_true": true,
@@ -44,7 +44,7 @@ fn meta_edge_cases_empty_collections_and_bools() {
     }));
 
     let bytes = bincode::serialize(&req).expect("serialize");
-    let restored: Request = bincode::deserialize(&bytes).expect("deserialize");
+    let restored: CrawlRequest = bincode::deserialize(&bytes).expect("deserialize");
 
     assert_eq!(restored.meta, req.meta, "边界用例 meta 必须往返一致");
     assert!(

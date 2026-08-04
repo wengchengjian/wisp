@@ -3,7 +3,6 @@
 //! ARCH: 替代 `fetch_browser(&req, solve_cf: bool)` 的 bool 标志。
 //! 新策略（如 Playwright）可实现此 trait 零侵入注入。
 
-mod event;
 mod extract;
 
 #[cfg(feature = "browser")]
@@ -39,5 +38,4 @@ pub trait BrowserFetchStrategy: Send + Sync {
     async fn fetch(&self, page: &mut Page, req: &Request) -> Result<Response>;
 }
 
-pub(crate) use event::recv_navigation_status;
 pub(crate) use extract::extract_browser_response;

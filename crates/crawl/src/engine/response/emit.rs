@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::Item;
+use wisp_core::error::Result;
 
 pub(super) async fn process_page_items(
     ctx: &EngineContext,
@@ -10,7 +11,7 @@ pub(super) async fn process_page_items(
     source_url: &str,
     callback: Option<&str>,
     items: Vec<Value>,
-) {
+) -> Result<()> {
     let pipeline_crawl_ctx = if ctx.state.middleware_chain.is_empty() {
         None
     } else {
@@ -28,9 +29,22 @@ pub(super) async fn process_page_items(
                 .run_pipelines(item, crawl_ctx)
                 .await
         } else {
-            Some(item)
+            Ok(Some(item))
         };
-        if let Some(processed) = item {
+        let processed = match item {
+            Ok(processed) => processed,
+            Err(e) => {
+                let msg = e.to_string();
+                emit_error_event(ctx, source_url, &msg).await;
+                *ctx.state.pipeline_error.lock().await = Some(e);
+                ctx.state.abort_flag.store(true, Ordering::SeqCst);
+                ctx.state.work_notify.notify_waiters();
+                return Err(wisp_core::error::WispError::Engine(format!(
+                    "item pipeline failed: {msg}"
+                )));
+            }
+        };
+        if let Some(processed) = processed {
             stats.items.fetch_add(1, Ordering::SeqCst);
             ctx.runtime
                 .event_bus
@@ -38,10 +52,11 @@ pub(super) async fn process_page_items(
                 .await;
         }
     }
+    Ok(())
 }
 
 /// 将 follow 请求送入主循环队列。
-pub(super) async fn schedule_follow_requests(ctx: &EngineContext, follows: Vec<Request>) {
+pub(super) async fn schedule_follow_requests(ctx: &EngineContext, follows: Vec<CrawlRequest>) {
     for f in follows {
         if ctx.state.follow_tx.send(f).is_err() {
             tracing::debug!("follow_tx closed, dropping follow request");

@@ -98,7 +98,7 @@ impl Page {
     }
 
     /// 已生成的 follows。
-    pub fn follows(&self) -> &[Request] {
+    pub fn follows(&self) -> &[CrawlRequest] {
         &self.follows
     }
 }

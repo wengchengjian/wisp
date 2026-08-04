@@ -1,10 +1,12 @@
 //! MCP adaptive_scrape 工具。
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use super::fetch_html::fetch_html;
 use super::types::ToolContext;
-use crate::protocol::Tool;
+use crate::protocol::{Tool, TypedRun};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use wisp_core::FetchMode;
@@ -85,8 +87,15 @@ pub async fn adaptive_scrape(
     }
 }
 
+fn adaptive_scrape_run<'a>(
+    args: AdaptiveScrapeArgs,
+    ctx: &'a ToolContext<'a>,
+) -> Pin<Box<dyn Future<Output = Result<AdaptiveScrapeResult>> + Send + 'a>> {
+    Box::pin(adaptive_scrape(args, ctx))
+}
+
 pub(crate) fn spec() -> Tool {
-    Tool::new(
+    Tool::from_handler(
         "adaptive_scrape",
         "自适应抓取：CSS 失败时用 SQLite 快照重定位元素（长期监控）。",
         json!({
@@ -99,11 +108,6 @@ pub(crate) fn spec() -> Tool {
             },
             "required": ["url", "selector", "key"]
         }),
-        Box::new(|args, ctx| {
-            Box::pin(async move {
-                let args = super::parse_args::<AdaptiveScrapeArgs>(&args, "adaptive_scrape")?;
-                super::to_value(adaptive_scrape(args, ctx).await?)
-            })
-        }),
+        adaptive_scrape_run as TypedRun<AdaptiveScrapeArgs, AdaptiveScrapeResult>,
     )
 }

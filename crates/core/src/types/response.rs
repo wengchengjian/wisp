@@ -1,7 +1,7 @@
 //! 统一响应类型 - 所有 Fetcher 模式返回此类型。
 
 use crate::error::{ParseError, Result, WispError};
-use crate::types::Request;
+use crate::types::{CrawlRequest, Request};
 use crate::utils::resolve_href;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ pub struct Response {
     /// 浏览器模式下的 cookies
     pub cookies: Vec<String>,
     /// 发起此响应的请求（用于 follow()）
-    pub request: Request,
+    pub request: CrawlRequest,
     /// Content-Type 头（用于编码检测）
     pub content_type: String,
     /// 是否来自缓存（缓存命中不算 pages_crawled）。
@@ -55,7 +55,7 @@ pub struct ResponseParts {
     pub body: Vec<u8>,
     pub title: Option<String>,
     pub cookies: Vec<String>,
-    pub request: Request,
+    pub request: CrawlRequest,
     pub content_type: String,
     pub from_cache: bool,
 }
@@ -93,7 +93,7 @@ impl Response {
             body,
             title: None,
             cookies: Vec::new(),
-            request,
+            request: CrawlRequest::from(request),
             content_type,
             from_cache: false,
         }
@@ -115,7 +115,7 @@ impl Response {
             body: html.into_bytes(),
             title: Some(title),
             cookies,
-            request,
+            request: CrawlRequest::from(request),
             content_type: "text/html; charset=utf-8".to_string(),
             from_cache: false,
         }
@@ -147,27 +147,27 @@ impl Response {
 
     // === 导航 ===
 
-    /// 从当前响应 URL 解析相对链接，创建 GET 请求（depth 自动 +1）。
-    pub fn follow(&self, href: &str) -> Option<Request> {
+    /// 从当前响应 URL 解析相对链接，创建 Crawl 请求（depth 自动 +1）。
+    pub fn follow(&self, href: &str) -> Option<CrawlRequest> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(Request::get(&absolute).with_depth(self.request.depth + 1))
+        Some(CrawlRequest::get(&absolute).with_depth(self.request.depth + 1))
     }
 
     /// 创建带 callback 的跟随请求（depth 自动 +1）。
-    pub fn follow_with(&self, href: &str, callback: &str) -> Option<Request> {
+    pub fn follow_with(&self, href: &str, callback: &str) -> Option<CrawlRequest> {
         let absolute = resolve_href(&self.url, href)?;
         Some(
-            Request::get(&absolute)
+            CrawlRequest::get(&absolute)
                 .with_callback(callback)
                 .with_depth(self.request.depth + 1),
         )
     }
 
     /// 创建带 meta 的跟随请求（depth 自动 +1）。
-    pub fn follow_meta(&self, href: &str, meta: Value) -> Option<Request> {
+    pub fn follow_meta(&self, href: &str, meta: Value) -> Option<CrawlRequest> {
         let absolute = resolve_href(&self.url, href)?;
         Some(
-            Request::get(&absolute)
+            CrawlRequest::get(&absolute)
                 .with_meta(meta)
                 .with_depth(self.request.depth + 1),
         )

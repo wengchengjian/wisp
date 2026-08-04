@@ -19,7 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::Engine;
 use wisp::crawl::events::{EventBus, Metrics, metrics_listener};
-use wisp::crawl::{CrawlEvent, MaxPagesByCallback, Request, Response, Spider, SpiderBuilder};
+use wisp::crawl::{CrawlEvent, CrawlRequest, MaxPagesByCallback, Response, Spider, SpiderBuilder};
 use wisp::fetcher::FetchMode;
 use wisp::storage::MemoryStore;
 
@@ -48,7 +48,7 @@ impl Spider for DummySpider {
     fn start_urls(&self) -> Vec<String> {
         self.urls.clone()
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
 }
@@ -67,7 +67,7 @@ impl Spider for ItemSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![self.url.clone()]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![serde_json::json!({"name": self.name})], vec![])
     }
 }
@@ -89,11 +89,11 @@ impl Spider for FollowSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![self.start.clone()]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         let n = self.handle_calls.fetch_add(1, Ordering::SeqCst);
         // 首次调用返回 follows，后续调用返回空（避免无限递归）
         if n == 0 {
-            let follows = self.follows.iter().map(|u| Request::get(u)).collect();
+            let follows = self.follows.iter().map(|u| CrawlRequest::get(u)).collect();
             (vec![], follows)
         } else {
             (vec![], vec![])
@@ -603,7 +603,7 @@ impl Spider for SlowSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![self.url.clone()]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         tokio::time::sleep(Duration::from_secs(1)).await;
         (vec![], vec![])
     }
@@ -624,7 +624,7 @@ impl Spider for GracefulShutdownSpider {
     fn start_urls(&self) -> Vec<String> {
         vec![self.url.clone()]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         self.handle_calls.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(500)).await;
         (vec![], vec![])

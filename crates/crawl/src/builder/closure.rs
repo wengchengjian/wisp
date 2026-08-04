@@ -2,7 +2,7 @@
 
 use super::Handler;
 use crate::stop::StopCondition;
-use crate::{BLOCKED_STATUS_CODES, Request, Response, Spider};
+use crate::{BLOCKED_STATUS_CODES, CrawlRequest, Response, Spider};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -46,7 +46,7 @@ impl Spider for ClosureSpider {
     /// 2. callback 为其他 label → 对应 handler（若有）
     /// 3. label 无匹配 → 回退到 "default" handler
     /// 4. 都无 → 返回空
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         let label = resp.request.callback.as_deref().unwrap_or("default");
         match self.handlers.get(label) {
             Some(h) => h(resp).await,

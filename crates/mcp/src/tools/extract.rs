@@ -1,8 +1,11 @@
 //! MCP extract_css 工具。
 
-use crate::protocol::Tool;
+use super::types::ToolContext;
+use crate::protocol::{Tool, TypedRun};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::future::Future;
+use std::pin::Pin;
 use wisp_core::error::Result;
 use wisp_parser::Node;
 
@@ -49,8 +52,15 @@ pub async fn extract_css(args: ExtractCssArgs) -> Result<ExtractCssResult> {
     Ok(result)
 }
 
+fn extract_css_run<'a>(
+    args: ExtractCssArgs,
+    _ctx: &'a ToolContext<'a>,
+) -> Pin<Box<dyn Future<Output = Result<ExtractCssResult>> + Send + 'a>> {
+    Box::pin(extract_css(args))
+}
+
 pub(crate) fn spec() -> Tool {
-    Tool::new(
+    Tool::from_handler(
         "extract_css",
         "用 CSS 选择器从 HTML 提取元素，返回文本/属性列表。",
         json!({
@@ -62,11 +72,6 @@ pub(crate) fn spec() -> Tool {
             },
             "required": ["html", "selector"]
         }),
-        Box::new(|args, _ctx| {
-            Box::pin(async move {
-                let args = super::parse_args::<ExtractCssArgs>(&args, "extract_css")?;
-                super::to_value(extract_css(args).await?)
-            })
-        }),
+        extract_css_run as TypedRun<ExtractCssArgs, ExtractCssResult>,
     )
 }

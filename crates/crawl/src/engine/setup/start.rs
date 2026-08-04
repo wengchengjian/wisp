@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::engine::Engine;
 use crate::scheduler;
-use crate::{CrawlEvent, Request, Spider};
+use crate::{CrawlEvent, CrawlRequest, Spider};
 
 impl Engine {
     pub(crate) async fn seed_start_urls(
@@ -23,7 +23,7 @@ impl Engine {
                 .await;
             for url in start_urls {
                 sched
-                    .push(Request::get(&url).with_spider(spider.name()))
+                    .push(CrawlRequest::get(&url).with_spider(spider.name()))
                     .await;
             }
         }

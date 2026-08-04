@@ -2,21 +2,23 @@
 
 use serde_json::{Value, json};
 use wisp::crawl::{Page, Spider, SpiderBuilder};
-use wisp::{Request, Response};
+use wisp::{CrawlRequest, Response};
 
-fn response_from_request(req: Request, html: &str) -> Response {
-    Response::from_http(
+fn response_from_request(req: CrawlRequest, html: &str) -> Response {
+    let mut resp = Response::from_http(
         200,
         req.url.clone(),
         Default::default(),
         html.as_bytes().to_vec(),
         "text/html; charset=utf-8".into(),
-        req,
-    )
+        req.request.clone(),
+    );
+    resp.request = req;
+    resp
 }
 
 fn response(html: &str, callback: Option<&str>, meta: Value) -> Response {
-    let mut req = Request::get("https://example.com/page").with_meta(meta);
+    let mut req = CrawlRequest::get("https://example.com/page").with_meta(meta);
     if let Some(cb) = callback {
         req = req.with_callback(cb);
     }
@@ -194,7 +196,7 @@ async fn on_content_preset_builds_item_from_meta() {
         .on_content("chapter", &[".content"], |text| text.trim().to_string())
         .build();
 
-    let req = Request::get("https://example.com/ch/1")
+    let req = CrawlRequest::get("https://example.com/ch/1")
         .with_callback("chapter")
         .with_meta(json!({ "title": "Book" }));
     let resp = response_from_request(

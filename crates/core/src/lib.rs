@@ -7,4 +7,4 @@ pub mod text;
 pub mod types;
 pub mod utils;
 
-pub use types::{FetchMode, Method, Request, Response, ResponseParts};
+pub use types::{CrawlRequest, FetchMode, Method, Request, Response, ResponseParts};

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{CrawlContext, ErrorAction, RequestMwAction, ResponseMwAction};
-use crate::{Item, Request, Response};
-use wisp_core::error::WispError;
+use crate::{CrawlRequest, Item, Response};
+use wisp_core::error::{Result, WispError};
 
 // === Middleware trait ===
 
@@ -36,7 +36,11 @@ pub trait Middleware: Send + Sync {
     async fn init(&self, _ctx: &CrawlContext) {}
 
     /// 请求发出前拦截（可修改 headers/proxy/body）。
-    async fn process_request(&self, _req: &mut Request, _ctx: &CrawlContext) -> RequestMwAction {
+    async fn process_request(
+        &self,
+        _req: &mut CrawlRequest,
+        _ctx: &CrawlContext,
+    ) -> RequestMwAction {
         RequestMwAction::Continue
     }
 
@@ -52,7 +56,7 @@ pub trait Middleware: Send + Sync {
     /// 错误处理（可决定重试或放弃）。
     async fn process_error(
         &self,
-        _req: &Request,
+        _req: &CrawlRequest,
         _err: &WispError,
         _ctx: &CrawlContext,
     ) -> ErrorAction {
@@ -65,7 +69,7 @@ pub trait Middleware: Send + Sync {
 /// Item 管道（Item Pipeline 等价）。
 ///
 /// 顺序处理 Spider 产出的 items：清洗 → 验证 → 去重 → 存储。
-/// 返回 None 表示丢弃此 item。
+/// 返回 `Ok(None)` 表示丢弃此 item；`Err` 表示处理失败并中止 Run。
 ///
 /// # 生命周期
 ///
@@ -75,11 +79,19 @@ pub trait Middleware: Send + Sync {
 #[async_trait]
 pub trait ItemPipeline: Send + Sync {
     /// 生命周期：爬取开始前调用（初始化资源）。
-    async fn open(&self, _ctx: &CrawlContext) {}
+    async fn open(&self, _ctx: &CrawlContext) -> Result<()> {
+        Ok(())
+    }
 
-    /// 处理单个 item。返回 Some(item) 继续传递，None 丢弃。
-    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>>;
+    /// 处理单个 item。返回 `Ok(Some(item))` 继续传递，`Ok(None)` 丢弃。
+    async fn process_item(
+        &self,
+        item: Item<Value>,
+        _ctx: &CrawlContext,
+    ) -> Result<Option<Item<Value>>>;
 
     /// 生命周期：爬取结束后调用（flush 缓冲、关闭连接）。
-    async fn close(&self, _ctx: &CrawlContext) {}
+    async fn close(&self, _ctx: &CrawlContext) -> Result<()> {
+        Ok(())
+    }
 }

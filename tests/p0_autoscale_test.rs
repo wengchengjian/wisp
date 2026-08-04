@@ -62,7 +62,7 @@ impl Spider for FailSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["http://127.0.0.1:1/a".into(), "http://127.0.0.1:1/b".into()]
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
 }

@@ -133,12 +133,9 @@ impl FetchClient {
         if let Some(ua) = self.cookie_jar.ua(&url_parsed).await {
             http_req.headers.insert("User-Agent".to_string(), ua);
         }
-        http_req.fetch_mode_override = Some(FetchMode::Http);
         let resp = self.fetch_http(&http_req).await?;
         if resp.status == 200 {
-            let mut final_resp = resp;
-            final_resp.request.fetch_mode_override = Some(FetchMode::Http);
-            Ok(Some(final_resp))
+            Ok(Some(resp))
         } else {
             Ok(None)
         }

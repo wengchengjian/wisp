@@ -9,9 +9,9 @@
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use wisp::crawl::middleware::{JsonlWriterPipeline, UaRotationMiddleware};
+use wisp::crawl::middleware::{OutputWriterPipeline, UaRotationMiddleware};
 use wisp::crawl::stop::MaxPages;
-use wisp::crawl::{ClosureSpider, Engine, Item, SpiderBuilder};
+use wisp::crawl::{ClosureSpider, Engine, Item, OutputFormat, SpiderBuilder};
 /// 清理章节正文：去广告行、空行。
 fn clean_content(text: String) -> String {
     text.lines()
@@ -144,7 +144,7 @@ fn build_engine(output: &str) -> Result<Engine, Box<dyn std::error::Error>> {
         ])
         .ua_rotation(UaRotationMiddleware::desktop())
         .cookie_challenge(true)
-        .pipeline(Arc::new(JsonlWriterPipeline::new(output)))
+        .pipeline(Arc::new(OutputWriterPipeline::new_append(OutputFormat::Jsonl, output)))
         .build()?)
 }
 

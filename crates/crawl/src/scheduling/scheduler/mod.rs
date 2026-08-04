@@ -26,11 +26,11 @@ mod tests {
     #[tokio::test]
     async fn fingerprint_seen_roundtrip_preserves_hashes() {
         use super::*;
-        use crate::Request;
+        use crate::CrawlRequest;
         let sched = Scheduler::with_strategy(DedupStrategy::Fingerprint);
         // push 两个 URL：进入 heap 与 seen_fp
-        sched.push(Request::get("https://example.com/a")).await;
-        sched.push(Request::get("https://example.com/b")).await;
+        sched.push(CrawlRequest::get("https://example.com/a")).await;
+        sched.push(CrawlRequest::get("https://example.com/b")).await;
         // pop 模拟已爬取：heap 清空，但 seen_fp 保留正确指纹
         sched.pop().await;
         sched.pop().await;
@@ -46,7 +46,7 @@ mod tests {
 
         // 再 push 同样的 URL：应被 seen 判定为已爬，不入 heap
         let before = sched.len().await;
-        sched.push(Request::get("https://example.com/a")).await;
+        sched.push(CrawlRequest::get("https://example.com/a")).await;
         let after = sched.len().await;
         assert_eq!(
             before, after,
@@ -64,7 +64,7 @@ mod tests {
             rt.block_on(async {
                 let sched = super::Scheduler::with_strategy(super::DedupStrategy::Exact);
                 for url in &urls {
-                    sched.push(crate::Request::get(url)).await;
+                    sched.push(crate::CrawlRequest::get(url)).await;
                 }
                 assert_eq!(sched.len().await, unique.len());
                 let mut popped = 0usize;

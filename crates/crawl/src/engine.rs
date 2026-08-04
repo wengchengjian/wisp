@@ -24,8 +24,8 @@ use tracing::Instrument;
 
 use super::stats::SpiderStats;
 use super::{
-    CrawlEvent, CrawlState, CrawlStats, CrawlStream, Request, Response, Spider, auto, middleware,
-    scheduler,
+    CrawlEvent, CrawlRequest, CrawlState, CrawlStats, CrawlStream, Response, Spider, auto,
+    middleware, scheduler,
 };
 use crate::Item;
 use crate::control;

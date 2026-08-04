@@ -28,12 +28,12 @@ impl Page {
     }
 
     /// 完成处理，产出 `(items, follows)`。
-    pub fn finish(self) -> (Vec<Value>, Vec<Request>) {
+    pub fn finish(self) -> (Vec<Value>, Vec<CrawlRequest>) {
         (self.items, self.follows)
     }
 }
 
-impl From<Page> for (Vec<Value>, Vec<Request>) {
+impl From<Page> for (Vec<Value>, Vec<CrawlRequest>) {
     fn from(page: Page) -> Self {
         page.finish()
     }

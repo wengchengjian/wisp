@@ -6,23 +6,25 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use wisp::crawl::stop::MaxPages;
-use wisp::crawl::{Request, Response, Spider, SpiderBuilder};
+use wisp::crawl::{CrawlRequest, Response, Spider, SpiderBuilder};
 use wisp::parser::ResponseExt;
 
 /// 构造测试用 Response。
 fn make_resp(url: &str, body: &str, callback: Option<&str>) -> Response {
-    let mut req = Request::get(url);
+    let mut req = CrawlRequest::get(url);
     if let Some(cb) = callback {
         req = req.with_callback(cb);
     }
-    Response::from_http(
+    let mut resp = Response::from_http(
         200,
         url.to_string(),
         HashMap::new(),
         body.as_bytes().to_vec(),
         String::new(),
-        req,
-    )
+        req.request.clone(),
+    );
+    resp.request = req;
+    resp
 }
 
 #[tokio::test]
@@ -211,7 +213,7 @@ async fn test_spider_trait_handle_works() {
         fn start_urls(&self) -> Vec<String> {
             vec![]
         }
-        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+        async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
             (vec![json!({"default_handle": true})], vec![])
         }
     }

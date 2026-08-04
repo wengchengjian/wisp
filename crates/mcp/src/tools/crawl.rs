@@ -1,12 +1,14 @@
 //! MCP crawl_site 工具。
 
 use super::types::ToolContext;
-use crate::protocol::Tool;
+use crate::protocol::{Tool, TypedRun};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::future::Future;
+use std::pin::Pin;
 use wisp_core::error::{Result, WispError};
-use wisp_crawl::{Item, MaxPages, SpiderBuilder};
+use wisp_crawl::{Items, MaxPages, SpiderBuilder};
 
 /// `crawl_site` arguments.
 #[derive(Debug, Deserialize)]
@@ -82,19 +84,23 @@ pub async fn crawl_site(args: CrawlSiteArgs, ctx: &ToolContext<'_>) -> Result<Cr
     });
     let spider = builder.build();
     let (_stats, items) = ctx.engine.run(spider).await?;
-    let jsonl: String = items
-        .iter()
-        .map(|item: &Item| serde_json::to_string(item).unwrap_or_default())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let item_count = items.len();
+    let jsonl = Items::from_items(items).to_jsonl()?;
     Ok(CrawlSiteResult {
-        items_count: items.len(),
+        items_count: item_count,
         jsonl,
     })
 }
 
+fn crawl_site_run<'a>(
+    args: CrawlSiteArgs,
+    ctx: &'a ToolContext<'a>,
+) -> Pin<Box<dyn Future<Output = Result<CrawlSiteResult>> + Send + 'a>> {
+    Box::pin(crawl_site(args, ctx))
+}
+
 pub(crate) fn spec() -> Tool {
-    Tool::new(
+    Tool::from_handler(
         "crawl_site",
         "爬取站点，返回 JSONL。用内置 SpiderBuilder 按 CSS 选择器提取。",
         json!({
@@ -109,11 +115,6 @@ pub(crate) fn spec() -> Tool {
             },
             "required": ["start_urls", "css_selector"]
         }),
-        Box::new(|args, ctx| {
-            Box::pin(async move {
-                let args = super::parse_args::<CrawlSiteArgs>(&args, "crawl_site")?;
-                super::to_value(crawl_site(args, ctx).await?)
-            })
-        }),
+        crawl_site_run as TypedRun<CrawlSiteArgs, CrawlSiteResult>,
     )
 }

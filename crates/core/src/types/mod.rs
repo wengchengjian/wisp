@@ -2,17 +2,18 @@
 //!
 //! 所有 Fetcher 模式（Http / Dynamic / Stealth）返回同一个 `Response`，
 //! 用户无需关心底层实现即可使用 `.css()` / `.json()` 等 API。
-//! Spider 引擎也复用同一套 Request/Response，避免类型重复。
+//! Spider 引擎复用 CrawlRequest/Response，避免类型重复。
 
 mod method;
 mod request;
 mod response;
 
 pub use method::{FetchMode, Method};
-pub use request::Request;
+pub use request::{CrawlRequest, Request};
 pub use response::Response;
 
 pub use response::ResponseParts;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,7 +104,7 @@ mod tests {
 
     #[test]
     fn test_request_builder() {
-        let req = Request::get("https://example.com/")
+        let req = CrawlRequest::get("https://example.com/")
             .with_header("Accept", "text/html")
             .with_priority(5)
             .with_callback("parse_page")
@@ -114,5 +115,13 @@ mod tests {
         assert_eq!(req.priority, 5);
         assert_eq!(req.callback, Some("parse_page".to_string()));
         assert_eq!(req.meta["depth"], 1);
+    }
+
+    #[test]
+    fn request_stays_transport_only() {
+        let req = Request::get("https://example.com/")
+            .with_header("Accept", "text/html")
+            .with_proxy("http://127.0.0.1:8080");
+        assert_eq!(req.proxy.as_deref(), Some("http://127.0.0.1:8080"));
     }
 }

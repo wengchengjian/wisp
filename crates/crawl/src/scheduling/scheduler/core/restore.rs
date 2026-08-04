@@ -4,7 +4,7 @@ use super::*;
 
 impl Scheduler {
     /// 合并导入 checkpoint 状态（不清空现有队列，供多 Spider 共享调度器使用）。
-    pub async fn import_state(&self, pending: Vec<Request>, seen: HashSet<String>) {
+    pub async fn import_state(&self, pending: Vec<CrawlRequest>, seen: HashSet<String>) {
         for url in &seen {
             match self.strategy {
                 DedupStrategy::Exact => {

@@ -4,7 +4,7 @@ use super::*;
 
 impl Scheduler {
     /// Snapshot the pending URLs (for checkpoint).
-    pub async fn pending_urls(&self) -> Vec<Request> {
+    pub async fn pending_urls(&self) -> Vec<CrawlRequest> {
         let g = self.heap.lock().await;
         // Note: BinaryHeap is max-heap, iteration order is unspecified.
         // We sort by priority to give a deterministic checkpoint.

@@ -53,7 +53,7 @@ async fn engine_should_consume_follow_produced_by_single_start_url() {
         .start_urls(vec![base.clone()])
         .on("default", async |resp| {
             let doc = resp.parse();
-            let follows: Vec<wisp::Request> = doc
+            let follows: Vec<wisp::CrawlRequest> = doc
                 .select_one(".next a")
                 .and_then(|a| a.attr("href"))
                 .and_then(|href| resp.follow(&href))

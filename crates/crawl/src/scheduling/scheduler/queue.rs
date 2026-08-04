@@ -1,11 +1,11 @@
 //! 优先级队列内部类型。
 
-use crate::Request;
+use crate::CrawlRequest;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 pub(super) struct PrioritizedRequest {
-    pub(super) req: Request,
+    pub(super) req: CrawlRequest,
     pub(super) seq: u64,
 }
 

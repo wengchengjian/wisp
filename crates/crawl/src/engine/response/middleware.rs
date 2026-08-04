@@ -7,7 +7,7 @@ use crate::middleware;
 /// 响应中间件链，支持最多 `max_refetch_rounds` 轮 Refetch。
 async fn refetch_or_error(
     ctx: &EngineContext,
-    new_req: &Request,
+    new_req: &CrawlRequest,
     max_rounds: u32,
     refetch_depth: u32,
 ) -> Option<Response> {

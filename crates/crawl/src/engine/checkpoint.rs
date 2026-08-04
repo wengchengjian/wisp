@@ -68,8 +68,10 @@ pub(crate) async fn load_spider_checkpoint(
 }
 
 /// 合并多个 Spider 的 checkpoint：pending/in-flight 按 URL 去重，seen 集合合并。
-pub(crate) fn merge_checkpoint_states(states: Vec<CrawlState>) -> (Vec<Request>, HashSet<String>) {
-    let mut pending: Vec<Request> = Vec::new();
+pub(crate) fn merge_checkpoint_states(
+    states: Vec<CrawlState>,
+) -> (Vec<CrawlRequest>, HashSet<String>) {
+    let mut pending: Vec<CrawlRequest> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut inserted: HashSet<String> = HashSet::new();
     for state in states {

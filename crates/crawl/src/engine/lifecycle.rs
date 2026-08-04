@@ -9,13 +9,13 @@ use crate::engine;
 use crate::robots;
 use crate::scheduler;
 use crate::stats::SpiderStats;
-use crate::{CrawlEvent, CrawlStats, Request, Spider};
+use crate::{CrawlEvent, CrawlRequest, CrawlStats, Spider};
 use wisp_core::error::Result;
 
 impl Engine {
-    async fn run_middleware_init(&self, ctx: &Arc<engine::EngineContext>) {
+    async fn run_middleware_init(&self, ctx: &Arc<engine::EngineContext>) -> Result<()> {
         if ctx.state.middleware_chain.is_empty() {
-            return;
+            return Ok(());
         }
         for (spider, stats) in ctx.state.spiders.iter().zip(&ctx.state.all_stats) {
             let crawl_ctx = engine::build_crawl_context_for(ctx, spider, stats);
@@ -23,21 +23,23 @@ impl Engine {
             ctx.state
                 .middleware_chain
                 .run_pipelines_open(&crawl_ctx)
-                .await;
+                .await?;
         }
+        Ok(())
     }
 
-    async fn run_middleware_close(&self, ctx: &Arc<engine::EngineContext>) {
+    async fn run_middleware_close(&self, ctx: &Arc<engine::EngineContext>) -> Result<()> {
         if ctx.state.middleware_chain.is_empty() {
-            return;
+            return Ok(());
         }
         for (spider, stats) in ctx.state.spiders.iter().zip(&ctx.state.all_stats) {
             let crawl_ctx = engine::build_crawl_context_for(ctx, spider, stats);
             ctx.state
                 .middleware_chain
                 .run_pipelines_close(&crawl_ctx)
-                .await;
+                .await?;
         }
+        Ok(())
     }
 
     fn spawn_autoscaler(
@@ -77,9 +79,13 @@ impl Engine {
 
     /// 内部运行逻辑：共享队列驱动多个 Spider。
     async fn finish_run(&self, ctx: &Arc<engine::EngineContext>) -> Result<Vec<CrawlStats>> {
-        self.run_middleware_close(ctx).await;
+        let close_error = self.run_middleware_close(ctx).await.err();
         for spider in &ctx.state.spiders {
             spider.on_close().await;
+        }
+        let pipeline_error = ctx.state.pipeline_error.lock().await.take();
+        if let Some(e) = pipeline_error.or(close_error) {
+            return Err(e);
         }
         let interrupted =
             ctx.state.abort_flag.load(Ordering::SeqCst) || ctx.runtime.control.is_shutdown();
@@ -109,7 +115,7 @@ impl Engine {
         let rule_engine = self.build_rule_engine()?;
         let sched = Arc::new(scheduler::Scheduler::new());
         let robots_cache = Arc::new(robots::RobotsCache::new());
-        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        let (follow_tx, follow_rx) = tokio::sync::mpsc::unbounded_channel::<CrawlRequest>();
 
         self.restore_checkpoints(&spiders, &sched, &all_stats).await;
         self.seed_start_urls(&spiders, &sched).await;
@@ -124,7 +130,7 @@ impl Engine {
             all_stats: all_stats.clone(),
         });
 
-        self.run_middleware_init(&ctx).await;
+        self.run_middleware_init(&ctx).await?;
         let autoscaler_handle = self.spawn_autoscaler(&ctx, &all_stats);
         run_work_loop(&ctx, self.runtime.autoscale.clone()).await;
         if let Some(handle) = autoscaler_handle {

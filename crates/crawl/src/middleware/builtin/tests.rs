@@ -3,7 +3,7 @@
 use super::super::ItemPipeline;
 use super::super::pipeline::FilterFieldsPipeline;
 use super::*;
-use crate::{Request, Response};
+use crate::{CrawlRequest, Response};
 use wisp_core::error::WispError;
 use wisp_fetcher::FetchMode;
 
@@ -17,20 +17,22 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use wisp_proxy::{ProxyPool, RotationStrategy};
 
-fn make_req() -> Request {
-    Request {
-        url: "http://example.com".into(),
-        method: crate::Method::Get,
-        headers: HashMap::new(),
-        body: None,
-        meta: Value::Null,
+fn make_req() -> CrawlRequest {
+    CrawlRequest {
+        request: crate::Request {
+            url: "http://example.com".into(),
+            method: crate::Method::Get,
+            headers: HashMap::new(),
+            body: None,
+            proxy: None,
+        },
         callback: None,
         spider: None,
         priority: 0,
         depth: 0,
-        proxy: None,
-        fetch_mode_override: None,
+        meta: Value::Null,
         retry_count: 0,
+        fetch_mode_override: None,
     }
 }
 
@@ -109,7 +111,7 @@ async fn test_cache_middleware() {
         HashMap::new(),
         b"hello".to_vec(),
         String::new(),
-        req.clone(),
+        req.request.clone(),
     );
     mw.process_response(&mut resp, &ctx).await;
 
@@ -143,7 +145,11 @@ async fn test_filter_fields_pipeline() {
         "test",
         None,
     );
-    let result = pipeline.process_item(item, &make_ctx()).await.unwrap();
+    let result = pipeline
+        .process_item(item, &make_ctx())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(result.value()["title"], "Hello");
     assert!(result.value().get("extra").is_none());
 }

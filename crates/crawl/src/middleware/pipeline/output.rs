@@ -2,11 +2,11 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::Mutex;
 
 use crate::Item;
 use crate::middleware::{CrawlContext, ItemPipeline};
-use crate::runtime::output::{MarkdownWriter, OutputFormat, WarcWriter};
+use crate::runtime::output::{ItemOutput, OutputFormat};
+use wisp_core::error::Result;
 
 /// 按 `OutputFormat` 将 item 写入文件的通用管道。
 ///
@@ -15,127 +15,41 @@ use crate::runtime::output::{MarkdownWriter, OutputFormat, WarcWriter};
 /// - `Markdown`：每页一个 `.md` 文件（`path` 为目录，使用 `item.source_url()` 与 `html`）
 /// - `Warc`：WARC/1.1 记录追加写入（使用 `item.source_url()` 与 `html`）
 pub struct OutputWriterPipeline {
-    format: OutputFormat,
-    path: String,
-    file: Mutex<Option<(std::fs::File, bool)>>,
-    markdown: Mutex<Option<MarkdownWriter>>,
-    warc: Mutex<Option<WarcWriter>>,
+    output: ItemOutput,
 }
 
 impl OutputWriterPipeline {
-    /// 创建输出管道。`path` 对 Markdown 是输出目录，其余格式是输出文件路径。
+    /// 创建输出管道，打开时覆盖目标文件。`path` 对 Markdown 是输出目录，其余格式是输出文件路径。
     pub fn new(format: OutputFormat, path: &str) -> Self {
         Self {
-            format,
-            path: path.to_string(),
-            file: Mutex::new(None),
-            markdown: Mutex::new(None),
-            warc: Mutex::new(None),
+            output: ItemOutput::new(format, path),
         }
     }
 
-    async fn write_json_item(&self, item: &Item<Value>) {
-        use std::io::Write;
-        let mut guard = self.file.lock().await;
-        if let Some((ref mut file, ref mut first)) = *guard {
-            if !*first {
-                let _ = write!(file, ",");
-            }
-            if let Ok(json) = serde_json::to_string(item) {
-                let _ = write!(file, "{}", json);
-            }
-            *first = false;
-        }
-    }
-
-    async fn write_jsonl_item(&self, item: &Item<Value>) {
-        use std::io::Write;
-        let mut guard = self.file.lock().await;
-        if let Some((ref mut file, _)) = *guard
-            && let Ok(json) = serde_json::to_string(item)
-        {
-            let _ = writeln!(file, "{}", json);
-        }
-    }
-
-    async fn write_markdown_item(&self, item: &Item<Value>) {
-        let mut guard = self.markdown.lock().await;
-        if let Some(ref mut writer) = *guard {
-            let url = item.source_url();
-            if let Some(html) = item.value().get("html").and_then(Value::as_str) {
-                let _ = writer.write_page(url, html);
-            }
-        }
-    }
-
-    async fn write_warc_item(&self, item: &Item<Value>) {
-        let mut guard = self.warc.lock().await;
-        if let Some(ref mut writer) = *guard {
-            let url = item.source_url();
-            if let Some(html) = item.value().get("html").and_then(Value::as_str) {
-                let _ = writer.write_response(
-                    url,
-                    200,
-                    &std::collections::HashMap::new(),
-                    html.as_bytes(),
-                );
-            }
+    /// 创建追加模式的输出管道（仅对 JSONL 有意义）。
+    pub fn new_append(format: OutputFormat, path: &str) -> Self {
+        Self {
+            output: ItemOutput::with_append(format, path, true),
         }
     }
 }
 
 #[async_trait]
 impl ItemPipeline for OutputWriterPipeline {
-    async fn open(&self, _ctx: &CrawlContext) {
-        use std::io::Write;
-        match self.format {
-            OutputFormat::Json => {
-                if let Ok(mut file) = std::fs::File::create(&self.path) {
-                    let _ = write!(file, "[");
-                    *self.file.lock().await = Some((file, true));
-                }
-            }
-            OutputFormat::Jsonl => {
-                if let Ok(file) = std::fs::File::create(&self.path) {
-                    *self.file.lock().await = Some((file, true));
-                }
-            }
-            OutputFormat::Markdown => {
-                if let Ok(writer) = MarkdownWriter::new(std::path::Path::new(&self.path)) {
-                    *self.markdown.lock().await = Some(writer);
-                }
-            }
-            OutputFormat::Warc => {
-                if let Ok(writer) = WarcWriter::new(std::path::Path::new(&self.path)) {
-                    *self.warc.lock().await = Some(writer);
-                }
-            }
-        }
+    async fn open(&self, _ctx: &CrawlContext) -> Result<()> {
+        self.output.open().await
     }
 
-    async fn process_item(&self, item: Item<Value>, _ctx: &CrawlContext) -> Option<Item<Value>> {
-        match self.format {
-            OutputFormat::Json => self.write_json_item(&item).await,
-            OutputFormat::Jsonl => self.write_jsonl_item(&item).await,
-            OutputFormat::Markdown => self.write_markdown_item(&item).await,
-            OutputFormat::Warc => self.write_warc_item(&item).await,
-        }
-        Some(item)
+    async fn process_item(
+        &self,
+        item: Item<Value>,
+        _ctx: &CrawlContext,
+    ) -> Result<Option<Item<Value>>> {
+        self.output.write(&item).await?;
+        Ok(Some(item))
     }
 
-    async fn close(&self, _ctx: &CrawlContext) {
-        use std::io::Write;
-        if let Some((ref mut file, _)) = *self.file.lock().await {
-            if self.format == OutputFormat::Json {
-                let _ = writeln!(file, "]");
-            }
-            let _ = file.flush();
-        }
-        if let Some(ref mut writer) = *self.warc.lock().await {
-            let _ = writer.flush();
-        }
-        *self.file.lock().await = None;
-        *self.markdown.lock().await = None;
-        *self.warc.lock().await = None;
+    async fn close(&self, _ctx: &CrawlContext) -> Result<()> {
+        self.output.close().await
     }
 }

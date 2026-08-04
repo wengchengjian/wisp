@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use wisp_fetcher::{Request, Response};
+use wisp_fetcher::{CrawlRequest, Response};
 
 /// 请求钩子的决策结果。
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +34,7 @@ pub trait Spider: Send + Sync + 'static {
     /// 起始 URL 列表。
     fn start_urls(&self) -> Vec<String>;
     /// 请求分发入口。Engine 调用此方法处理响应，返回 (items, follows)。
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>);
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>);
 
     // Optional with defaults — 业务逻辑（保留在 Spider）
     /// 允许的域名集合（空表示不限制）。
@@ -46,7 +46,7 @@ pub trait Spider: Send + Sync + 'static {
     /// 爬取结束时的钩子。
     async fn on_close(&self) {}
     /// 请求失败时的钩子。
-    async fn on_error(&self, _req: &Request, _err: &str) {}
+    async fn on_error(&self, _req: &CrawlRequest, _err: &str) {}
     /// Item 处理钩子（可过滤/转换）。
     async fn on_item(&self, item: Value) -> Option<Value> {
         Some(item)
@@ -62,7 +62,7 @@ pub trait Spider: Send + Sync + 'static {
         u32::MAX
     }
     /// 每个请求执行前的异步钩子。默认返回 Proceed。
-    async fn on_before_request(&self, _req: &Request) -> RequestAction {
+    async fn on_before_request(&self, _req: &CrawlRequest) -> RequestAction {
         RequestAction::Proceed
     }
 

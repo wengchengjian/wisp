@@ -6,7 +6,7 @@ use super::*;
 // === 抓取分发 ===
 
 /// Auto 模式连接层失败且规则引擎尚未学习 Stealth 时，触发首次升级。
-async fn should_auto_upgrade(ctx: &EngineContext, req: &Request) -> bool {
+async fn should_auto_upgrade(ctx: &EngineContext, req: &CrawlRequest) -> bool {
     if ctx.config.fetch_mode != FetchMode::Auto
         || req.fetch_mode_override.is_some()
         || req.retry_count != 0
@@ -19,9 +19,9 @@ async fn should_auto_upgrade(ctx: &EngineContext, req: &Request) -> bool {
 /// 学习 Stealth 规则并构造带模式覆盖的重试请求。
 async fn build_auto_upgrade_request(
     ctx: &EngineContext,
-    req: &Request,
+    req: &CrawlRequest,
     e: &wisp_core::error::WispError,
-) -> Request {
+) -> CrawlRequest {
     ctx.state
         .rule_engine
         .lock()
@@ -50,7 +50,7 @@ async fn run_error_middleware(
     ctx: &EngineContext,
     spider: &Arc<dyn Spider>,
     stats: &Arc<SpiderStats>,
-    req: &Request,
+    req: &CrawlRequest,
     e: &wisp_core::error::WispError,
 ) -> middleware::ErrorAction {
     if ctx.state.middleware_chain.is_empty() {
@@ -67,10 +67,10 @@ async fn run_error_middleware(
 async fn emit_retry_request(
     ctx: &EngineContext,
     stats: &Arc<SpiderStats>,
-    req: &Request,
+    req: &CrawlRequest,
     max_retries: u32,
     e: &wisp_core::error::WispError,
-) -> Option<Request> {
+) -> Option<CrawlRequest> {
     if req.retry_count >= max_retries {
         return None;
     }
@@ -126,7 +126,7 @@ async fn record_fetch_success(
 /// 两套计数器独立：`retry_count` 跨多次 fetch 失败累加，`refetch_depth` 在单次
 /// process_response 内累加。互不干扰。
 #[tracing::instrument(level = "trace", skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
-pub(crate) async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> Result<Response> {
+pub(crate) async fn fetch_dispatch(ctx: &EngineContext, req: &CrawlRequest) -> Result<Response> {
     let stats = ctx.state.stats_for(req).ok_or_else(|| {
         wisp_core::error::WispError::Engine("request has no matching spider".into())
     })?;
@@ -134,7 +134,7 @@ pub(crate) async fn fetch_dispatch(ctx: &EngineContext, req: &Request) -> Result
         wisp_core::error::WispError::Engine("request has no matching spider".into())
     })?;
     let max_retries = ctx.config.max_retries;
-    let mut owned: Option<Request> = None;
+    let mut owned: Option<CrawlRequest> = None;
 
     loop {
         let req_ref = owned.as_ref().unwrap_or(req);

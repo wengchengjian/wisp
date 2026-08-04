@@ -5,15 +5,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::client::FetchClientConfig;
-use crate::strategy::{BrowserFetchStrategy, extract_browser_response, recv_navigation_status};
+use crate::strategy::{BrowserFetchStrategy, extract_browser_response};
 use wisp_browser::Page;
-use wisp_core::error::{BrowserError, Result, WispError};
+use wisp_core::error::Result;
 use wisp_core::{Request, Response};
 
 /// Dynamic 模式策略：浏览器渲染 + JS 执行，无 CF 绕过。
 ///
 /// ARCH: 从 `FetchClient::do_browser_work_inner`（solve_cf=false 分支）提取。
-/// 仅做导航 + 等待选择器 + 提取响应。
+/// 导航与状态码由 `Page::goto` 统一负责。
 pub struct DynamicStrategy {
     /// 等待特定 CSS 选择器出现（可选）。
     wait_for: Option<String>,
@@ -32,45 +32,6 @@ impl DynamicStrategy {
             timeout: config.timeout,
         }
     }
-}
-
-async fn dynamic_enable_network(page: &mut Page, url: &str) -> Result<()> {
-    page.cmd("Network.enable", serde_json::json!({}))
-        .await
-        .map_err(|e| {
-            WispError::Browser(BrowserError::CdpConnection(format!(
-                "Network.enable failed: {e}"
-            )))
-        })?;
-    tracing::info!("BrowserWork: {url} 开始（Dynamic）");
-    Ok(())
-}
-
-async fn dynamic_navigate_and_status(page: &mut Page, url: &str) -> Result<u16> {
-    let mut event_rx = page.session().subscribe_events();
-    let sid = page.session_id().to_string();
-    let t_nav = std::time::Instant::now();
-    tracing::info!("BrowserWork: {url} 导航");
-    if let Err(e) = page.goto(url).await {
-        tracing::warn!("BrowserWork: {url} goto 失败: {e}");
-        return Err(e);
-    }
-    tracing::trace!(elapsed_ms = t_nav.elapsed().as_millis(), url = %url, "goto timing");
-    let t_status = std::time::Instant::now();
-    let nav_status = match recv_navigation_status(&mut event_rx, &sid).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("BrowserWork: {url} recv_navigation_status 失败: {e}");
-            return Err(e);
-        }
-    };
-    tracing::trace!(
-        elapsed_ms = t_status.elapsed().as_millis(),
-        code = nav_status,
-        url = %url,
-        "recv_status timing"
-    );
-    Ok(nav_status)
 }
 
 async fn dynamic_wait_and_extract(
@@ -99,8 +60,8 @@ async fn dynamic_wait_and_extract(
 impl BrowserFetchStrategy for DynamicStrategy {
     async fn fetch(&self, page: &mut Page, req: &Request) -> Result<Response> {
         let url = &req.url;
-        dynamic_enable_network(page, url).await?;
-        let nav_status = dynamic_navigate_and_status(page, url).await?;
+        tracing::info!("BrowserWork: {url} 开始（Dynamic）");
+        let nav_status = page.goto(url).await?;
         dynamic_wait_and_extract(
             page,
             req,

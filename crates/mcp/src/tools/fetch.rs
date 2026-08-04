@@ -2,9 +2,11 @@
 
 use super::fetch_html::fetch_html;
 use super::types::ToolContext;
-use crate::protocol::Tool;
+use crate::protocol::{Tool, TypedRun};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::future::Future;
+use std::pin::Pin;
 use wisp_core::FetchMode;
 use wisp_core::error::Result;
 use wreq_util::Profile;
@@ -59,8 +61,15 @@ pub async fn fetch_page(args: FetchPageArgs, ctx: &ToolContext<'_>) -> Result<Fe
     })
 }
 
+fn fetch_page_run<'a>(
+    args: FetchPageArgs,
+    ctx: &'a ToolContext<'a>,
+) -> Pin<Box<dyn Future<Output = Result<FetchPageResult>> + Send + 'a>> {
+    Box::pin(fetch_page(args, ctx))
+}
+
 pub(crate) fn spec() -> Tool {
-    Tool::new(
+    Tool::from_handler(
         "fetch_page",
         "抓取单个网页，返回 HTML 文本。支持 wreq TLS 指纹模拟绕过轻度反 bot。",
         json!({
@@ -75,11 +84,6 @@ pub(crate) fn spec() -> Tool {
             },
             "required": ["url"]
         }),
-        Box::new(|args, ctx| {
-            Box::pin(async move {
-                let args = super::parse_args::<FetchPageArgs>(&args, "fetch_page")?;
-                super::to_value(fetch_page(args, ctx).await?)
-            })
-        }),
+        fetch_page_run as TypedRun<FetchPageArgs, FetchPageResult>,
     )
 }

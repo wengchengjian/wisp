@@ -45,7 +45,7 @@ pub use strategy::StealthStrategy;
 pub use builder::FetcherBuilder;
 pub use client::{FetchClient, FetchClientConfig, FetchOptions};
 pub use fetcher::Fetcher;
-pub use wisp_core::{FetchMode, Method, Request, Response};
+pub use wisp_core::{CrawlRequest, FetchMode, Method, Request, Response};
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::{CrawlContext, Middleware, RequestMwAction, ResponseMwAction};
 use crate::runtime::robots::RobotsCache;
-use crate::{Request, Response};
+use crate::{CrawlRequest, Response};
 use wisp_fetcher::FetchClient;
 use wisp_storage::{CachedResponse, Store};
 
@@ -33,7 +33,11 @@ impl Middleware for CacheMiddleware {
         3
     }
 
-    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> RequestMwAction {
+    async fn process_request(
+        &self,
+        req: &mut CrawlRequest,
+        _ctx: &CrawlContext,
+    ) -> RequestMwAction {
         let method_str = req.method.as_str();
         match wisp_storage::load_response(&*self.store, method_str, &req.url).await {
             Ok(Some(cached)) => {
@@ -102,7 +106,11 @@ impl Middleware for RobotsMiddleware {
         8
     }
 
-    async fn process_request(&self, req: &mut Request, _ctx: &CrawlContext) -> RequestMwAction {
+    async fn process_request(
+        &self,
+        req: &mut CrawlRequest,
+        _ctx: &CrawlContext,
+    ) -> RequestMwAction {
         let allowed = self
             .robots_cache
             .is_allowed(&self.fetch_client, &req.url)
@@ -140,7 +148,11 @@ impl Middleware for DelayMiddleware {
         15
     }
 
-    async fn process_request(&self, _req: &mut Request, _ctx: &CrawlContext) -> RequestMwAction {
+    async fn process_request(
+        &self,
+        _req: &mut CrawlRequest,
+        _ctx: &CrawlContext,
+    ) -> RequestMwAction {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }

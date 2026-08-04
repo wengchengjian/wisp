@@ -17,7 +17,9 @@ use futures::StreamExt;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
-use wisp::crawl::{CrawlEvent, CrawlStats, Engine, JsonlWriter, Request, Response, Spider};
+use wisp::crawl::{
+    CrawlEvent, CrawlRequest, CrawlStats, Engine, ItemOutput, OutputFormat, Response, Spider,
+};
 use wisp::http::Client;
 use wisp::parser::ResponseExt;
 use wisp::storage::{MemoryStore, Store};
@@ -55,7 +57,7 @@ impl Spider for HttpbinHtmlSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://httpbin.org/html".to_string()]
     }
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         let node = resp.parse();
         let h1_texts: Vec<String> = node.select("h1").text();
         // httpbin.org/html 的 h1 是 "Herman Melville - Moby Dick"
@@ -114,7 +116,7 @@ impl Spider for QuotesSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://quotes.toscrape.com/".to_string()]
     }
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         let node = resp.parse();
         let quotes = node.select(".quote");
         let items: Vec<Value> = quotes
@@ -161,7 +163,7 @@ impl Spider for QuotesFollowSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://quotes.toscrape.com/".to_string()]
     }
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         let node = resp.parse();
         let quotes = node.select(".quote");
         let items: Vec<Value> = quotes
@@ -172,12 +174,12 @@ impl Spider for QuotesFollowSpider {
             })
             .collect();
         // 跟随 .next a 分页链接（相对路径，需补全域名）
-        let follows: Vec<Request> = node
+        let follows: Vec<CrawlRequest> = node
             .select_one(".next a")
             .and_then(|a| a.attr("href"))
             .map(|href| {
                 let url = format!("https://quotes.toscrape.com{}", href);
-                vec![Request::get(&url)]
+                vec![CrawlRequest::get(&url)]
             })
             .unwrap_or_default();
         (items, follows)
@@ -223,7 +225,7 @@ impl Spider for DomainFilterSpider {
         s.insert("quotes.toscrape.com".to_string());
         s
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
 }
@@ -257,7 +259,7 @@ impl Spider for StreamQuotesSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://quotes.toscrape.com/".to_string()]
     }
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         let node = resp.parse();
         let items: Vec<Value> = node
             .select(".quote")
@@ -330,13 +332,14 @@ async fn test_e2e_jsonl_export() {
         .build()
         .unwrap();
     let mut items_stream = engine.run_stream(QuotesSpider).items();
-    let mut writer = JsonlWriter::new(&path).unwrap();
+    let writer = ItemOutput::new(OutputFormat::Jsonl, path.to_str().unwrap());
+    writer.open().await.unwrap();
     let mut count = 0;
     while let Some(item) = items_stream.next().await {
-        writer.write(item.value()).unwrap();
+        writer.write(&item).await.unwrap();
         count += 1;
     }
-    writer.flush().unwrap();
+    writer.close().await.unwrap();
     assert!(count >= 5, "应至少写入 5 条 item, 实际: {}", count);
 
     // 验证文件存在且行数 >= 5
@@ -364,7 +367,7 @@ impl Spider for CacheSpider {
     fn start_urls(&self) -> Vec<String> {
         vec!["https://httpbin.org/get".to_string()]
     }
-    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         let text = resp.text().unwrap_or_default();
         assert!(text.contains("httpbin.org"), "响应应来自 httpbin");
         (vec![], vec![])

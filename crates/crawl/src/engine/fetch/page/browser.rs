@@ -1,10 +1,11 @@
 //! 浏览器模式抓取。
 
+use crate::CrawlRequest;
+use wisp_core::Response;
 use wisp_core::error::Result;
-use wisp_core::{Request, Response};
 use wisp_fetcher::FetchMode;
 
-fn to_crawl_response(resp: Response, req: &Request, mode: FetchMode) -> Response {
+fn to_crawl_response(resp: Response, req: &CrawlRequest, mode: FetchMode) -> Response {
     let content_type = resp
         .headers
         .get("content-type")
@@ -30,10 +31,10 @@ fn to_crawl_response(resp: Response, req: &Request, mode: FetchMode) -> Response
 
 pub(super) async fn fetch_browser_response(
     fetch_client: &wisp_fetcher::FetchClient,
-    req: &Request,
+    req: &CrawlRequest,
     mode: FetchMode,
 ) -> Result<Response> {
-    let resp = fetch_client.fetch(req, mode).await?;
+    let resp = fetch_client.fetch(&req.request, mode).await?;
     Ok(to_crawl_response(resp, req, mode))
 }
 
@@ -49,7 +50,7 @@ mod tests {
             ..Default::default()
         })
         .expect("build fetch client");
-        let req = Request::get("https://example.com/").with_proxy("http://127.0.0.1:8080");
+        let req = CrawlRequest::get("https://example.com/").with_proxy("http://127.0.0.1:8080");
         let err = fetch_browser_response(&client, &req, FetchMode::Dynamic)
             .await
             .expect_err("per-request proxy 应被浏览器模式拒绝");

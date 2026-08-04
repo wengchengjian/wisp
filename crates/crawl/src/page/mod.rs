@@ -12,7 +12,7 @@ mod query;
 mod tests;
 
 use serde_json::Value;
-use wisp_fetcher::{Request, Response};
+use wisp_fetcher::{CrawlRequest, Response};
 use wisp_parser::{Node, ResponseExt};
 
 /// 单页面处理上下文。
@@ -24,7 +24,7 @@ pub struct Page {
     resp: Response,
     doc: Node,
     items: Vec<Value>,
-    follows: Vec<Request>,
+    follows: Vec<CrawlRequest>,
 }
 
 impl Page {

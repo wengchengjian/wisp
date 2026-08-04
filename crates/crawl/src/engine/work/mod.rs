@@ -10,14 +10,14 @@ use std::sync::Arc;
 use super::Engine;
 use crate::engine;
 use crate::stats::SpiderStats;
-use crate::{CrawlStats, Request, Spider};
+use crate::{CrawlRequest, CrawlStats, Spider};
 
 pub(crate) use driver::run_stream_driver;
 
 struct NextWork {
     spider: Arc<dyn Spider>,
     stats: Arc<SpiderStats>,
-    req: Request,
+    req: CrawlRequest,
 }
 
 enum NextWorkResult {

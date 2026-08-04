@@ -7,7 +7,7 @@ use super::*;
 /// Stage 1: 控制状态检查 + Spider 钩子（基础设施级，不可中间件化）。
 pub(crate) async fn check_control_and_hook(
     ctx: &EngineContext,
-    req: &Request,
+    req: &CrawlRequest,
     spider: &Arc<dyn Spider>,
 ) -> bool {
     // per-Engine 控制状态检查
@@ -36,7 +36,7 @@ pub(crate) async fn check_control_and_hook(
 }
 
 /// Spider 业务策略过滤：域名白名单与最大深度。
-fn is_allowed_domain(spider: &Arc<dyn Spider>, req: &Request) -> bool {
+fn is_allowed_domain(spider: &Arc<dyn Spider>, req: &CrawlRequest) -> bool {
     if spider.allowed_domains().is_empty() {
         return true;
     }
@@ -62,7 +62,7 @@ async fn run_request_middlewares(
     ctx: &EngineContext,
     spider: &Arc<dyn Spider>,
     stats: &Arc<SpiderStats>,
-    req: &mut Request,
+    req: &mut CrawlRequest,
 ) -> RequestStage {
     let crawl_ctx = build_crawl_context_for(ctx, spider, stats);
     match ctx
@@ -97,7 +97,11 @@ async fn run_request_middlewares(
 }
 
 /// 发送抓取失败事件（stream 与 event bus），保持错误分类在调用链内。
-async fn emit_fetch_failure(ctx: &EngineContext, req: &Request, e: &wisp_core::error::WispError) {
+async fn emit_fetch_failure(
+    ctx: &EngineContext,
+    req: &CrawlRequest,
+    e: &wisp_core::error::WispError,
+) {
     ctx.runtime
         .event_bus
         .emit(CrawlEvent::Error {
@@ -107,12 +111,13 @@ async fn emit_fetch_failure(ctx: &EngineContext, req: &Request, e: &wisp_core::e
         })
         .await;
 }
+
 /// 处理请求阶段：控制检查 → 中间件请求链 → 抓取。
 ///
 /// 返回 `Some(resp)` 表示请求阶段产出响应，需由调用方交给 `process_response` 处理；
 /// 返回 `None` 表示已处理完毕（Skip/Abort/错误已发送事件），无需后续。
 #[tracing::instrument(level = "trace", skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
-pub(crate) async fn process_request(ctx: &EngineContext, req: Request) -> Option<Response> {
+pub(crate) async fn process_request(ctx: &EngineContext, req: CrawlRequest) -> Option<Response> {
     let spider = ctx.state.spider_for(&req)?;
     let stats = ctx.state.stats_for(&req)?;
 
