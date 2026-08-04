@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::Page;
 use crate::extract::extract_browser_response;
 use crate::strategy::BrowserFetchStrategy;
-use crate::Page;
 use wisp_core::cookie::CookieJar;
 use wisp_core::error::Result;
 use wisp_core::stealth::TurnstileConfig;

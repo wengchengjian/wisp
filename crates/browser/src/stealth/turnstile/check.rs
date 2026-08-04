@@ -1,7 +1,7 @@
 //! Turnstile 绕过状态检测。
 
-use serde_json::json;
 use crate::page::Page;
+use serde_json::json;
 use wisp_core::error::Result;
 
 async fn has_cf_clearance(page: &Page) -> bool {

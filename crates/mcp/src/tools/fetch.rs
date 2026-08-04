@@ -8,8 +8,8 @@ use std::future::Future;
 use std::pin::Pin;
 use wisp_core::FetchMode;
 use wisp_core::error::Result;
-use wisp_crawl::scenario;
 use wisp_crawl::Profile;
+use wisp_crawl::scenario;
 
 /// `fetch_page` arguments.
 #[derive(Debug, Deserialize)]

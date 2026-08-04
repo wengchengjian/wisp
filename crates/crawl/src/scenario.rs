@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
-use wisp_core::error::{Result, WispError};
 use wisp_core::FetchMode;
+use wisp_core::error::{Result, WispError};
 use wisp_fetcher::{FetchClient, FetchOptions, Request};
 use wisp_parser::{DEFAULT_TOLERANCE, Node};
-use wisp_storage::{open_store, Store};
+use wisp_storage::{Store, open_store};
 
 use crate::{AdaptiveTracker, Engine, Items, MaxPages, SpiderBuilder};
 

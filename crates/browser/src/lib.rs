@@ -6,6 +6,8 @@ pub mod cdp;
 pub mod cookie;
 /// DOM 元素封装。
 pub mod element;
+/// 浏览器页面响应提取。
+pub mod extract;
 /// Chrome for Testing 自动下载安装。
 pub mod installer;
 /// 浏览器可执行文件查找与启动参数构建。
@@ -20,8 +22,6 @@ pub mod pool;
 pub mod stealth;
 /// 浏览器抓取策略 trait（领域契约）。
 pub mod strategy;
-/// 浏览器页面响应提取。
-pub mod extract;
 
 mod process;
 

@@ -6,8 +6,8 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 
 use super::handle::BrowserHandle;
-use crate::strategy::BrowserFetchStrategy;
 use crate::Browser;
+use crate::strategy::BrowserFetchStrategy;
 use wisp_core::config::LaunchOptions;
 use wisp_core::error::{BrowserError, Result, WispError};
 use wisp_core::{Request, Response};
