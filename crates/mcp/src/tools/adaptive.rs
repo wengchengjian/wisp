@@ -2,7 +2,6 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use super::fetch_html::fetch_html;
 use super::types::ToolContext;
@@ -12,7 +11,6 @@ use serde_json::json;
 use wisp_core::FetchMode;
 use wisp_core::error::Result;
 use wisp_parser::Node;
-use wisp_storage::Store;
 
 /// `adaptive_scrape` arguments.
 #[derive(Debug, Deserialize)]
