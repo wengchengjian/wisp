@@ -54,6 +54,12 @@ impl CookieJar for CompositeCookieJar {
         self.cf.set(cookie).await;
     }
 
+    async fn set_batch(&self, cookies: Vec<Cookie>) {
+        self.http.set_batch(cookies.clone()).await;
+        #[cfg(feature = "stealth")]
+        self.cf.set_batch(cookies).await;
+    }
+
     async fn clear(&self, url: &Url) {
         self.http.clear(url).await;
         #[cfg(feature = "stealth")]

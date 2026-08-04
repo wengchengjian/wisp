@@ -91,6 +91,15 @@ pub trait CookieJar: Send + Sync {
     /// 写入 cookie。
     async fn set(&self, cookie: Cookie);
 
+    /// 批量写入 cookie。
+    ///
+    /// 默认实现逐个调用 `set`；后端若支持批量优化（如 CF 的单次持久化）应覆盖。
+    async fn set_batch(&self, cookies: Vec<Cookie>) {
+        for cookie in cookies {
+            self.set(cookie).await;
+        }
+    }
+
     /// 删除指定 URL 匹配的所有 cookie（用于失效会话）。
     async fn clear(&self, url: &Url);
 

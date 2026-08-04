@@ -141,6 +141,44 @@ impl CookieJar for CfCookieJar {
         self.insert_session(domain, session);
     }
 
+    async fn set_batch(&self, cookies: Vec<Cookie>) {
+        if cookies.is_empty() {
+            return;
+        }
+        // 按 domain 分组，合并到现有 session（复用 set 的合并逻辑）
+        let mut by_domain: HashMap<String, CfSession> = HashMap::new();
+        for cookie in cookies {
+            let domain = cookie.domain.clone();
+            let cookie_json = serde_json::json!({
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain,
+                "path": cookie.path,
+                "secure": cookie.secure,
+                "httpOnly": cookie.http_only,
+                "sameSite": cookie.same_site.clone().unwrap_or_else(|| "Lax".into()),
+                "expires": cookie.expires,
+            });
+            let session = by_domain.entry(domain.clone()).or_insert_with(|| {
+                self.get_session(&domain).unwrap_or_else(|| CfSession {
+                    cookies: Vec::new(),
+                    ua: String::new(),
+                    saved_at: chrono::Utc::now().timestamp(),
+                })
+            });
+            session
+                .cookies
+                .retain(|c| c.get("name").and_then(|n| n.as_str()) != Some(&cookie.name));
+            session.cookies.push(cookie_json);
+            session.saved_at = chrono::Utc::now().timestamp();
+        }
+        // 内存批量更新 + 单次文件持久化（避免逐 cookie 全量序列化）
+        for (domain, session) in by_domain {
+            self.mem.insert(domain, session);
+        }
+        self.save_to_file();
+    }
+
     async fn clear(&self, url: &Url) {
         if let Some(domain) = url.host_str() {
             self.mem.invalidate(domain);

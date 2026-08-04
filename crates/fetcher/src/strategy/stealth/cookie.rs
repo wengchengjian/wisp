@@ -54,9 +54,7 @@ impl StealthStrategy {
         if cookies_to_save.is_empty() {
             return;
         }
-        for cookie in cookies_to_save {
-            self.cookie_jar.set(cookie).await;
-        }
+        self.cookie_jar.set_batch(cookies_to_save).await;
         self.cookie_jar.set_session_ua(domain, Some(&ua_str)).await;
         tracing::info!("BrowserWork[+CF]: {url} 保存 CF cookie（domain={domain}）");
     }
