@@ -4,9 +4,11 @@ pub mod config;
 pub mod cookie;
 pub mod encoding;
 pub mod error;
+pub mod stealth;
 pub mod text;
 pub mod types;
 pub mod utils;
 
 pub use cookie::{Cookie, CookieJar, MockCookieJar};
+pub use stealth::{ChallengeType, TurnstileConfig};
 pub use types::{CrawlRequest, FetchMode, Method, Request, Response, ResponseParts};
