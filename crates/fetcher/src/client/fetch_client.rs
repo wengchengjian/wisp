@@ -274,33 +274,15 @@ impl FetchClient {
                 "browser pool not configured (max_concurrent_pages=0)".into(),
             ))
         })?;
-        let mut handle = pool.acquire().await?;
-
-        if let Some(ref blocker) = self.config.domain_blocker
-            && let urls = blocker.blocked_domains()
-            && !urls.is_empty()
-        {
-            handle
-                .page_mut()
-                .cmd(
-                    "Network.setBlockedURLs",
-                    serde_json::json!({ "urls": urls }),
-                )
-                .await?;
-        }
-
-        let work = strategy.fetch(handle.page_mut(), req);
-        let result = tokio::time::timeout(Duration::from_secs(120), work)
+        // 浏览器资源生命周期（acquire/close/超时/blockedURLs）已下沉到 BrowserPool::fetch_with_strategy。
+        let blocked_urls = self
+            .config
+            .domain_blocker
+            .as_ref()
+            .map(|blocker| blocker.blocked_domains())
+            .unwrap_or_default();
+        pool.fetch_with_strategy(strategy, req, &blocked_urls, Duration::from_secs(120))
             .await
-            .map_err(|_| {
-                WispError::Timeout(format!(
-                    "fetch_browser 总超时（120s）: {}",
-                    wisp_core::utils::sanitize_url(&req.url)
-                ))
-            })?;
-
-        let _ = handle.page_mut().close().await;
-        result
     }
 
     fn build_http_client(

@@ -1,13 +1,17 @@
 //! Browser Pool 实现。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{Mutex, Semaphore};
 
 use super::handle::BrowserHandle;
+use crate::strategy::BrowserFetchStrategy;
 use crate::Browser;
 use wisp_core::config::LaunchOptions;
 use wisp_core::error::{BrowserError, Result, WispError};
+use wisp_core::{Request, Response};
+
 /// 浏览器池：单 Browser + 多 Page 并发。
 ///
 /// 持有 1 个懒启动的 Browser 实例，通过 Semaphore 限制并发 page 数。
@@ -57,6 +61,43 @@ impl BrowserPool {
             page: Some(page),
             permit,
         })
+    }
+
+    /// 在池内执行一次浏览器抓取：acquire → 配置 blockedURLs → 执行策略（带超时）→ close。
+    ///
+    /// 将浏览器资源生命周期（acquire/close/超时/blockedURLs）从调用方下沉到 pool，
+    /// 调用方只需提供策略、请求与要屏蔽的域名列表。
+    ///
+    /// 生命周期语义：
+    /// - `strategy.fetch` 的超时由 `timeout` 包裹，超时后返回 `WispError::Timeout`；
+    /// - 无论成功/失败/超时，page 都会在返回前显式 `close`。
+    pub async fn fetch_with_strategy(
+        self: &Arc<Self>,
+        strategy: &dyn BrowserFetchStrategy,
+        req: &Request,
+        blocked_urls: &[String],
+        timeout: Duration,
+    ) -> Result<Response> {
+        let mut handle = self.acquire().await?;
+        if !blocked_urls.is_empty() {
+            handle
+                .page_mut()
+                .cmd(
+                    "Network.setBlockedURLs",
+                    serde_json::json!({ "urls": blocked_urls }),
+                )
+                .await?;
+        }
+        let work = strategy.fetch(handle.page_mut(), req);
+        let result = tokio::time::timeout(timeout, work).await.map_err(|_| {
+            WispError::Timeout(format!(
+                "fetch_browser 总超时（{}s）: {}",
+                timeout.as_secs(),
+                wisp_core::utils::sanitize_url(&req.url)
+            ))
+        })?;
+        let _ = handle.page_mut().close().await;
+        result
     }
 
     /// 懒启动 Browser（首次或崩溃后重启）。
