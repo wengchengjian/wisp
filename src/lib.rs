@@ -64,12 +64,6 @@ pub use parser::{Node, NodeList, ResponseExt};
 pub use proxy::RotationStrategy;
 pub use storage::{CachedResponse, ElementSnapshotRow, FileStore, MemoryStore, Store};
 
-// 自由函数导出（业务层 API）
-pub use storage::{
-    delete_checkpoint, delete_response, load_checkpoint, load_element, load_response,
-    save_checkpoint, save_element, save_response,
-};
-
 #[cfg(feature = "sqlite")]
 pub use storage::SqliteStore;
 

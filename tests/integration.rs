@@ -205,7 +205,8 @@ mod adaptive_test {
         assert_eq!(node.unwrap().text(), "Widget");
 
         // 验证 capture 用了导航 API：检查 snapshot 的 ancestor_path 包含 "div.products"
-        let saved = wisp::storage::load_element(&*store, url, "product-title")
+        let saved = store
+            .load_element(url, "product-title")
             .await
             .unwrap()
             .expect("snapshot should be saved");

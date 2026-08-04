@@ -3566,9 +3566,14 @@ dependencies = [
 name = "wisp-parser"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "proptest",
  "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
  "wisp-core",
+ "wisp-storage",
  "woven-html",
 ]
 

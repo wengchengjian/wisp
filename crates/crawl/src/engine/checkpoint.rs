@@ -41,7 +41,7 @@ pub(crate) async fn maybe_persist_checkpoint(
             return;
         }
     };
-    if let Err(e) = wisp_storage::save_checkpoint(store.as_ref(), spider.name(), &blob).await {
+    if let Err(e) = store.save_checkpoint(spider.name(), &blob).await {
         tracing::warn!("checkpoint 保存失败: {e}");
         return;
     }
@@ -58,7 +58,7 @@ pub(crate) async fn load_spider_checkpoint(
     store: &dyn wisp_storage::Store,
     spider_name: &str,
 ) -> Result<Option<CrawlState>> {
-    let Some(blob) = wisp_storage::load_checkpoint(store, spider_name).await? else {
+    let Some(blob) = store.load_checkpoint(spider_name).await? else {
         return Ok(None);
     };
     bincode::deserialize(&blob).map(Some).map_err(|e| {

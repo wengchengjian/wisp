@@ -72,7 +72,7 @@ impl Engine {
             return;
         };
         for spider in &ctx.state.spiders.spiders {
-            if let Err(e) = wisp_storage::delete_checkpoint(store.as_ref(), spider.name()).await {
+            if let Err(e) = store.delete_checkpoint(spider.name()).await {
                 tracing::warn!("checkpoint 清理失败: spider={}, err={e}", spider.name());
             }
         }

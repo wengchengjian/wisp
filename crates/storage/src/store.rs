@@ -3,20 +3,33 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
-use wisp_core::error::Result;
+use wisp_core::error::{Result, StorageError, WispError};
 
 use crate::FileStore;
 #[cfg(feature = "sqlite")]
 use crate::SqliteStore;
+use crate::models::{CachedResponse, ElementSnapshotRow};
 
-/// 存储后端 trait。仅提供底层 KV 原语，全部 `async`。
+const NS_CHECKPOINT: &str = "checkpoint";
+const NS_ELEMENT: &str = "element";
+const NS_RESPONSE: &str = "response";
+
+fn element_key(url: &str, key: &str) -> String {
+    format!("{url}|{key}")
+}
+
+fn response_key(method: &str, url: &str) -> String {
+    format!("{method}|{url}")
+}
+
+/// 存储后端 trait。底层 KV 原语 + 业务默认方法，全部 `async`。
 ///
 /// 实现者保证线程安全（`Send + Sync`）。SQLite/FileStore 等同步 I/O
 /// 实现内部用 `tokio::task::spawn_blocking` 移出 async worker；
 /// MemoryStore（moka 同步 API）直接 async 包装。
 ///
-/// 业务方法（`save_checkpoint` / `load_response` 等）作为自由函数实现，
-/// 调用 `set`/`get`/`delete` 并处理序列化。
+/// 业务方法（`save_checkpoint` / `load_response` 等）以默认方法实现，
+/// 调用 `set`/`get`/`delete` 并处理序列化，无需后端重新实现。
 #[async_trait]
 pub trait Store: Send + Sync {
     /// 写入一个 entry。
@@ -39,6 +52,75 @@ pub trait Store: Send + Sync {
         _ttl: Option<Duration>,
     ) -> Result<()> {
         self.set(namespace, key, value).await
+    }
+
+    // === Checkpoint ===
+
+    /// 保存检查点。
+    async fn save_checkpoint(&self, name: &str, state: &[u8]) -> Result<()> {
+        self.set(NS_CHECKPOINT, name, state).await
+    }
+
+    /// 加载检查点。
+    async fn load_checkpoint(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        self.get(NS_CHECKPOINT, name).await
+    }
+
+    /// 删除检查点。
+    async fn delete_checkpoint(&self, name: &str) -> Result<()> {
+        self.delete(NS_CHECKPOINT, name).await
+    }
+
+    // === Element Snapshot ===
+
+    /// 保存元素快照。
+    async fn save_element(&self, url: &str, key: &str, row: &ElementSnapshotRow) -> Result<()> {
+        let composite = element_key(url, key);
+        let bytes = serde_json::to_vec(row).map_err(|e| {
+            WispError::Storage(StorageError::General(format!("serialize element: {e}")))
+        })?;
+        self.set(NS_ELEMENT, &composite, &bytes).await
+    }
+
+    /// 加载元素快照。
+    async fn load_element(&self, url: &str, key: &str) -> Result<Option<ElementSnapshotRow>> {
+        let composite = element_key(url, key);
+        self.get(NS_ELEMENT, &composite)
+            .await?
+            .map(|v| serde_json::from_slice(&v))
+            .transpose()
+            .map_err(|e| WispError::Storage(StorageError::General(format!("parse element: {e}"))))
+    }
+
+    // === Response Cache ===
+
+    /// 保存响应缓存。
+    ///
+    /// 使用 bincode 紧凑二进制而非 JSON：响应体是 `Vec<u8>`，JSON 会展开成
+    /// 字节数组，序列化/反序列化开销和缓存体积都远高于二进制编码。
+    async fn save_response(&self, method: &str, url: &str, resp: &CachedResponse) -> Result<()> {
+        let composite = response_key(method, url);
+        let bytes = bincode::serialize(resp).map_err(|e| {
+            WispError::Storage(StorageError::General(format!("serialize response: {e}")))
+        })?;
+        self.set_with_ttl(NS_RESPONSE, &composite, &bytes, resp.ttl)
+            .await
+    }
+
+    /// 加载响应缓存。
+    async fn load_response(&self, method: &str, url: &str) -> Result<Option<CachedResponse>> {
+        let composite = response_key(method, url);
+        self.get(NS_RESPONSE, &composite)
+            .await?
+            .map(|v| bincode::deserialize(&v))
+            .transpose()
+            .map_err(|e| WispError::Storage(StorageError::General(format!("parse response: {e}"))))
+    }
+
+    /// 删除响应缓存。
+    async fn delete_response(&self, method: &str, url: &str) -> Result<()> {
+        let composite = response_key(method, url);
+        self.delete(NS_RESPONSE, &composite).await
     }
 }
 

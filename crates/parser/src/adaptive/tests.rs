@@ -1,9 +1,9 @@
 use super::*;
 use std::sync::Arc;
-use wisp_parser::{DEFAULT_TOLERANCE, ElementSnapshot, Node, relocate_with_snapshot};
-use wisp_storage::{MemoryStore, Store, load_element, save_element};
+use wisp_storage::{MemoryStore, Store};
 
 use super::convert::{row_to_snapshot, snapshot_to_row};
+use crate::Node;
 
 fn make_doc() -> Node {
     Node::from_html(
@@ -138,14 +138,12 @@ async fn test_capture_then_relocate_after_class_change() {
     let snapshot = ElementSnapshot::capture(&apple_node);
     let key = "product-name";
     let url = "https://example.com/products";
-    save_element(store.as_ref(), url, key, &snapshot_to_row(snapshot, 0))
+    store
+        .save_element(url, key, &snapshot_to_row(snapshot, 0))
         .await
         .unwrap();
 
-    let loaded = load_element(store.as_ref(), url, key)
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = store.load_element(url, key).await.unwrap().unwrap();
     let loaded_snapshot = row_to_snapshot(loaded);
 
     let doc_after = Node::from_html(HTML_AFTER);
@@ -177,15 +175,13 @@ async fn test_relocate_finds_best_match_among_candidates() {
     let doc = Node::from_html(HTML_BEFORE);
     let banana = doc.select_all(".name").into_iter().nth(1).unwrap();
     let snapshot = ElementSnapshot::capture(&banana);
-    save_element(store.as_ref(), "u", "k", &snapshot_to_row(snapshot, 0))
+    store
+        .save_element("u", "k", &snapshot_to_row(snapshot, 0))
         .await
         .unwrap();
 
     let doc2 = Node::from_html(HTML_BEFORE);
-    let loaded = load_element(store.as_ref(), "u", "k")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = store.load_element("u", "k").await.unwrap().unwrap();
     let loaded_snap = row_to_snapshot(loaded);
     let found = relocate_with_snapshot(&doc2, &loaded_snap, 0.3).unwrap();
     assert_eq!(found.text(), "Banana");

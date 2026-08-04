@@ -291,9 +291,7 @@ async fn run_clears_checkpoint_on_successful_completion() {
     assert_eq!(items.len(), 1, "应产出 1 个 item");
 
     // 爬取成功完成后 checkpoint 应被清理
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-clear-test")
-        .await
-        .unwrap();
+    let ckpt = store.load_checkpoint("ckpt-clear-test").await.unwrap();
     assert!(
         ckpt.is_none(),
         "爬取成功完成后 checkpoint 应被清理，但仍然存在"
@@ -334,9 +332,7 @@ async fn run_keeps_checkpoint_on_shutdown_interrupt() {
     let _ = engine.run(spider).await;
 
     // shutdown 中断必须保留 checkpoint，供下次 run 前恢复
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-shutdown-test")
-        .await
-        .unwrap();
+    let ckpt = store.load_checkpoint("ckpt-shutdown-test").await.unwrap();
     assert!(
         ckpt.is_some(),
         "shutdown 中断后应保留 checkpoint 供恢复，实际: {:?}",
@@ -383,9 +379,7 @@ async fn run_resumes_from_checkpoint_after_shutdown() {
         first_stats.pages_crawled,
         second_stats.pages_crawled
     );
-    let ckpt = wisp::storage::load_checkpoint(&*store, "ckpt-resume-test")
-        .await
-        .unwrap();
+    let ckpt = store.load_checkpoint("ckpt-resume-test").await.unwrap();
     assert!(ckpt.is_none(), "自然完成后 checkpoint 应被清理");
 }
 

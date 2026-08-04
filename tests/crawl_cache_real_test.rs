@@ -42,7 +42,8 @@ async fn test_development_mode_caches_response() {
     assert_eq!(stats1.cache_hits, 0, "第一次运行不应有缓存命中");
 
     // 验证缓存已保存
-    let cached = wisp::storage::load_response(&*store, "GET", "https://httpbin.org/get")
+    let cached = store
+        .load_response("GET", "https://httpbin.org/get")
         .await
         .unwrap();
     assert!(cached.is_some(), "响应应已缓存");

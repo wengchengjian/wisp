@@ -5,8 +5,7 @@ mod item;
 mod spider;
 mod stats;
 
-pub mod adaptive;
-pub(crate) mod auto;
+pub mod auto;
 pub mod builder;
 pub mod engine;
 pub mod middleware;
@@ -26,7 +25,6 @@ pub use runtime::robots;
 pub use scheduling::scheduler;
 pub use scheduling::stop;
 
-pub use adaptive::AdaptiveTracker;
 pub use builder::{ClosureSpider, SpiderBuilder};
 pub use crawl_stream::{CrawlEvent, CrawlStream};
 pub use engine::{Engine, EngineBuilder, EngineConfig};
@@ -43,7 +41,7 @@ pub use stop::{
 // 统一类型：直接使用 fetcher 的 Request/Response/Method
 pub use wisp_fetcher::{CrawlRequest, FetchClient, FetchOptions, Method, Request, Response};
 // 薄壳层（mcp 等）所需底层类型：经 crawl 统一出口，避免直接依赖 fetcher/parser/storage
-pub use wisp_parser::{DEFAULT_TOLERANCE, Node};
+pub use wisp_parser::{AdaptiveTracker, DEFAULT_TOLERANCE, Node};
 pub use wisp_storage::{Store, open_store};
 pub use wreq_util::Profile;
 

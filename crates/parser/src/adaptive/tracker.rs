@@ -3,15 +3,15 @@
 use std::sync::Arc;
 
 use wisp_core::error::Result;
-use wisp_parser::{DEFAULT_TOLERANCE, ElementSnapshot, Node, relocate_with_snapshot};
-use wisp_storage::{Store, load_element, save_element};
+use wisp_storage::Store;
 
 use super::convert::{row_to_snapshot, snapshot_to_row};
+use super::{DEFAULT_TOLERANCE, ElementSnapshot, relocate_with_snapshot};
+use crate::Node;
 
 /// 自适应解析跟踪器 — 持久化元素快照。
 ///
-/// ARCH: 替代原 `parser::css_adaptive` 自由函数。持有 `Arc<dyn Store>`，
-/// 提供 `css_adaptive` 方法：先 CSS 选择，失败则从存储加载快照重定位。
+/// ARCH: 持有 `Arc<dyn Store>`，提供 `css_adaptive` 方法：先 CSS 选择，失败则从存储加载快照重定位。
 pub struct AdaptiveTracker {
     store: Arc<dyn Store>,
 }
@@ -26,7 +26,7 @@ impl AdaptiveTracker {
     async fn save_snapshot(&self, node: &Node, key: &str, url: &str) {
         let snap = ElementSnapshot::capture(node);
         let row = snapshot_to_row(snap, chrono::Utc::now().timestamp());
-        if let Err(e) = save_element(self.store.as_ref(), url, key, &row).await {
+        if let Err(e) = self.store.save_element(url, key, &row).await {
             tracing::warn!("自适应快照保存失败: {}", e);
         }
     }
@@ -56,7 +56,7 @@ impl AdaptiveTracker {
         tolerance: f64,
         auto_save: bool,
     ) -> Result<Option<Node>> {
-        let saved_row = match load_element(self.store.as_ref(), url, key).await? {
+        let saved_row = match self.store.load_element(url, key).await? {
             Some(r) => r,
             None => return Ok(None),
         };

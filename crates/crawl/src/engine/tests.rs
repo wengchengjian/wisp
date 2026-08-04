@@ -208,7 +208,8 @@ async fn save_checkpoint_persists_seen_urls() {
     let spider = ctx.state.spiders.spiders[0].clone();
     maybe_persist_checkpoint(&ctx, &spider, &stats).await;
 
-    let blob = wisp_storage::load_checkpoint(store.as_ref(), "dummy")
+    let blob = store
+        .load_checkpoint("dummy")
         .await
         .expect("load checkpoint ok")
         .expect("checkpoint should exist");

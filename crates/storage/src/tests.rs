@@ -75,25 +75,28 @@ fn make_cached(status: u16, body: &[u8], ttl: Option<Duration>) -> CachedRespons
 }
 
 #[tokio::test]
-async fn checkpoint_roundtrip_via_free_fn() {
+async fn checkpoint_roundtrip_via_trait_method() {
     let store = MockStore::new();
-    save_checkpoint(&store, "spider1", b"state-bytes")
+    store
+        .save_checkpoint("spider1", b"state-bytes")
         .await
         .unwrap();
-    let loaded = load_checkpoint(&store, "spider1").await.unwrap().unwrap();
+    let loaded = store.load_checkpoint("spider1").await.unwrap().unwrap();
     assert_eq!(loaded, b"state-bytes");
-    delete_checkpoint(&store, "spider1").await.unwrap();
-    assert!(load_checkpoint(&store, "spider1").await.unwrap().is_none());
+    store.delete_checkpoint("spider1").await.unwrap();
+    assert!(store.load_checkpoint("spider1").await.unwrap().is_none());
 }
 
 #[tokio::test]
-async fn response_roundtrip_via_free_fn() {
+async fn response_roundtrip_via_trait_method() {
     let store = MockStore::new();
     let resp = make_cached(200, b"<html>hi</html>", Some(Duration::from_secs(3600)));
-    save_response(&store, "GET", "https://example.com", &resp)
+    store
+        .save_response("GET", "https://example.com", &resp)
         .await
         .unwrap();
-    let loaded = load_response(&store, "GET", "https://example.com")
+    let loaded = store
+        .load_response("GET", "https://example.com")
         .await
         .unwrap()
         .unwrap();
@@ -106,12 +109,14 @@ async fn response_roundtrip_via_free_fn() {
 async fn response_ttl_expiry() {
     let store = MockStore::new();
     let resp = make_cached(200, b"x", Some(Duration::from_millis(1)));
-    save_response(&store, "GET", "https://expired.com", &resp)
+    store
+        .save_response("GET", "https://expired.com", &resp)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
     assert!(
-        load_response(&store, "GET", "https://expired.com")
+        store
+            .load_response("GET", "https://expired.com")
             .await
             .unwrap()
             .is_none()
@@ -122,10 +127,12 @@ async fn response_ttl_expiry() {
 async fn response_no_ttl_never_expires() {
     let store = MockStore::new();
     let resp = make_cached(200, b"forever", None);
-    save_response(&store, "GET", "https://forever.com", &resp)
+    store
+        .save_response("GET", "https://forever.com", &resp)
         .await
         .unwrap();
-    let loaded = load_response(&store, "GET", "https://forever.com")
+    let loaded = store
+        .load_response("GET", "https://forever.com")
         .await
         .unwrap()
         .unwrap();
@@ -135,24 +142,25 @@ async fn response_no_ttl_never_expires() {
 #[tokio::test]
 async fn method_isolation() {
     let store = MockStore::new();
-    save_response(
-        &store,
-        "GET",
-        "https://example.com",
-        &make_cached(200, b"get", None),
-    )
-    .await
-    .unwrap();
-    save_response(
-        &store,
-        "POST",
-        "https://example.com",
-        &make_cached(201, b"post", None),
-    )
-    .await
-    .unwrap();
+    store
+        .save_response(
+            "GET",
+            "https://example.com",
+            &make_cached(200, b"get", None),
+        )
+        .await
+        .unwrap();
+    store
+        .save_response(
+            "POST",
+            "https://example.com",
+            &make_cached(201, b"post", None),
+        )
+        .await
+        .unwrap();
     assert_eq!(
-        load_response(&store, "GET", "https://example.com")
+        store
+            .load_response("GET", "https://example.com")
             .await
             .unwrap()
             .unwrap()
@@ -160,7 +168,8 @@ async fn method_isolation() {
         b"get"
     );
     assert_eq!(
-        load_response(&store, "POST", "https://example.com")
+        store
+            .load_response("POST", "https://example.com")
             .await
             .unwrap()
             .unwrap()
@@ -173,7 +182,7 @@ async fn method_isolation() {
 async fn namespace_isolation() {
     let store = MockStore::new();
     // checkpoint 和 element 同名 key 不冲突
-    save_checkpoint(&store, "mykey", b"cp").await.unwrap();
+    store.save_checkpoint("mykey", b"cp").await.unwrap();
     let elem = ElementSnapshotRow {
         tag: "div".into(),
         attrs: serde_json::Value::Null,
@@ -185,15 +194,17 @@ async fn namespace_isolation() {
         parent_attrs: serde_json::Value::Null,
         captured_at: 0,
     };
-    save_element(&store, "http://x", "mykey", &elem)
+    store
+        .save_element("http://x", "mykey", &elem)
         .await
         .unwrap();
     assert_eq!(
-        load_checkpoint(&store, "mykey").await.unwrap().unwrap(),
+        store.load_checkpoint("mykey").await.unwrap().unwrap(),
         b"cp"
     );
     assert!(
-        load_element(&store, "http://x", "mykey")
+        store
+            .load_element("http://x", "mykey")
             .await
             .unwrap()
             .is_some()

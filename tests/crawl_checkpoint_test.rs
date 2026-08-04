@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use wisp::crawl::{CrawlRequest, CrawlState};
-use wisp::storage::MemoryStore;
+use wisp::storage::{MemoryStore, Store};
 
 #[tokio::test]
 async fn test_checkpoint_save_load_roundtrip() {
@@ -23,11 +23,10 @@ async fn test_checkpoint_save_load_roundtrip() {
     state.stats.callback_pages = HashMap::from([("detail".to_string(), 2)]);
 
     let blob = bincode::serialize(&state).unwrap();
-    wisp::storage::save_checkpoint(&store, "test-spider", &blob)
-        .await
-        .unwrap();
+    store.save_checkpoint("test-spider", &blob).await.unwrap();
 
-    let loaded = wisp::storage::load_checkpoint(&store, "test-spider")
+    let loaded = store
+        .load_checkpoint("test-spider")
         .await
         .unwrap()
         .expect("should be saved");
@@ -69,32 +68,19 @@ async fn test_checkpoint_delete() {
     let store = MemoryStore::default();
     let state = CrawlState::new("s2".to_string());
     let blob = bincode::serialize(&state).unwrap();
-    wisp::storage::save_checkpoint(&store, "s2", &blob)
-        .await
-        .unwrap();
-    assert!(
-        wisp::storage::load_checkpoint(&store, "s2")
-            .await
-            .unwrap()
-            .is_some()
-    );
+    store.save_checkpoint("s2", &blob).await.unwrap();
+    assert!(store.load_checkpoint("s2").await.unwrap().is_some());
 
-    wisp::storage::delete_checkpoint(&store, "s2")
-        .await
-        .unwrap();
-    assert!(
-        wisp::storage::load_checkpoint(&store, "s2")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    store.delete_checkpoint("s2").await.unwrap();
+    assert!(store.load_checkpoint("s2").await.unwrap().is_none());
 }
 
 #[tokio::test]
 async fn test_checkpoint_load_missing_returns_none() {
     let store = MemoryStore::default();
     assert!(
-        wisp::storage::load_checkpoint(&store, "nonexistent")
+        store
+            .load_checkpoint("nonexistent")
             .await
             .unwrap()
             .is_none()
@@ -126,14 +112,9 @@ async fn checkpoint_restore_preserves_seen_urls() {
     state.pending_urls = vec![CrawlRequest::get("https://example.com/pending")];
     state.seen_urls = HashSet::from(["https://example.com/already-crawled".to_string()]);
     let blob = bincode::serialize(&state).unwrap();
-    wisp::storage::save_checkpoint(&store, "test_spider", &blob)
-        .await
-        .unwrap();
+    store.save_checkpoint("test_spider", &blob).await.unwrap();
 
-    let loaded = wisp::storage::load_checkpoint(&store, "test_spider")
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = store.load_checkpoint("test_spider").await.unwrap().unwrap();
     let restored: CrawlState = bincode::deserialize(&loaded).unwrap();
     assert!(
         restored

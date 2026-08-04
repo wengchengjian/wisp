@@ -39,7 +39,7 @@ impl Middleware for CacheMiddleware {
         _ctx: &CrawlContext,
     ) -> RequestMwAction {
         let method_str = req.method.as_str();
-        match wisp_storage::load_response(&*self.store, method_str, &req.url).await {
+        match self.store.load_response(method_str, &req.url).await {
             Ok(Some(cached)) => {
                 let resp = Response::from_parts(wisp_core::ResponseParts {
                     status: cached.status,
@@ -71,8 +71,10 @@ impl Middleware for CacheMiddleware {
                 cached_at: chrono::Utc::now().timestamp(),
                 ttl: self.default_ttl,
             };
-            if let Err(e) =
-                wisp_storage::save_response(&*self.store, method_str, &resp.url, &cached).await
+            if let Err(e) = self
+                .store
+                .save_response(method_str, &resp.url, &cached)
+                .await
             {
                 tracing::warn!("响应缓存写入失败: {}", e);
             }

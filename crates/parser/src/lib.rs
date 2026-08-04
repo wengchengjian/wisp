@@ -7,7 +7,9 @@ pub mod generate;
 mod node;
 mod response_ext;
 
-pub use adaptive::{DEFAULT_TOLERANCE, ElementSnapshot, relocate_with_snapshot, similarity};
+pub use adaptive::{
+    AdaptiveTracker, DEFAULT_TOLERANCE, ElementSnapshot, relocate_with_snapshot, similarity,
+};
 pub use node::{Node, NodeList};
 pub use response_ext::ResponseExt;
 

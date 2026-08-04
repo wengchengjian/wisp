@@ -1,12 +1,9 @@
 //! ElementSnapshot 与 ElementSnapshotRow 转换。
 
-use wisp_parser::ElementSnapshot;
+use super::ElementSnapshot;
 use wisp_storage::ElementSnapshotRow;
 
 /// `ElementSnapshot` -> `ElementSnapshotRow` 转换。
-///
-/// 跨 crate 转换无法实现 `From`（两个类型都来自外部 crate），
-/// 由依赖 parser 和 storage 的 crawl 层提供自由函数。
 pub fn snapshot_to_row(snapshot: ElementSnapshot, captured_at: i64) -> ElementSnapshotRow {
     ElementSnapshotRow {
         tag: snapshot.tag,

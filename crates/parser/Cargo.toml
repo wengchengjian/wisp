@@ -7,8 +7,13 @@ license.workspace = true
 
 [dependencies]
 wisp-core = { workspace = true }
+wisp-storage = { workspace = true }
 woven-html = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tokio = { workspace = true }
