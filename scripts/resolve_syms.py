@@ -2,13 +2,12 @@
 
 Usage: python scripts/resolve_syms.py <profile.json> <syms.json> [--top N]
 """
-import json
-import sys
+import argparse
+import bisect
 from collections import Counter
 
-def load(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+from samply_common import load, resolve
+
 
 def build_sym_map(syms):
     """Return {rva: symbol_name} for the novel_profiler.pdb module.
@@ -32,25 +31,17 @@ def build_sym_map(syms):
             result[rva] = name
     return result
 
-def resolve(thread, idx):
-    stack_table = thread["stackTable"]
-    frame_table = thread["frameTable"]
-    func_table = thread["funcTable"]
-    strings = thread["stringArray"]
-    frame_idx = stack_table["frame"][idx]
-    func_idx = frame_table["func"][frame_idx]
-    name_idx = func_table["name"][func_idx]
-    return strings[name_idx]
 
 def main():
-    path = sys.argv[1]
-    syms_path = sys.argv[2]
-    top = 40
-    if "--top" in sys.argv:
-        top = int(sys.argv[sys.argv.index("--top") + 1])
+    parser = argparse.ArgumentParser(description="Resolve samply frame addresses to symbols via a .syms.json sidecar")
+    parser.add_argument("profile", help="path to profile.json")
+    parser.add_argument("syms", help="path to the .syms.json sidecar")
+    parser.add_argument("--top", type=int, default=40, help="number of top items to show")
+    args = parser.parse_args()
 
-    prof = load(path)
-    sym_map = build_sym_map(load(syms_path))
+    prof = load(args.profile)
+    sym_map = build_sym_map(load(args.syms))
+    keys = sorted(sym_map.keys())
 
     # Collect all leaf addresses (address strings) and their weights
     leaf_counter = Counter()
@@ -69,20 +60,20 @@ def main():
     print(f"total weight: {total}")
     print(f"{'%':>8} {'weight':>8}  rva(hex)        symbol")
     print("-" * 90)
-    for addr, cnt in leaf_counter.most_common(top):
+    for addr, cnt in leaf_counter.most_common(args.top):
         rva = int(addr, 16)
-        # find nearest known address <= rva
-        best = None
-        best_rva = None
-        for k in sorted(sym_map.keys()):
-            if k <= rva:
-                best = sym_map[k]
-                best_rva = k
-            else:
-                break
+        # nearest known address <= rva via binary search
+        idx = bisect.bisect_right(keys, rva) - 1
+        if idx >= 0:
+            best_rva = keys[idx]
+            best = sym_map[best_rva]
+        else:
+            best_rva = None
+            best = None
         pct = cnt / total * 100 if total else 0
         label = best if best is not None else "???"
         print(f"{pct:7.2f}% {cnt:8d}  {addr:>10}  {label}  (base rva {best_rva})")
+
 
 if __name__ == "__main__":
     main()

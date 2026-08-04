@@ -5,3 +5,5 @@
 wisp-data/
 .browsers/
 .superpowers/
+__pycache__/
+*.pyc

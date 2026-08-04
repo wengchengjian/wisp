@@ -2,41 +2,26 @@
 
 Usage: python scripts/analyze_stacks.py <profile.json> [--process SUBSTR] [--top N] [--stacks N]
 """
-import json
-import sys
+import argparse
 from collections import Counter
+from functools import lru_cache
 
-
-def load(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+from samply_common import load
 
 
 def main():
-    path = sys.argv[1]
-    top = 40
-    stacks = 8
-    proc_filter = None
-    args = sys.argv[2:]
-    i = 0
-    while i < len(args):
-        if args[i] == "--process":
-            proc_filter = args[i + 1]
-            i += 2
-        elif args[i] == "--top":
-            top = int(args[i + 1])
-            i += 2
-        elif args[i] == "--stacks":
-            stacks = int(args[i + 1])
-            i += 2
-        else:
-            i += 1
+    parser = argparse.ArgumentParser(description="Resolve samply stacks via nativeSymbols and dump hot callsites")
+    parser.add_argument("profile", help="path to profile.json")
+    parser.add_argument("--process", default=None, help="only analyze threads whose processName contains this")
+    parser.add_argument("--top", type=int, default=40, help="number of top leaf frames to show")
+    parser.add_argument("--stacks", type=int, default=8, help="number of top full stacks to show")
+    args = parser.parse_args()
 
-    prof = load(path)
+    prof = load(args.profile)
 
     for thread in prof["threads"]:
         pname = thread.get("processName", "")
-        if proc_filter and proc_filter not in pname:
+        if args.process and args.process not in pname:
             continue
         print(f"=== process {pname!r} thread {thread.get('name')} tid={thread.get('tid')} ===")
 
@@ -65,8 +50,13 @@ def main():
                 return sym_by_addr.get(addr, full)
             return full
 
+        @lru_cache(maxsize=None)
         def resolve_stack(stack_idx):
-            """Walk prefix chain, return (root->leaf) list of (funcname, addr)."""
+            """Walk prefix chain, return (root->leaf) list of funcnames.
+
+            Cached per-thread: many samples share the same stack index, so the
+            prefix-chain walk is only done once per distinct stack.
+            """
             frames = []
             cur = stack_idx
             seen = 0
@@ -84,7 +74,6 @@ def main():
         weights = samples["weight"]
         leaf_counter = Counter()
         stack_counter = Counter()
-        depth_counter = Counter()
         total = 0
         for k in range(len(leaves)):
             w = weights[k]
@@ -93,17 +82,17 @@ def main():
             if s is None or s == -1:
                 continue
             leaf_counter[func_name(ft["func"][st["frame"][s]])] += w
-            stack_counter[tuple(resolve_stack(s))] += w
-            depth_counter[len(resolve_stack(s))] += w
+            full = resolve_stack(s)
+            stack_counter[tuple(full)] += w
 
         print(f"  total weight: {total}")
-        print(f"  top {top} leaf frames:")
-        for name, cnt in leaf_counter.most_common(top):
+        print(f"  top {args.top} leaf frames:")
+        for name, cnt in leaf_counter.most_common(args.top):
             pct = cnt / total * 100 if total else 0
             print(f"    {pct:7.2f}% {cnt:8d}  {name}")
 
-        print(f"  top {stacks} full stacks:")
-        for stack, cnt in stack_counter.most_common(stacks):
+        print(f"  top {args.stacks} full stacks:")
+        for stack, cnt in stack_counter.most_common(args.stacks):
             pct = cnt / total * 100 if total else 0
             print(f"\n    === {pct:.2f}% ({cnt} samples) ===")
             for f in stack:
