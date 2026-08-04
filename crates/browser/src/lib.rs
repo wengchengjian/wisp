@@ -16,8 +16,12 @@ pub mod page;
 pub mod patches;
 /// 浏览器实例池（复用 + 并发控制）。
 pub mod pool;
+/// 反检测引擎（CF 挑战 / Turnstile / 人类行为 / Stealth 策略）。
+pub mod stealth;
 /// 浏览器抓取策略 trait（领域契约）。
 pub mod strategy;
+/// 浏览器页面响应提取。
+pub mod extract;
 
 mod process;
 
@@ -25,6 +29,7 @@ pub use cdp::CdpSession;
 pub use cookie::BrowserCookieJar;
 pub use page::Page;
 pub use pool::BrowserPool;
+pub use stealth::StealthStrategy;
 pub use strategy::BrowserFetchStrategy;
 
 use std::sync::Arc;
