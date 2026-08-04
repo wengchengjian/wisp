@@ -112,7 +112,7 @@ fn bench_nodelist_iter(c: &mut Criterion) {
 use async_trait::async_trait;
 use serde_json::Value;
 use wisp::crawl::scheduling::Scheduler;
-use wisp::crawl::{Engine, Request, Response, Spider};
+use wisp::crawl::{CrawlRequest, Engine, Request, Response, Spider};
 
 /// 返回固定 HTML 的本地 HTTP 服务器，返回 base URL（如 `http://127.0.0.1:PORT`）。
 ///
@@ -179,7 +179,7 @@ impl Spider for BenchSpider {
     fn start_urls(&self) -> Vec<String> {
         self.urls.clone()
     }
-    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<Request>) {
+    async fn handle(&self, _resp: Response) -> (Vec<Value>, Vec<CrawlRequest>) {
         (vec![], vec![])
     }
 }
@@ -233,7 +233,7 @@ fn bench_scheduler_push(c: &mut Criterion) {
                 let sched = Scheduler::new();
                 for i in 0..1000 {
                     sched
-                        .push(Request::get(&format!("https://example.com/{}", i)))
+                        .push(Request::get(&format!("https://example.com/{}", i)).into())
                         .await;
                 }
             })
@@ -253,8 +253,10 @@ fn bench_scheduler_concurrent_push(c: &mut Criterion) {
                     let s = sched.clone();
                     handles.push(tokio::spawn(async move {
                         for i in 0..250 {
-                            s.push(Request::get(&format!("https://example.com/t{}/{}", t, i)))
-                                .await;
+                            s.push(
+                                Request::get(&format!("https://example.com/t{}/{}", t, i)).into(),
+                            )
+                            .await;
                         }
                     }));
                 }

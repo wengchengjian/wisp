@@ -113,7 +113,6 @@ impl CookieJar for BrowserCookieJar {
 mod tests {
     use super::*;
     use serde_json::json;
-    use wisp_core::cookie::{Cookie, CookieJar};
 
     #[test]
     fn value_to_cookie_extracts_fields() {
