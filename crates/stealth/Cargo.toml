@@ -8,7 +8,3 @@ license.workspace = true
 [dependencies]
 wisp-core = { workspace = true }
 wisp-browser = { workspace = true }
-tokio = { workspace = true }
-serde_json = { workspace = true }
-rand = { workspace = true }
-tracing = { workspace = true }
