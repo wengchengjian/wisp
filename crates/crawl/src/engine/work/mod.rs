@@ -13,6 +13,7 @@ use crate::stats::SpiderStats;
 use crate::{CrawlRequest, CrawlStats, Spider};
 
 pub(crate) use driver::run_stream_driver;
+pub(crate) use scheduling::schedule_follow_requests;
 
 struct NextWork {
     spider: Arc<dyn Spider>,

@@ -5,5 +5,6 @@ use super::*;
 mod emit;
 mod handler;
 mod middleware;
+mod pipeline;
 
 pub(crate) use handler::process_response;

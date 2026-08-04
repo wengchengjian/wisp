@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{NextWork, NextWorkResult};
+use crate::CrawlRequest;
 use crate::Spider;
 use crate::engine;
 use crate::stats::SpiderStats;
@@ -15,6 +16,21 @@ async fn drain_follow_queue(ctx: &engine::EngineContext) {
     let mut rx_guard = ctx.state.follow_rx.lock().await;
     while let Ok(req) = rx_guard.try_recv() {
         ctx.state.sched.push(req).await;
+    }
+}
+
+/// 将 follow 请求送入主循环队列（与 [`drain_follow_queue`] 配对）。
+///
+/// `drain_follow_queue` 消费 `follow_rx`，本函数生产 `follow_tx`。
+/// 发送失败（接收端关闭）时仅记录 debug 日志，不阻断流程。
+pub(crate) async fn schedule_follow_requests(
+    ctx: &engine::EngineContext,
+    follows: Vec<CrawlRequest>,
+) {
+    for f in follows {
+        if ctx.state.follow_tx.send(f).is_err() {
+            tracing::debug!("follow_tx closed, dropping follow request");
+        }
     }
 }
 

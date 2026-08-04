@@ -1,11 +1,11 @@
 //! Engine 子模块：response handler.
 
-use super::emit::{
-    emit_error_event, emit_page_scraped, process_page_items, schedule_follow_requests,
-};
+use super::emit::{emit_error_event, emit_page_scraped};
 use super::middleware::apply_response_middlewares;
+use super::pipeline::process_page_items;
 use super::*;
 use crate::engine::maybe_persist_checkpoint;
+use crate::engine::work::schedule_follow_requests;
 
 async fn handle_spider_page(
     ctx: &EngineContext,
