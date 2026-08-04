@@ -61,10 +61,7 @@ impl Engine {
                 cf_locks: engine::CfLockMap {
                     locks: Arc::new(dashmap::DashMap::new()),
                 },
-                spiders: engine::SpiderRegistry {
-                    spiders: draft.spiders,
-                    all_stats: draft.all_stats,
-                },
+                spiders: engine::SpiderRegistry::new(draft.spiders, draft.all_stats),
                 run: engine::RunState {
                     abort_flag: Arc::new(AtomicBool::new(false)),
                     pipeline_error: Arc::new(Mutex::new(None)),

@@ -20,7 +20,7 @@ impl Engine {
         for (spider, stats) in ctx
             .state
             .spiders
-            .spiders
+            .spiders()
             .iter()
             .zip(&ctx.state.spiders.all_stats)
         {
@@ -41,7 +41,7 @@ impl Engine {
         for (spider, stats) in ctx
             .state
             .spiders
-            .spiders
+            .spiders()
             .iter()
             .zip(&ctx.state.spiders.all_stats)
         {
@@ -71,7 +71,7 @@ impl Engine {
         let Some(store) = &self.runtime.checkpoint_store else {
             return;
         };
-        for spider in &ctx.state.spiders.spiders {
+        for spider in ctx.state.spiders.spiders() {
             if let Err(e) = store.delete_checkpoint(spider.name()).await {
                 tracing::warn!("checkpoint 清理失败: spider={}, err={e}", spider.name());
             }
@@ -92,7 +92,7 @@ impl Engine {
     /// 内部运行逻辑：共享队列驱动多个 Spider。
     async fn finish_run(&self, ctx: &Arc<engine::EngineContext>) -> Result<Vec<CrawlStats>> {
         let close_error = self.run_middleware_close(ctx).await.err();
-        for spider in &ctx.state.spiders.spiders {
+        for spider in ctx.state.spiders.spiders() {
             spider.on_close().await;
         }
         let pipeline_error = ctx.state.run.pipeline_error.lock().await.take();

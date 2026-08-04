@@ -114,8 +114,14 @@ pub(super) async fn next_work(
         tracing::warn!("丢弃无 Spider 接收的请求: url={}", sanitize_url(&req.url));
         return NextWorkResult::Continue;
     };
-    let spider = Arc::clone(&ctx.state.spiders.spiders[idx]);
+    let spider = Arc::clone(&ctx.state.spiders.spiders()[idx]);
     let stats = Arc::clone(&ctx.state.spiders.all_stats[idx]);
+    tracing::debug!(
+        spider = spider.name(),
+        callback = ?req.callback,
+        url = %sanitize_url(&req.url),
+        "next_work：请求路由到 spider"
+    );
     let stop_ctx = stop_context_for(&spider, &stats, queue_size);
     if spider.until().should_stop(&stop_ctx) {
         tracing::info!(

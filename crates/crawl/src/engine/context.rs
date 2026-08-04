@@ -37,53 +37,45 @@ pub(crate) struct QueueState {
     pub work_notify: Arc<tokio::sync::Notify>,
 }
 
-/// Spider 注册表：spider 与 stats 的并行数组 + 路由查询。
+/// Spider 注册表：持有路由决策器 + 统计并行数组。
 ///
-/// `spiders[i]` 与 `all_stats[i]` 一一对应。路由优先级：
+/// 路由逻辑委托给 `RequestRouter`（独立可测的深模块）；`router.spiders[i]`
+/// 与 `all_stats[i]` 一一对应。路由优先级：
 /// `Request.spider` 显式指定 > callback 唯一归属 > 歧义（warn + None）。
 pub(crate) struct SpiderRegistry {
-    pub spiders: Vec<Arc<dyn Spider>>,
+    pub router: super::router::RequestRouter,
     pub all_stats: Vec<Arc<SpiderStats>>,
 }
 
 impl SpiderRegistry {
-    /// 返回请求应路由到的 Spider 索引；`Request.spider` 优先，否则按 callback 归属查找。
+    /// 创建注册表：路由决策器持有 spiders，stats 与之一一对应。
+    pub fn new(spiders: Vec<Arc<dyn Spider>>, all_stats: Vec<Arc<SpiderStats>>) -> Self {
+        Self {
+            router: super::router::RequestRouter::new(spiders),
+            all_stats,
+        }
+    }
+
+    /// 返回请求应路由到的 Spider 索引（委托 `RequestRouter::route`）。
     pub fn spider_index_for(&self, req: &CrawlRequest) -> Option<usize> {
-        if let Some(name) = req.spider.as_deref() {
-            return self.spiders.iter().position(|s| s.name() == name);
-        }
-        // callback 是跨 Spider 的路由键（小说爬虫 home→detail→chapter）；
-        // 只有唯一 Spider 接受时才按 callback 路由，多个 Spider 同名 handler 视为歧义。
-        let matches: Vec<usize> = self
-            .spiders
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.accepts_callback(req.callback.as_deref()))
-            .map(|(i, _)| i)
-            .collect();
-        match matches.as_slice() {
-            [idx] => Some(*idx),
-            [] => None,
-            _ => {
-                tracing::warn!(
-                    "callback {:?} 被多个 Spider 接受 ({} 个)，未绑定 spider 的请求无法路由: url={}",
-                    req.callback,
-                    matches.len(),
-                    sanitize_url(&req.url)
-                );
-                None
-            }
-        }
+        self.router.route(req)
     }
 
     pub fn spider_for(&self, req: &CrawlRequest) -> Option<Arc<dyn Spider>> {
-        self.spider_index_for(req)
-            .map(|i| Arc::clone(&self.spiders[i]))
+        self.router
+            .route(req)
+            .and_then(|i| self.router.get(i).map(Arc::clone))
     }
 
     pub fn stats_for(&self, req: &CrawlRequest) -> Option<Arc<SpiderStats>> {
-        self.spider_index_for(req)
+        self.router
+            .route(req)
             .map(|i| Arc::clone(&self.all_stats[i]))
+    }
+
+    /// 只读访问 Spider 列表（供遍历与索引对齐）。
+    pub fn spiders(&self) -> &[Arc<dyn Spider>] {
+        self.router.spiders()
     }
 }
 

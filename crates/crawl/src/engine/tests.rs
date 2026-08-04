@@ -111,10 +111,10 @@ fn make_ctx_with(
             cf_locks: CfLockMap {
                 locks: Arc::new(dashmap::DashMap::new()),
             },
-            spiders: SpiderRegistry {
-                spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
-                all_stats: vec![stats.clone()],
-            },
+            spiders: SpiderRegistry::new(
+                vec![Arc::new(DummySpider) as Arc<dyn Spider>],
+                vec![stats.clone()],
+            ),
             run: RunState {
                 abort_flag: Arc::new(AtomicBool::new(false)),
                 pipeline_error: Arc::new(Mutex::new(None)),
@@ -180,7 +180,7 @@ async fn process_response_not_from_cache_increments_pages() {
 #[tokio::test]
 async fn process_response_isolates_handler_panic() {
     let (mut ctx, _stats) = make_ctx();
-    ctx.state.spiders.spiders = vec![Arc::new(PanicSpider) as Arc<dyn Spider>];
+    ctx.state.spiders.router.spiders = vec![Arc::new(PanicSpider) as Arc<dyn Spider>];
     let resp = make_resp(false);
     process_response(&ctx, resp).await;
 }
@@ -205,7 +205,7 @@ async fn save_checkpoint_persists_seen_urls() {
         .await;
 
     stats.pages.store(5, std::sync::atomic::Ordering::SeqCst);
-    let spider = ctx.state.spiders.spiders[0].clone();
+    let spider = ctx.state.spiders.router.spiders[0].clone();
     maybe_persist_checkpoint(&ctx, &spider, &stats).await;
 
     let blob = store
@@ -409,7 +409,7 @@ async fn check_control_cancelled_url_returns_false() {
     ctx.runtime.control.cancel(url).await;
     let req = CrawlRequest::get(url);
     assert!(
-        !check_control_and_hook(&ctx, &req, &ctx.state.spiders.spiders[0]).await,
+        !check_control_and_hook(&ctx, &req, &ctx.state.spiders.router.spiders[0]).await,
         "cancelled URL 应返回 false"
     );
 }
@@ -421,7 +421,7 @@ async fn check_control_shutdown_returns_false() {
     ctx.runtime.control.shutdown();
     let req = CrawlRequest::get("http://example.com/any");
     assert!(
-        !check_control_and_hook(&ctx, &req, &ctx.state.spiders.spiders[0]).await,
+        !check_control_and_hook(&ctx, &req, &ctx.state.spiders.router.spiders[0]).await,
         "shutdown 后应返回 false"
     );
 }
@@ -437,7 +437,7 @@ async fn check_control_pause_then_shutdown_returns_false() {
     let req = CrawlRequest::get(url);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        check_control_and_hook(&ctx, &req, &ctx.state.spiders.spiders[0]),
+        check_control_and_hook(&ctx, &req, &ctx.state.spiders.router.spiders[0]),
     )
     .await;
     assert!(result.is_ok(), "pause+shutdown 不应死锁");
@@ -559,7 +559,7 @@ fn snapshot_populates_fields() {
 #[test]
 fn ambiguous_callback_does_not_route_to_first_spider() {
     let (mut ctx, _stats) = make_ctx();
-    ctx.state.spiders.spiders = vec![
+    ctx.state.spiders.router.spiders = vec![
         Arc::new(NamedSpider { name: "a".into() }) as Arc<dyn Spider>,
         Arc::new(NamedSpider { name: "b".into() }) as Arc<dyn Spider>,
     ];
@@ -600,7 +600,7 @@ impl Spider for DomainRestrictedSpider {
 #[tokio::test]
 async fn offsite_request_increments_offsite_counter() {
     let (mut ctx, stats) = make_ctx();
-    ctx.state.spiders.spiders = vec![Arc::new(DomainRestrictedSpider) as Arc<dyn Spider>];
+    ctx.state.spiders.router.spiders = vec![Arc::new(DomainRestrictedSpider) as Arc<dyn Spider>];
     let req = CrawlRequest::get("https://blocked.example.com/");
     assert!(process_request(&ctx, req).await.is_none());
     assert_eq!(stats.offsite.load(Ordering::SeqCst), 1);

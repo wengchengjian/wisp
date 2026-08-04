@@ -51,6 +51,7 @@ pub(crate) mod fetch;
 pub(crate) mod guard;
 pub(crate) mod request;
 pub(crate) mod response;
+pub(crate) mod router;
 
 #[cfg(test)]
 mod runtime_tests;
