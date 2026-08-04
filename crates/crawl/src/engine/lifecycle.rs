@@ -17,7 +17,13 @@ impl Engine {
         if ctx.state.middleware_chain.is_empty() {
             return Ok(());
         }
-        for (spider, stats) in ctx.state.spiders.iter().zip(&ctx.state.all_stats) {
+        for (spider, stats) in ctx
+            .state
+            .spiders
+            .spiders
+            .iter()
+            .zip(&ctx.state.spiders.all_stats)
+        {
             let crawl_ctx = engine::build_crawl_context_for(ctx, spider, stats);
             ctx.state.middleware_chain.run_init(&crawl_ctx).await;
             ctx.state
@@ -32,7 +38,13 @@ impl Engine {
         if ctx.state.middleware_chain.is_empty() {
             return Ok(());
         }
-        for (spider, stats) in ctx.state.spiders.iter().zip(&ctx.state.all_stats) {
+        for (spider, stats) in ctx
+            .state
+            .spiders
+            .spiders
+            .iter()
+            .zip(&ctx.state.spiders.all_stats)
+        {
             let crawl_ctx = engine::build_crawl_context_for(ctx, spider, stats);
             ctx.state
                 .middleware_chain
@@ -48,7 +60,7 @@ impl Engine {
         all_stats: &[Arc<SpiderStats>],
     ) -> Option<tokio::task::JoinHandle<()>> {
         let pool = self.runtime.autoscale.clone()?;
-        pool.set_work_notify(Arc::clone(&ctx.state.work_notify));
+        pool.set_work_notify(Arc::clone(&ctx.state.queue.work_notify));
         let stats = all_stats.to_vec();
         Some(tokio::spawn(async move {
             pool.run_autoscaler(stats).await;
@@ -59,7 +71,7 @@ impl Engine {
         let Some(store) = &self.runtime.checkpoint_store else {
             return;
         };
-        for spider in &ctx.state.spiders {
+        for spider in &ctx.state.spiders.spiders {
             if let Err(e) = wisp_storage::delete_checkpoint(store.as_ref(), spider.name()).await {
                 tracing::warn!("checkpoint 清理失败: spider={}, err={e}", spider.name());
             }
@@ -80,15 +92,15 @@ impl Engine {
     /// 内部运行逻辑：共享队列驱动多个 Spider。
     async fn finish_run(&self, ctx: &Arc<engine::EngineContext>) -> Result<Vec<CrawlStats>> {
         let close_error = self.run_middleware_close(ctx).await.err();
-        for spider in &ctx.state.spiders {
+        for spider in &ctx.state.spiders.spiders {
             spider.on_close().await;
         }
-        let pipeline_error = ctx.state.pipeline_error.lock().await.take();
+        let pipeline_error = ctx.state.run.pipeline_error.lock().await.take();
         if let Some(e) = pipeline_error.or(close_error) {
             return Err(e);
         }
         let interrupted =
-            ctx.state.abort_flag.load(Ordering::SeqCst) || ctx.runtime.control.is_shutdown();
+            ctx.state.run.abort_flag.load(Ordering::SeqCst) || ctx.runtime.control.is_shutdown();
         if !interrupted {
             self.cleanup_checkpoints(ctx).await;
         }

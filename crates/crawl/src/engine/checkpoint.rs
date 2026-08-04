@@ -19,6 +19,7 @@ pub(crate) async fn maybe_persist_checkpoint(
     }
     let in_flight = ctx
         .state
+        .run
         .in_flight_requests
         .lock()
         .await
@@ -27,8 +28,8 @@ pub(crate) async fn maybe_persist_checkpoint(
         .unwrap_or_default();
     let state = CrawlState {
         spider_name: spider.name().to_string(),
-        pending_urls: ctx.state.sched.pending_urls().await,
-        seen_urls: ctx.state.sched.seen_urls().await, // 持久化 seen 去重集合
+        pending_urls: ctx.state.queue.sched.pending_urls().await,
+        seen_urls: ctx.state.queue.sched.seen_urls().await, // 持久化 seen 去重集合
         stats: stats.snapshot(),
         in_flight_urls: in_flight,
         saved_at: chrono::Utc::now(),
@@ -47,7 +48,7 @@ pub(crate) async fn maybe_persist_checkpoint(
     ctx.runtime
         .event_bus
         .emit(CrawlEvent::CheckpointSaved {
-            pending: ctx.state.sched.len().await,
+            pending: ctx.state.queue.sched.len().await,
         })
         .await;
 }

@@ -100,19 +100,27 @@ fn make_ctx_with(
             pipelines: Vec::new(),
         },
         state: EngineState {
-            sched: Arc::new(scheduler::Scheduler::new()),
-            follow_tx,
-            follow_rx: Arc::new(Mutex::new(follow_rx)),
-            work_notify: Arc::new(tokio::sync::Notify::new()),
+            queue: QueueState {
+                sched: Arc::new(scheduler::Scheduler::new()),
+                follow_tx,
+                follow_rx: Arc::new(Mutex::new(follow_rx)),
+                work_notify: Arc::new(tokio::sync::Notify::new()),
+            },
             middleware_chain: Arc::new(chain),
             rule_engine: Arc::new(Mutex::new(auto::ModeRuleEngine::new())),
-            cf_domain_locks: Arc::new(dashmap::DashMap::new()),
-            spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
-            all_stats: vec![stats.clone()],
-            abort_flag: Arc::new(AtomicBool::new(false)),
-            pipeline_error: Arc::new(Mutex::new(None)),
-            global_in_flight: Arc::new(AtomicUsize::new(0)),
-            in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
+            cf_locks: CfLockMap {
+                locks: Arc::new(dashmap::DashMap::new()),
+            },
+            spiders: SpiderRegistry {
+                spiders: vec![Arc::new(DummySpider) as Arc<dyn Spider>],
+                all_stats: vec![stats.clone()],
+            },
+            run: RunState {
+                abort_flag: Arc::new(AtomicBool::new(false)),
+                pipeline_error: Arc::new(Mutex::new(None)),
+                global_in_flight: Arc::new(AtomicUsize::new(0)),
+                in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
+            },
         },
     };
     (ctx, stats)
@@ -172,7 +180,7 @@ async fn process_response_not_from_cache_increments_pages() {
 #[tokio::test]
 async fn process_response_isolates_handler_panic() {
     let (mut ctx, _stats) = make_ctx();
-    ctx.state.spiders = vec![Arc::new(PanicSpider) as Arc<dyn Spider>];
+    ctx.state.spiders.spiders = vec![Arc::new(PanicSpider) as Arc<dyn Spider>];
     let resp = make_resp(false);
     process_response(&ctx, resp).await;
 }
@@ -186,16 +194,18 @@ async fn save_checkpoint_persists_seen_urls() {
     ctx.config.checkpoint_interval = 5;
     // push 两个 URL：进入 heap 与 seen 集合
     ctx.state
+        .queue
         .sched
         .push(CrawlRequest::get("https://example.com/a"))
         .await;
     ctx.state
+        .queue
         .sched
         .push(CrawlRequest::get("https://example.com/b"))
         .await;
 
     stats.pages.store(5, std::sync::atomic::Ordering::SeqCst);
-    let spider = ctx.state.spiders[0].clone();
+    let spider = ctx.state.spiders.spiders[0].clone();
     maybe_persist_checkpoint(&ctx, &spider, &stats).await;
 
     let blob = wisp_storage::load_checkpoint(store.as_ref(), "dummy")
@@ -398,7 +408,7 @@ async fn check_control_cancelled_url_returns_false() {
     ctx.runtime.control.cancel(url).await;
     let req = CrawlRequest::get(url);
     assert!(
-        !check_control_and_hook(&ctx, &req, &ctx.state.spiders[0]).await,
+        !check_control_and_hook(&ctx, &req, &ctx.state.spiders.spiders[0]).await,
         "cancelled URL 应返回 false"
     );
 }
@@ -410,7 +420,7 @@ async fn check_control_shutdown_returns_false() {
     ctx.runtime.control.shutdown();
     let req = CrawlRequest::get("http://example.com/any");
     assert!(
-        !check_control_and_hook(&ctx, &req, &ctx.state.spiders[0]).await,
+        !check_control_and_hook(&ctx, &req, &ctx.state.spiders.spiders[0]).await,
         "shutdown 后应返回 false"
     );
 }
@@ -426,7 +436,7 @@ async fn check_control_pause_then_shutdown_returns_false() {
     let req = CrawlRequest::get(url);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        check_control_and_hook(&ctx, &req, &ctx.state.spiders[0]),
+        check_control_and_hook(&ctx, &req, &ctx.state.spiders.spiders[0]),
     )
     .await;
     assert!(result.is_ok(), "pause+shutdown 不应死锁");
@@ -548,20 +558,20 @@ fn snapshot_populates_fields() {
 #[test]
 fn ambiguous_callback_does_not_route_to_first_spider() {
     let (mut ctx, _stats) = make_ctx();
-    ctx.state.spiders = vec![
+    ctx.state.spiders.spiders = vec![
         Arc::new(NamedSpider { name: "a".into() }) as Arc<dyn Spider>,
         Arc::new(NamedSpider { name: "b".into() }) as Arc<dyn Spider>,
     ];
-    ctx.state.all_stats = vec![Arc::new(SpiderStats::new()), Arc::new(SpiderStats::new())];
+    ctx.state.spiders.all_stats = vec![Arc::new(SpiderStats::new()), Arc::new(SpiderStats::new())];
     let req = CrawlRequest::get("http://example.com/detail").with_callback("detail");
     assert_eq!(
-        ctx.state.spider_index_for(&req),
+        ctx.state.spiders.spider_index_for(&req),
         None,
         "同名 callback 多 Spider 应视为歧义，而不是选第一个"
     );
     let req = req.with_spider("b");
     assert_eq!(
-        ctx.state.spider_index_for(&req),
+        ctx.state.spiders.spider_index_for(&req),
         Some(1),
         "显式 spider 绑定应覆盖歧义"
     );
@@ -589,7 +599,7 @@ impl Spider for DomainRestrictedSpider {
 #[tokio::test]
 async fn offsite_request_increments_offsite_counter() {
     let (mut ctx, stats) = make_ctx();
-    ctx.state.spiders = vec![Arc::new(DomainRestrictedSpider) as Arc<dyn Spider>];
+    ctx.state.spiders.spiders = vec![Arc::new(DomainRestrictedSpider) as Arc<dyn Spider>];
     let req = CrawlRequest::get("https://blocked.example.com/");
     assert!(process_request(&ctx, req).await.is_none());
     assert_eq!(stats.offsite.load(Ordering::SeqCst), 1);

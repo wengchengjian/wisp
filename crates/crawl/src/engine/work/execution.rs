@@ -11,8 +11,8 @@ impl NextWork {
         let spider_name = spider.name().to_string();
         let req_url = req.url.clone();
         let _g1 = engine::InFlightGuard {
-            counter: ctx.state.global_in_flight.clone(),
-            work_notify: Some(ctx.state.work_notify.clone()),
+            counter: ctx.state.run.global_in_flight.clone(),
+            work_notify: Some(ctx.state.queue.work_notify.clone()),
         };
         let _g2 = engine::InFlightGuard {
             counter: stats.in_flight.clone(),
@@ -23,6 +23,7 @@ impl NextWork {
         }
         if let Some(v) = ctx
             .state
+            .run
             .in_flight_requests
             .lock()
             .await

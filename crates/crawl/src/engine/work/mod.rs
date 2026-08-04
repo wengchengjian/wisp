@@ -48,7 +48,7 @@ pub(crate) async fn run_work_loop(
                             let ctx = ctx.clone();
                             return Some(((*work).run(ctx.clone()), ()));
                         }
-                        NextWorkResult::Wait => ctx.state.work_notify.notified().await,
+                        NextWorkResult::Wait => ctx.state.queue.work_notify.notified().await,
                         NextWorkResult::Continue => continue,
                         NextWorkResult::Done => return None,
                     }
@@ -63,6 +63,7 @@ pub(crate) async fn run_work_loop(
 
 pub(crate) fn build_final_stats(ctx: &Arc<engine::EngineContext>) -> Vec<CrawlStats> {
     ctx.state
+        .spiders
         .all_stats
         .iter()
         .map(|stats| stats.snapshot())

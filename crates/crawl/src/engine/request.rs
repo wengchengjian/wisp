@@ -29,7 +29,7 @@ pub(crate) async fn check_control_and_hook(
             true
         }
         crate::RequestAction::Abort => {
-            ctx.state.abort_flag.store(true, Ordering::SeqCst);
+            ctx.state.run.abort_flag.store(true, Ordering::SeqCst);
             false
         }
     }
@@ -118,8 +118,8 @@ async fn emit_fetch_failure(
 /// 返回 `None` 表示已处理完毕（Skip/Abort/错误已发送事件），无需后续。
 #[tracing::instrument(level = "trace", skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
 pub(crate) async fn process_request(ctx: &EngineContext, req: CrawlRequest) -> Option<Response> {
-    let spider = ctx.state.spider_for(&req)?;
-    let stats = ctx.state.stats_for(&req)?;
+    let spider = ctx.state.spiders.spider_for(&req)?;
+    let stats = ctx.state.spiders.stats_for(&req)?;
 
     if !is_allowed_domain(&spider, &req) {
         stats.offsite.fetch_add(1, Ordering::SeqCst);

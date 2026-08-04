@@ -50,19 +50,27 @@ impl Engine {
             config: self.config.clone(),
             runtime: self.runtime.clone(),
             state: engine::EngineState {
-                sched: draft.sched.clone(),
-                follow_tx: draft.follow_tx,
-                follow_rx: Arc::new(Mutex::new(draft.follow_rx)),
-                work_notify: Arc::new(tokio::sync::Notify::new()),
+                queue: engine::QueueState {
+                    sched: draft.sched.clone(),
+                    follow_tx: draft.follow_tx,
+                    follow_rx: Arc::new(Mutex::new(draft.follow_rx)),
+                    work_notify: Arc::new(tokio::sync::Notify::new()),
+                },
                 middleware_chain,
                 rule_engine: draft.rule_engine,
-                cf_domain_locks: Arc::new(dashmap::DashMap::new()),
-                spiders: draft.spiders,
-                all_stats: draft.all_stats,
-                abort_flag: Arc::new(AtomicBool::new(false)),
-                pipeline_error: Arc::new(Mutex::new(None)),
-                global_in_flight: Arc::new(AtomicUsize::new(0)),
-                in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
+                cf_locks: engine::CfLockMap {
+                    locks: Arc::new(dashmap::DashMap::new()),
+                },
+                spiders: engine::SpiderRegistry {
+                    spiders: draft.spiders,
+                    all_stats: draft.all_stats,
+                },
+                run: engine::RunState {
+                    abort_flag: Arc::new(AtomicBool::new(false)),
+                    pipeline_error: Arc::new(Mutex::new(None)),
+                    global_in_flight: Arc::new(AtomicUsize::new(0)),
+                    in_flight_requests: Arc::new(Mutex::new(HashMap::new())),
+                },
             },
         })
     }

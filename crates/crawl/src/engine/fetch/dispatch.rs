@@ -171,10 +171,10 @@ async fn handle_fetch_error(
 /// process_response 内累加。互不干扰。
 #[tracing::instrument(level = "trace", skip(ctx, req), fields(url = %sanitize_url(&req.url)))]
 pub(crate) async fn fetch_with_retry(ctx: &EngineContext, req: &CrawlRequest) -> Result<Response> {
-    let stats = ctx.state.stats_for(req).ok_or_else(|| {
+    let stats = ctx.state.spiders.stats_for(req).ok_or_else(|| {
         wisp_core::error::WispError::Engine("request has no matching spider".into())
     })?;
-    let spider = ctx.state.spider_for(req).ok_or_else(|| {
+    let spider = ctx.state.spiders.spider_for(req).ok_or_else(|| {
         wisp_core::error::WispError::Engine("request has no matching spider".into())
     })?;
     let max_retries = ctx.config.max_retries;
@@ -187,7 +187,7 @@ pub(crate) async fn fetch_with_retry(ctx: &EngineContext, req: &CrawlRequest) ->
             req_ref,
             ctx.config.fetch_mode,
             &ctx.state.rule_engine,
-            &ctx.state.cf_domain_locks,
+            &ctx.state.cf_locks.locks,
         )
         .await
         {

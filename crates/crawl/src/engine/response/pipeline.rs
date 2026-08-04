@@ -44,9 +44,9 @@ pub(super) async fn process_page_items(
             Err(e) => {
                 let msg = e.to_string();
                 emit::emit_error_event(ctx, source_url, &msg).await;
-                *ctx.state.pipeline_error.lock().await = Some(e);
-                ctx.state.abort_flag.store(true, Ordering::SeqCst);
-                ctx.state.work_notify.notify_waiters();
+                *ctx.state.run.pipeline_error.lock().await = Some(e);
+                ctx.state.run.abort_flag.store(true, Ordering::SeqCst);
+                ctx.state.queue.work_notify.notify_waiters();
                 return Err(wisp_core::error::WispError::Engine(format!(
                     "item pipeline failed: {msg}"
                 )));

@@ -69,11 +69,15 @@ fn log_handle_result(url: &str, status: u16, items: &[Value], follows: &[CrawlRe
 /// items 经 `CrawlEvent::Item` 事件交付：`run_many` 消费事件收集，`run_stream` 消费事件流。
 #[tracing::instrument(level = "trace", skip(ctx, resp), fields(status = resp.status))]
 pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
-    let spider = match ctx.state.spider_for(&resp.request) {
+    let spider = match ctx.state.spiders.spider_for(&resp.request) {
         Some(s) => s,
         None => return,
     };
-    let stats = ctx.state.stats_for(&resp.request).expect("spider stats");
+    let stats = ctx
+        .state
+        .spiders
+        .stats_for(&resp.request)
+        .expect("spider stats");
     let page_url = resp.url.clone();
 
     let resp = if ctx.state.middleware_chain.is_empty() {
@@ -96,6 +100,6 @@ pub(crate) async fn process_response(ctx: &EngineContext, resp: Response) {
     let (items, follows) = handle_spider_page(ctx, &spider, resp).await;
     let _ = process_page_items(ctx, &spider, &stats, &page_url, callback.as_deref(), items).await;
     schedule_follow_requests(ctx, follows).await;
-    ctx.state.work_notify.notify_one();
+    ctx.state.queue.work_notify.notify_one();
     emit_page_scraped(ctx, &stats, &page_url).await;
 }

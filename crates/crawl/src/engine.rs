@@ -60,7 +60,10 @@ mod tests;
 pub use builder::EngineBuilder;
 pub(crate) use checkpoint::maybe_persist_checkpoint;
 pub use config::EngineConfig;
-pub(crate) use context::{EngineContext, EngineRunDraft, EngineState, build_crawl_context_for};
+pub(crate) use context::{
+    CfLockMap, EngineContext, EngineRunDraft, EngineState, QueueState, RunState, SpiderRegistry,
+    build_crawl_context_for,
+};
 pub(crate) use fetch::fetch_with_retry;
 pub(crate) use guard::{InFlightGuard, RunGuard};
 pub(crate) use request::process_request;
