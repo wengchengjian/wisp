@@ -1,7 +1,8 @@
 //! 浏览器抓取策略 — 区分 Dynamic/Stealth 的差异化逻辑。
 //!
 //! ARCH: 替代 `fetch_browser(&req, solve_cf: bool)` 的 bool 标志。
-//! 新策略（如 Playwright）可实现此 trait 零侵入注入。
+//! `BrowserFetchStrategy` trait 已下沉到 wisp-browser（浏览器领域契约），
+//! 本模块保留具体实现与 re-export。
 
 mod extract;
 
@@ -15,27 +16,10 @@ pub use dynamic::DynamicStrategy;
 #[cfg(feature = "stealth")]
 pub use stealth::StealthStrategy;
 
+// 重导出浏览器领域契约，保持 `crate::strategy::BrowserFetchStrategy` 引用路径不变。
+pub use wisp_browser::BrowserFetchStrategy;
+
 #[cfg(test)]
 mod tests;
-
-use async_trait::async_trait;
-use wisp_browser::Page;
-use wisp_core::error::Result;
-use wisp_core::{Request, Response};
-
-/// 浏览器抓取策略 — 区分 Dynamic/Stealth 的差异化逻辑。
-///
-/// ARCH: 替代 `fetch_browser(&req, solve_cf: bool)` 的 bool 标志。
-/// 新策略（如 Playwright）可实现此 trait 零侵入注入。
-///
-/// 调用方（`FetchClient::fetch_browser`）保证：
-/// - 调用前已 `acquire` page
-/// - 调用后由调用方 `close` page
-/// - 120s 总超时由调用方包装
-#[async_trait]
-pub trait BrowserFetchStrategy: Send + Sync {
-    /// 执行浏览器导航 + 后处理（CF 挑战 / 人类行为 / 等待选择器等）。
-    async fn fetch(&self, page: &mut Page, req: &Request) -> Result<Response>;
-}
 
 pub(crate) use extract::extract_browser_response;

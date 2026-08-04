@@ -16,6 +16,8 @@ pub mod page;
 pub mod patches;
 /// 浏览器实例池（复用 + 并发控制）。
 pub mod pool;
+/// 浏览器抓取策略 trait（领域契约）。
+pub mod strategy;
 
 mod process;
 
@@ -23,6 +25,7 @@ pub use cdp::CdpSession;
 pub use cookie::BrowserCookieJar;
 pub use page::Page;
 pub use pool::BrowserPool;
+pub use strategy::BrowserFetchStrategy;
 
 use std::sync::Arc;
 use std::time::Duration;
