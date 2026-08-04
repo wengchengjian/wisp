@@ -1,3 +1,0 @@
-2026-07-25T15:57:06.517Z INFO  [banzhu] banzhu-spider v0.4.0 启动
-2026-07-25T15:57:06.518Z INFO  [web] 数据库已连接: /home/weng/.banzhu/banzhu.db
-2026-07-25T15:57:06.518Z ERROR [banzhu] 致命错误: configuration file "spider.toml" not found
