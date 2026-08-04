@@ -2,6 +2,8 @@
 
 use super::config::FetchClientConfig;
 use moka::sync::Cache;
+#[cfg(feature = "browser")]
+use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(feature = "browser")]
 use std::time::Duration;
@@ -33,6 +35,9 @@ pub struct FetchOptions {
 /// 统一请求客户端：封装 HTTP Client 和 BrowserPool。
 ///
 /// 对外深 seam 是 [`FetchClient::fetch`] / [`FetchClient::fetch_with`]；per-request proxy 与 cookie 状态都在内部管理。
+///
+/// 浏览器策略通过注册表管理（替代固定字段）：`new` 时注册 `Dynamic`/`Stealth` 默认策略，
+/// 可通过 [`FetchClient::with_strategy`] 注入自定义策略（如测试 mock 或新策略实现）。
 pub struct FetchClient {
     http: Arc<Client>,
     http_jar: Arc<HttpCookieJar>,
@@ -40,9 +45,7 @@ pub struct FetchClient {
     #[cfg(feature = "browser")]
     browser_pool: Option<Arc<BrowserPool>>,
     #[cfg(feature = "browser")]
-    dynamic_strategy: Option<Arc<dyn BrowserFetchStrategy>>,
-    #[cfg(feature = "stealth")]
-    stealth_strategy: Option<Arc<dyn BrowserFetchStrategy>>,
+    browser_strategies: HashMap<FetchMode, Arc<dyn BrowserFetchStrategy>>,
     config: FetchClientConfig,
     cookie_jar: Arc<dyn CookieJar>,
 }
@@ -63,13 +66,19 @@ impl FetchClient {
         #[cfg(not(feature = "stealth"))]
         let cookie_jar: Arc<dyn CookieJar> = Arc::new(CompositeCookieJar::new(http_jar.clone()));
         #[cfg(feature = "browser")]
-        let dynamic_strategy =
-            Some(Arc::new(DynamicStrategy::from_config(&config)) as Arc<dyn BrowserFetchStrategy>);
-        #[cfg(feature = "stealth")]
-        let stealth_strategy = Some(Arc::new(StealthStrategy::from_config(
-            &config,
-            cookie_jar.clone(),
-        )) as Arc<dyn BrowserFetchStrategy>);
+        let browser_strategies = {
+            let mut map: HashMap<FetchMode, Arc<dyn BrowserFetchStrategy>> = HashMap::new();
+            map.insert(
+                FetchMode::Dynamic,
+                Arc::new(DynamicStrategy::from_config(&config)),
+            );
+            #[cfg(feature = "stealth")]
+            map.insert(
+                FetchMode::Stealth,
+                Arc::new(StealthStrategy::from_config(&config, cookie_jar.clone())),
+            );
+            map
+        };
         Ok(Self {
             http,
             http_jar,
@@ -77,12 +86,25 @@ impl FetchClient {
             #[cfg(feature = "browser")]
             browser_pool,
             #[cfg(feature = "browser")]
-            dynamic_strategy,
-            #[cfg(feature = "stealth")]
-            stealth_strategy,
+            browser_strategies,
             config,
             cookie_jar,
         })
+    }
+
+    /// 注入或覆盖某模式的浏览器策略（builder 风格）。
+    ///
+    /// 用于测试 mock 或扩展新策略（如 Playwright）。仅 browser feature 下生效；
+    /// 无 browser feature 时静默返回 `self`（无策略可注册）。
+    #[cfg(feature = "browser")]
+    #[must_use]
+    pub fn with_strategy(
+        mut self,
+        mode: FetchMode,
+        strategy: Arc<dyn BrowserFetchStrategy>,
+    ) -> Self {
+        self.browser_strategies.insert(mode, strategy);
+        self
     }
 
     /// 获取配置引用。
@@ -225,15 +247,10 @@ impl FetchClient {
     #[cfg(feature = "browser")]
     async fn fetch_browser_mode(&self, req: &Request, mode: FetchMode) -> Result<Response> {
         self.ensure_browser_proxy_allowed(req)?;
-        let strategy = match mode {
-            FetchMode::Dynamic => self.dynamic_strategy.as_ref(),
-            #[cfg(feature = "stealth")]
-            FetchMode::Stealth => self.stealth_strategy.as_ref(),
-            #[cfg(not(feature = "stealth"))]
-            FetchMode::Stealth => None,
-            _ => None,
-        }
-        .ok_or_else(|| WispError::Config(format!("{mode:?} mode requires browser strategy")))?;
+        let strategy = self
+            .browser_strategies
+            .get(&mode)
+            .ok_or_else(|| WispError::Config(format!("{mode:?} mode requires browser strategy")))?;
         self.fetch_browser(req, strategy.as_ref()).await
     }
 

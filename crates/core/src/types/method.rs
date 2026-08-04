@@ -28,7 +28,7 @@ impl Method {
 }
 
 /// 抓取模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FetchMode {
     /// 快速 HTTP（TLS 指纹模拟，无浏览器）。成本最低，毫秒级。
     Http,
