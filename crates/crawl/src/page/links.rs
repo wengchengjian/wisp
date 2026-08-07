@@ -24,47 +24,64 @@ impl Page {
     ///
     /// 使用第一个非空选择器；`meta_for` 接收元素索引与链接元素，
     /// 返回该链接携带的 meta。无法解析为绝对 URL 或缺少 href/文本的链接会被忽略。
-    pub fn follow_links(
+    pub async fn follow_links<F>(
         &mut self,
         selectors: &[&str],
         callback: &str,
-        meta_for: impl Fn(&Page, usize, &Node) -> Value,
-    ) -> &mut Self {
+        meta_for: F,
+    ) -> &mut Self
+    where
+        F: Fn(&Page, usize, &Node) -> Value,
+    {
         self.follow_links_n(selectors, callback, usize::MAX, meta_for)
+            .await
     }
 
     /// 按选择器列表提取链接并生成 follow 请求，最多跟随前 `limit` 个有效链接。
     ///
     /// 适用于“只抓列表页前 N 个业务实体”的语义，例如首页只取前 20 本书。
-    pub fn follow_links_n(
+    pub async fn follow_links_n<F>(
         &mut self,
         selectors: &[&str],
         callback: &str,
         limit: usize,
-        meta_for: impl Fn(&Page, usize, &Node) -> Value,
-    ) -> &mut Self {
+        meta_for: F,
+    ) -> &mut Self
+    where
+        F: Fn(&Page, usize, &Node) -> Value,
+    {
         self.follow_links_filtered_n(selectors, callback, limit, |_| true, meta_for)
+            .await
     }
 
     /// 按选择器提取链接并用 URL predicate 过滤，符合条件才生成 follow 请求。
-    pub fn follow_links_filtered(
+    pub async fn follow_links_filtered<PF, F>(
         &mut self,
         selectors: &[&str],
         callback: &str,
-        predicate: impl Fn(&str) -> bool,
-        meta_for: impl Fn(&Page, usize, &Node) -> Value,
-    ) -> &mut Self {
+        predicate: PF,
+        meta_for: F,
+    ) -> &mut Self
+    where
+        PF: Fn(&str) -> bool,
+        F: Fn(&Page, usize, &Node) -> Value,
+    {
         self.follow_links_filtered_n(selectors, callback, usize::MAX, predicate, meta_for)
+            .await
     }
 
-    fn follow_links_filtered_n(
+    async fn follow_links_filtered_n<PF, F>(
         &mut self,
         selectors: &[&str],
         callback: &str,
         limit: usize,
-        predicate: impl Fn(&str) -> bool,
-        meta_for: impl Fn(&Page, usize, &Node) -> Value,
-    ) -> &mut Self {
+        predicate: PF,
+        meta_for: F,
+    ) -> &mut Self
+    where
+        PF: Fn(&str) -> bool,
+        F: Fn(&Page, usize, &Node) -> Value,
+    {
         let mut pending = Vec::new();
         for sel in selectors {
             let links = self.doc.select(sel);

@@ -36,8 +36,8 @@ fn item_serialization_success_still_collects() {
     assert_eq!(page.items()[0]["title"], "hello");
 }
 
-#[test]
-fn follow_links_filtered_matches_url_predicate() {
+#[tokio::test]
+async fn follow_links_filtered_matches_url_predicate() {
     let resp = Response::from_http(
         200,
         "http://example.com/page".into(),
@@ -52,7 +52,8 @@ fn follow_links_filtered_matches_url_predicate() {
         "detail",
         |url| url.contains("/blog/"),
         |_page, _idx, _a| serde_json::json!(null),
-    );
+    )
+    .await;
     let follows = page.follows();
     assert_eq!(follows.len(), 1);
     assert_eq!(follows[0].url, "http://example.com/blog/1");

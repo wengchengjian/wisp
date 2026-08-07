@@ -22,7 +22,7 @@ type FlushFn =
 /// ```rust,no_run
 /// use wisp_crawl::middleware::BatchItemPipeline;
 ///
-/// let pipeline = BatchItemPipeline::new(100, async |items| {
+/// let pipeline = BatchItemPipeline::new(100, |items| async move {
 ///     // 批量写入逻辑
 ///     println!("flushing {} items", items.len());
 ///     Ok(())

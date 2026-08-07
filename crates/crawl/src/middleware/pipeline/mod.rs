@@ -113,7 +113,7 @@ mod tests {
     #[tokio::test]
     async fn batch_pipeline_propagates_flush_error() {
         let c = ctx();
-        let p = BatchItemPipeline::new(1, async |_items| {
+        let p = BatchItemPipeline::new(1, |_items| async move {
             Err(WispError::Io(std::io::Error::other("flush boom")))
         });
         let err = p.process_item(item(json!("x")), &c).await.unwrap_err();

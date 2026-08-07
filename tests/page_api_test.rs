@@ -25,8 +25,8 @@ fn response(html: &str, callback: Option<&str>, meta: Value) -> Response {
     response_from_request(req, html)
 }
 
-#[test]
-fn page_basic_flow() {
+#[tokio::test]
+async fn page_basic_flow() {
     let resp = response(
         r#"<html><body>
             <h1>Hello</h1>
@@ -44,10 +44,11 @@ fn page_basic_flow() {
     page.item(json!({"title": page.meta_str("title")}));
     page.follow_links(&[".missing", ".item"], "detail", |_page, idx, a| {
         json!({
-            "idx": idx,
-            "label": a.text().trim(),
-        })
-    });
+                "idx": idx,
+                "label": a.text().trim(),
+            })
+    })
+    .await;
 
     assert_eq!(page.items().len(), 1);
     assert_eq!(page.follows().len(), 2);
@@ -60,8 +61,8 @@ fn page_basic_flow() {
     assert_eq!(follows.len(), 2);
 }
 
-#[test]
-fn follow_links_n_only_takes_first_n() {
+#[tokio::test]
+async fn follow_links_n_only_takes_first_n() {
     let resp = response(
         r#"<html><body>
             <a class="book" href="/b1">Book 1</a>
@@ -75,10 +76,11 @@ fn follow_links_n_only_takes_first_n() {
     let mut page = Page::new(resp);
     page.follow_links_n(&[".book"], "detail", 2, |_page, idx, a| {
         json!({
-            "idx": idx,
-            "title": a.text().trim(),
-        })
-    });
+                "idx": idx,
+                "title": a.text().trim(),
+            })
+    })
+    .await;
 
     assert_eq!(page.follows().len(), 2);
     assert_eq!(page.follows()[0].url, "https://example.com/b1");
@@ -90,17 +92,23 @@ fn follow_links_n_only_takes_first_n() {
 async fn on_page_routes_and_passes_meta() {
     let spider = SpiderBuilder::new("pipeline")
         .start_urls(vec!["https://example.com/".to_string()])
-        .on_page("default", |mut page| {
-            let title = page.select_one("h1").map(|n| n.text()).unwrap_or_default();
-            page.item(json!({"page": title}));
-            page.follow_links(&["a"], "detail", |_page, _idx, a| {
-                json!({
-                    "title": a.text().trim(),
+        .on_page("default", move |mut page: Page| {
+            async move {
+                let title = page
+                    .select_one("h1")
+                    .map(|n| n.text())
+                    .unwrap_or_default();
+                page.item(json!({"page": title}));
+                page.follow_links(&["a"], "detail", |_page, _idx, a| {
+                    json!({
+                            "title": a.text().trim(),
+                        })
                 })
-            });
-            page
+                .await;
+                page
+            }
         })
-        .on_page("detail", |mut page| {
+        .on_page("detail", move |mut page: Page| async move {
             page.item(json!({"title": page.meta_str("title")}));
             page
         })
@@ -136,7 +144,9 @@ async fn on_links_preset_uses_first_nonempty_selector() {
             "default",
             &[".missing", ".item"],
             "detail",
-            |_page, idx, a| json!({"idx": idx, "text": a.text().trim()}),
+            |_page, idx, a| {
+                json!({"idx": idx, "text": a.text().trim()})
+            },
         )
         .build();
 
@@ -170,13 +180,9 @@ fn page_item_value_avoids_reserialization() {
 async fn on_links_n_preset_limits_follows() {
     let spider = SpiderBuilder::new("links-n")
         .start_urls(vec!["https://example.com/".to_string()])
-        .on_links_n(
-            "default",
-            &[".item"],
-            "detail",
-            1,
-            |_page, idx, a| json!({"idx": idx, "text": a.text().trim()}),
-        )
+        .on_links_n("default", &[".item"], "detail", 1, |_page, idx, a| {
+            json!({"idx": idx, "text": a.text().trim()})
+        })
         .build();
 
     let (_, follows) = spider
@@ -193,7 +199,9 @@ async fn on_links_n_preset_limits_follows() {
 #[tokio::test]
 async fn on_content_preset_builds_item_from_meta() {
     let spider = SpiderBuilder::new("content")
-        .on_content("chapter", &[".content"], |text| text.trim().to_string())
+        .on_content("chapter", &[".content"], |text: String| async move {
+            text.trim().to_string()
+        })
         .build();
 
     let req = CrawlRequest::get("https://example.com/ch/1")

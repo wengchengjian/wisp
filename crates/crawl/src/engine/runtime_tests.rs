@@ -84,7 +84,7 @@ fn engine_control_handle_and_shutdown_share_runtime_state() {
 #[test]
 fn engine_builder_event_listener_accepts_async_closure() {
     let engine = Engine::infra()
-        .event_listener(async |_event: crate::CrawlEvent| {})
+        .event_listener(|_event: crate::CrawlEvent| async move {})
         .build()
         .unwrap();
     assert_eq!(engine.runtime.event_bus.listener_count(), 1);

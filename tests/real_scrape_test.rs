@@ -56,7 +56,7 @@ async fn test_quotes_full_crawl_10_pages() {
 
     let spider = SpiderBuilder::new("quotes-full")
         .start_urls(vec!["https://quotes.toscrape.com/"])
-        .on("default", async |resp| {
+        .on("default", |resp| async move {
             let doc = resp.parse();
             let items: Vec<Value> = doc
                 .select(".quote")
@@ -286,7 +286,7 @@ async fn test_spider_builder_engine_integration() {
 
     let spider = SpiderBuilder::new("books")
         .start_urls(vec!["https://books.toscrape.com/"])
-        .on("default", async |resp| {
+        .on("default", |resp| async move {
             let doc = resp.parse();
             let items: Vec<Value> = doc.select("article.product_pod").iter().map(|book| {
                 serde_json::json!({

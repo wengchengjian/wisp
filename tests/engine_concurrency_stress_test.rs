@@ -80,7 +80,7 @@ fn stress_engine(max_concurrent: usize, max_pages: usize) -> Engine {
 fn stress_spider(name: &str, urls: Vec<String>) -> wisp::crawl::ClosureSpider {
     SpiderBuilder::new(name)
         .start_urls(urls)
-        .on("default", async |_resp| (vec![json!({})], vec![]))
+        .on("default", |_resp| async move { (vec![json!({})], vec![]) })
         .build()
 }
 

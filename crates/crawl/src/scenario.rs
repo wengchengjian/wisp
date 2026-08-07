@@ -11,7 +11,7 @@ use wisp_fetcher::{FetchClient, FetchOptions, Request};
 use wisp_parser::Node;
 use wisp_storage::{Store, open_store};
 
-use crate::{Engine, Items, MaxPages, SpiderBuilder};
+use crate::{Engine, Items, MaxPages, Page, SpiderBuilder};
 
 /// 共享资源上下文：壳层创建的编排上下文。
 pub struct ScenarioContext<'a> {
@@ -151,23 +151,32 @@ pub async fn crawl_site_by_css(
         .allowed_domains(opts.allowed_domains.unwrap_or_default())
         .max_depth(max_depth)
         .until(MaxPages(max_pages));
-    builder = builder.on_page("default", move |mut page| {
-        for node in page.css(&css).iter() {
-            page.item_value(serde_json::json!({ "text": node.text(), "html": node.html() }));
-        }
-        if let Some(re) = follow_pattern.as_ref() {
-            page.follow_links_filtered(
-                &["a[href]"],
-                "default",
-                |url| re.is_match(url),
-                |_page, _idx, _a| serde_json::json!(null),
-            );
-        } else {
-            page.follow_links(&["a[href]"], "default", |_page, _idx, _a| {
-                serde_json::json!(null)
-            });
-        }
-        page
+    builder = builder.on_page("default", move |mut page: Page| {
+        // 外部捕获（css / follow_pattern）需在每次调用时克隆进 future，以满足 'static + Fn
+        let css = css.clone();
+        let follow_pattern = follow_pattern.clone();
+        Box::pin(async move {
+            for node in page.css(&css).iter() {
+                page.item_value(serde_json::json!({ "text": node.text(), "html": node.html() }));
+            }
+            if let Some(re) = follow_pattern.as_ref() {
+                page.follow_links_filtered(
+                    &["a[href]"],
+                    "default",
+                    |url| re.is_match(url),
+                    |_page, _idx, _a| serde_json::json!(null),
+                )
+                .await;
+            } else {
+                page.follow_links(
+                    &["a[href]"],
+                    "default",
+                    |_page, _idx, _a| serde_json::json!(null),
+                )
+                .await;
+            }
+            page
+        })
     });
     let spider = builder.build();
     let (_stats, items) = ctx.engine.run(spider).await?;

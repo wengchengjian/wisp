@@ -51,7 +51,7 @@ async fn test_event_bus_with_listener() {
 #[tokio::test]
 async fn test_event_bus_accepts_async_closure() {
     let bus = EventBus::new();
-    bus.on(async |_event: CrawlEvent| {});
+    bus.on(|_event: CrawlEvent| async move {});
     assert!(bus.has_listeners());
     bus.emit(CrawlEvent::CrawlStarted {
         spider: "test".into(),

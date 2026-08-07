@@ -10,7 +10,7 @@
 //!
 //! let spider = SpiderBuilder::new("quotes")
 //!     .start_urls(vec!["https://quotes.toscrape.com/"])
-//!     .on("default", async |resp| {
+//!     .on("default", |resp| async move {
 //!         let doc = resp.parse();
 //!         let items = doc.select(".quote").iter().map(|q| {
 //!             serde_json::json!({ "text": q.select_one(".text").map(|n| n.text()) })
@@ -29,21 +29,21 @@
 //!
 //! let spider = SpiderBuilder::new("pipeline")
 //!     .start_urls(vec!["https://example.com/list"])
-//!     .on("default", async |resp| {
+//!     .on("default", |resp| async move {
 //!         // 列表页：follow 到 "detail"
 //!         let follows: Vec<_> = resp.css(".item a").iter()
 //!             .filter_map(|a| resp.follow_with(&a.attr("href").unwrap_or_default(), "detail"))
 //!             .collect();
 //!         (vec![], follows)
 //!     })
-//!     .on("detail", async |resp| {
+//!     .on("detail", |resp| async move {
 //!         // 详情页：follow 到 "content"
 //!         let follows: Vec<_> = resp.css("article a").iter()
 //!             .filter_map(|a| resp.follow_with(&a.attr("href").unwrap_or_default(), "content"))
 //!             .collect();
 //!         (vec![], follows)
 //!     })
-//!     .on("content", async |resp| {
+//!     .on("content", |resp| async move {
 //!         // 内容页：提取数据
 //!         (vec![serde_json::json!({"title": resp.css("h1").text()})], vec![])
 //!     })

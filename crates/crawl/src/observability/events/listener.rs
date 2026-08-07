@@ -13,7 +13,7 @@ pub type EventListener = Arc<dyn Fn(CrawlEvent) -> BoxFuture<'static, ()> + Send
 /// 可注册到 [`EventBus`] 的监听器。
 ///
 /// `EventListener` 与 `Fn(CrawlEvent) -> Future` 闭包都实现该 trait；
-/// 无捕获的 `async |event| {}` 可以直接传给 `EventBus::on`。
+/// 无捕获的 `|event| async move {}` 可以直接传给 `EventBus::on`。
 pub trait EventCallback {
     /// 处理单个事件。
     fn call(&self, event: CrawlEvent) -> BoxFuture<'static, ()>;

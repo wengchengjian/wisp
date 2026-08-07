@@ -36,7 +36,7 @@ const CATEGORY_SELECTOR: &str = ".breadcrumb .bd a";
 const CONTENT_SELECTORS: [&str; 1] = [".page-content"];
 
 /// 清理章节正文：去空白行、广告行。
-fn clean_content(text: String) -> String {
+async fn clean_content(text: String) -> String {
     text.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())

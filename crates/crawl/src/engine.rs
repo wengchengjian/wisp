@@ -229,7 +229,7 @@ impl Engine {
         let driver = Box::pin(run_stream_driver(engine, spiders, tx, outcome_tx));
         let s = stream::unfold(
             (driver, subscription, false),
-            async |(mut driver, mut subscription, driver_done)| {
+            |(mut driver, mut subscription, driver_done)| async move {
                 if driver_done {
                     return subscription
                         .next()

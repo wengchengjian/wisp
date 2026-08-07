@@ -19,7 +19,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::Engine;
 use wisp::crawl::events::{EventBus, Metrics, metrics_listener};
-use wisp::crawl::{CrawlEvent, CrawlRequest, MaxPagesByCallback, Response, Spider, SpiderBuilder};
+use wisp::crawl::{CrawlEvent, CrawlRequest, MaxPagesByCallback, Page, Response, Spider};
+use wisp::crawl::{SpiderBuilder, on_page};
 use wisp::fetcher::FetchMode;
 use wisp::storage::MemoryStore;
 
@@ -236,15 +237,16 @@ async fn run_stops_at_max_pages_by_callback() {
 
     let spider = SpiderBuilder::new("callback-stop")
         .start_urls(vec![url])
-        .on_page("default", |mut page| {
+        .on_page("default", on_page!(page, {
             page.follow_links(
                 &["a"],
                 "detail",
                 |_page, _idx, a| serde_json::json!({ "title": a.text().trim() }),
-            );
+            )
+            .await;
             page
-        })
-        .on_page("detail", |page| page)
+        }))
+        .on_page("detail", |page: Page| async move { page })
         .until(MaxPagesByCallback::new("detail", 2))
         .build();
 

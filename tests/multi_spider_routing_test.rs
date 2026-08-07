@@ -2,13 +2,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use wisp::crawl::Engine;
 use wisp::crawl::stop::MaxPages;
-use wisp::crawl::{CrawlRequest, Spider, SpiderBuilder};
+use wisp::crawl::{CrawlRequest, Page, Spider, SpiderBuilder};
 use wisp::fetcher::FetchMode;
 
 #[test]
 fn closure_spider_accepts_only_owned_callbacks() {
     let spider = SpiderBuilder::new("detail")
-        .on_page("detail", |page| page)
+        .on_page("detail", |page| async move { page })
         .build();
 
     assert!(!spider.accepts_callback(None));
@@ -16,7 +16,7 @@ fn closure_spider_accepts_only_owned_callbacks() {
     assert!(!spider.accepts_callback(Some("chapter")));
 
     let home = SpiderBuilder::new("home")
-        .on_page("default", |page| page)
+        .on_page("default", |page| async move { page })
         .build();
     assert!(home.accepts_callback(None));
     assert!(!home.accepts_callback(Some("unknown")));
@@ -67,29 +67,31 @@ async fn detail_spider_until_does_not_block_chapter_spider() {
     let base = spawn_stage_server().await;
     let home = SpiderBuilder::new("home")
         .start_urls(vec![base.clone()])
-        .on_page("default", |mut page| {
+        .on_page("default", |mut page: Page| async move {
             page.follow_links(
                 &["a"],
                 "detail",
                 |_page, _i, a| serde_json::json!({ "title": a.text().trim() }),
-            );
+            )
+            .await;
             page
         })
         .build();
     let detail = SpiderBuilder::new("detail")
-        .on_page("detail", |mut page| {
+        .on_page("detail", |mut page: Page| async move {
             let title = page.meta_str("title");
             page.follow_links(
                 &["a"],
                 "chapter",
-                |_page, _i, _a| serde_json::json!({ "title": title.clone() }),
-            );
+                |_page, _i, _a| serde_json::json!({ "title": title }),
+            )
+            .await;
             page
         })
         .until(MaxPages(2))
         .build();
     let chapter = SpiderBuilder::new("chapter")
-        .on_page("chapter", |mut page| {
+        .on_page("chapter", |mut page: Page| async move {
             page.item(serde_json::json!({ "title": page.meta_str("title") }));
             page
         })
