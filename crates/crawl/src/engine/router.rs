@@ -101,7 +101,7 @@ mod tests {
             (vec![], vec![])
         }
         fn accepts_callback(&self, callback: Option<&str>) -> bool {
-            callback.map_or(true, |c| self.callbacks.contains(c))
+            callback.is_none_or(|c| self.callbacks.contains(c))
         }
     }
 

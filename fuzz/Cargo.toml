@@ -26,13 +26,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "difflib"
-path = "fuzz_targets/difflib.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "core_url_encoding"
 path = "fuzz_targets/core_url_encoding.rs"
 test = false
