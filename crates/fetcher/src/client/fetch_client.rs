@@ -174,10 +174,10 @@ impl FetchClient {
             http_req
                 .headers
                 .insert("User-Agent".to_string(), ua.clone());
-            // 对齐 sec-ch-ua 相关头：wreq 内置 Chrome149 档复用了 v132 的 3-brand
-            // sec-ch-ua（含 `Not)A;Brand`）且平台可能为 macOS，与真实浏览器 2-brand / Windows
-            // 不一致。cf_clearance 绑定签发时的 UA/session，回放时若 sec-ch-ua 与 UA 不匹配，
-            // CF 会判定会话无效而 403。故按 cookie_jar 保存的真实浏览器 UA 动态对齐。
+            // 对齐 sec-ch-ua 相关头：wreq 内置档位默认平台可能是 macOS，与真实浏览器
+            // Windows 不一致。cf_clearance 绑定签发时的 UA/session，回放时若 sec-ch-ua 与
+            // UA 不匹配，CF 会判定会话无效而 403。故按 cookie_jar 保存的真实浏览器 UA
+            // 动态对齐（3-brand、Google Chrome 在前，与真实 Chrome 119+ 一致）。
             if let Some((schua, platform, mobile)) = chrome_sec_ch_ua(&ua) {
                 http_req.headers.insert("sec-ch-ua".to_string(), schua);
                 http_req
@@ -225,6 +225,10 @@ impl FetchClient {
             ua
         );
         if resp.status == 200 {
+            // 复用成功 → 续期 CF 会话 TTL。否则 jar 的 30 分钟 TTL 会先于
+            // cookie 真实有效期过期，导致 UA/sec-ch-ua 对齐信息丢失（ua() 只读
+            // cf jar），后续快速路径带 cookie 却无对齐头 → CF 403 → 无谓回退 Stealth。
+            self.cookie_jar.touch(&url_parsed).await;
             Ok(Some(resp))
         } else {
             Ok(None)
@@ -294,18 +298,13 @@ impl FetchClient {
 
     /// 选择 CF 快速路径的 TLS 指纹档位。
     ///
-    /// 优先用浏览器池探测到的真实 Chrome 主版本自动选档（≤ 版本的最大最接近档位），
-    /// 浏览器未启动 / 未探测 / 低于最低档时回归 `Chrome149`，避免硬编码指纹漂移。
+    /// 固定使用 `Chrome148`：wreq-util 该档位与 CF 复用实测兼容（携带同一
+    /// cf_clearance 走 HTTP 返回 200），而 `Chrome149` 档位返回 403（不兼容）。
+    ///
+    /// 不做动态探测选档：浏览器版本由安装器固定为 Chrome 148，指纹档位与之一致，
+    /// 避免浏览器版本漂移导致的指纹不自洽与排查困难。
     fn select_cf_profile(&self) -> Profile {
-        #[cfg(feature = "browser")]
-        if let Some(major) = self
-            .browser_pool
-            .as_ref()
-            .and_then(|pool| pool.chrome_major())
-        {
-            return select_chrome_profile(major);
-        }
-        Profile::Chrome149
+        Profile::Chrome148
     }
 
     fn proxy_client(&self, proxy: &str) -> Result<Arc<Client>> {
@@ -445,9 +444,11 @@ impl FetchClient {
 
 /// 从浏览器 UA 解析 Chrome 主版本与平台，构造与 UA 一致的 sec-ch-ua 头。
 ///
-/// wreq 内置 Chrome149 档复用了 v132 的 3-brand sec-ch-ua（含 `Not)A;Brand`），
-/// 且平台默认 macOS，与真实浏览器 2-brand / Windows 不一致。`cf_clearance` 绑定
-/// 签发时的 UA，回放时若 sec-ch-ua 与 UA 不匹配，CF 会判定会话无效。
+/// `cf_clearance` 绑定签发时的 UA，回放时若 sec-ch-ua 与 UA 不匹配，CF 会判定会话无效。
+/// 真实 Chrome 119+ 的 sec-ch-ua 是 3-brand 且 `"Google Chrome"` 在前（如
+/// `"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"`），
+/// 与 wreq 内置 Chrome149 档一致。旧版 wisp 曾误用 2-brand（`Chromium` 在前），
+/// 与真实浏览器不符导致 HTTP 复用 403，此处统一修正为 3-brand。
 ///
 /// 返回 `(sec-ch-ua, sec-ch-ua-platform, sec-ch-ua-mobile)`；无法解析版本时返回 `None`。
 fn chrome_sec_ch_ua(ua: &str) -> Option<(String, String, String)> {
@@ -469,32 +470,10 @@ fn chrome_sec_ch_ua(ua: &str) -> Option<(String, String, String)> {
         "Windows"
     };
     Some((
-        format!(r#""Chromium";v="{major}", "Google Chrome";v="{major}""#),
+        format!(r#""Google Chrome";v="{major}", "Chromium";v="{major}", "Not)A;Brand";v="24""#),
         format!("\"{platform}\""),
         "?0".to_string(),
     ))
-}
-
-/// 在 wreq 内置的 Chrome 档位里，选出「≤ major 的最大档位」。
-///
-/// 通过 Debug 变体名（如 `Chrome149`）解析各档版本号，遍历 `Profile::VARIANTS`，
-/// 因此新增档位会自动纳入，无需硬编码映射。低于最低档（Chrome100）时视为选不到。
-fn select_chrome_profile(major: u32) -> Profile {
-    let mut best: Option<Profile> = None;
-    let mut best_version = 0u32;
-    for profile in Profile::VARIANTS {
-        let Some(version) = format!("{profile:?}")
-            .strip_prefix("Chrome")
-            .and_then(|s| s.parse().ok())
-        else {
-            continue;
-        };
-        if version <= major && version > best_version {
-            best_version = version;
-            best = Some(*profile);
-        }
-    }
-    best.unwrap_or(Profile::Chrome149)
 }
 
 #[cfg(feature = "browser")]
@@ -565,59 +544,32 @@ mod tests {
         assert!(Arc::ptr_eq(&proxy, &cached));
     }
 
+    /// CF 快速路径指纹固定为 Chrome148，与浏览器安装器固定的版本一致。
     #[test]
-    fn select_chrome_profile_picks_closest_available() {
-        // 浏览器 150 无对应档：选 ≤150 的最大档 Chrome149。
-        assert_eq!(select_chrome_profile(150), Profile::Chrome149);
-        // 浏览器 200：仍封顶到 Chrome149。
-        assert_eq!(select_chrome_profile(200), Profile::Chrome149);
-        // 浏览器 148：精确命中 Chrome148。
-        assert_eq!(select_chrome_profile(148), Profile::Chrome148);
-        // 浏览器 120：命中 Chrome120。
-        assert_eq!(select_chrome_profile(120), Profile::Chrome120);
-        // 完全相同的主版本命中自身。
-        assert_eq!(select_chrome_profile(149), Profile::Chrome149);
-    }
-
-    /// 验证「浏览器未启动」场景下，CF 快速路径指纹回退到 Chrome149。
-    #[cfg(feature = "browser")]
-    #[test]
-    fn select_cf_profile_falls_back_when_browser_not_launched() {
-        // max_concurrent_pages > 0 会创建 BrowserPool，但浏览器懒启动、此时尚未 acquire，
-        // 因此 chrome_major 为 None —— 正是「浏览器未启动」的初始状态。
+    fn select_cf_profile_is_fixed_chrome148() {
         let config = FetchClientConfig {
-            max_concurrent_pages: 4,
+            max_concurrent_pages: 0,
             ..Default::default()
         };
         let client = FetchClient::new(config).expect("build client");
-
-        // 前置断言：浏览器池存在，但未探测到版本（未启动）。
-        let pool = client.browser_pool().expect("browser pool configured");
-        assert_eq!(pool.chrome_major(), None, "浏览器未启动时不应有探测版本");
-
-        // 核心断言：未启动 → 回退 Chrome149。
         assert_eq!(
             client.select_cf_profile(),
-            Profile::Chrome149,
-            "浏览器未启动时应回归 Chrome149"
+            Profile::Chrome148,
+            "CF 快速路径应固定 Chrome148，不做动态选档"
         );
     }
 
     #[test]
-    fn select_chrome_profile_falls_back_below_minimum() {
-        // 低于最低档（Chrome100）：视为选不到，回归 Chrome149 默认。
-        assert_eq!(select_chrome_profile(99), Profile::Chrome149);
-        assert_eq!(select_chrome_profile(0), Profile::Chrome149);
-    }
-
-    #[test]
     fn chrome_sec_ch_ua_matches_browser_ua() {
-        // 真实 Chrome 149 Windows：2-brand、平台 Windows、非移动。
+        // 真实 Chrome 149 Windows：3-brand（Google Chrome 在前）、平台 Windows、非移动。
         let (schua, platform, mobile) = chrome_sec_ch_ua(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.155 Safari/537.36",
         )
         .expect("应能解析 Windows UA");
-        assert_eq!(schua, r#""Chromium";v="149", "Google Chrome";v="149""#);
+        assert_eq!(
+            schua,
+            r#""Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24""#
+        );
         assert_eq!(platform, "\"Windows\"");
         assert_eq!(mobile, "?0");
 
@@ -631,48 +583,35 @@ mod tests {
         // 版本号取自 UA 中的主版本。
         let (schua, _, _) =
             chrome_sec_ch_ua("Mozilla/5.0 ... Chrome/120.0.1 Safari/537.36").expect("应能解析版本");
-        assert_eq!(schua, r#""Chromium";v="120", "Google Chrome";v="120""#);
+        assert_eq!(
+            schua,
+            r#""Google Chrome";v="120", "Chromium";v="120", "Not)A;Brand";v="24""#
+        );
 
         // 非 Chrome UA 无法解析 → None。
         assert!(chrome_sec_ch_ua("curl/8.0").is_none());
         assert!(chrome_sec_ch_ua("").is_none());
     }
 
-    /// 集成测试：浏览器启动成功 → 自动探测版本 → 自动选档。
+    /// 集成测试：浏览器启动成功 → 固定指纹档位不变（Chrome148）。
     ///
-    /// 不预设浏览器版本（环境 Chrome 版本未知），由 BrowserPool 懒启动后探测真实主版本，
-    /// 再断言 `select_cf_profile` 基于探测结果选档（而非无条件回归 149）。
+    /// 指纹档位固定为 Chrome148，不随浏览器版本变化，保证 CF 复用稳定。
     /// 需要真实 Chrome 环境，默认忽略。
     #[cfg(feature = "browser")]
     #[tokio::test]
     #[ignore = "需要 Chrome 浏览器环境"]
-    async fn test_select_cf_profile_uses_probed_browser_version() {
+    async fn test_select_cf_profile_fixed_despite_browser_version() {
         let config = FetchClientConfig {
             max_concurrent_pages: 4,
             ..Default::default()
         };
         let client = FetchClient::new(config).expect("build client");
-        let pool = client
-            .browser_pool()
-            .expect("browser pool configured")
-            .clone();
 
-        // 触发浏览器懒启动；启动后应探测到真实主版本。
-        let _handle = pool.acquire().await.expect("Chrome 环境应能启动浏览器");
-        let major = pool.chrome_major();
-        assert!(major.is_some(), "浏览器启动后应探测到真实主版本");
-        let major = major.unwrap();
-        assert!(
-            (100..=200).contains(&major),
-            "探测到的主版本应在合理范围: {major}"
-        );
-
-        // 核心断言：select_cf_profile 应读取探测结果选档，而非无条件回归 149。
-        let expected = select_chrome_profile(major);
+        // 核心断言：无论浏览器版本如何，指纹档位恒为 Chrome148。
         assert_eq!(
             client.select_cf_profile(),
-            expected,
-            "指纹档位应基于探测到的版本 {major} 选出"
+            Profile::Chrome148,
+            "指纹档位固定 Chrome148，不随浏览器版本变化"
         );
     }
 }

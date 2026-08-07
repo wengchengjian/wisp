@@ -27,11 +27,13 @@ use std::path::PathBuf;
 use version::{get_latest_version, get_version_for_major};
 use wisp_core::error::Result;
 
-/// wreq-util 能精确模拟 TLS 指纹的最高 Chrome 主版本。
-/// HTTP 快速路径（CF 复用）依赖「浏览器版本 ≤ 该值」，否则指纹不自洽会被 CF 拒。
-/// 注：不要设太低（如 137），Chrome for Testing 旧版本会从 Google Cloud Storage
-/// 移除导致无法下载；使用 149（wreq 支持的最高档位，仍可下载）。
-pub const SUPPORTED_CHROME_MAJOR: u32 = 149;
+/// 固定的 Chrome for Testing 主版本。
+///
+/// 与 CF 快速路径的 TLS 指纹档位（`Chrome148`，见 wisp-fetcher select_cf_profile）
+/// 对齐，保证浏览器与 HTTP 指纹一致。固定版本避免版本漂移导致的指纹不自洽
+/// 与排查困难；同时 `Chrome149` 档位经实测与 CF 复用不兼容（403）。
+/// 148 仍在 Google Cloud Storage 提供（可下载），不要设更低（旧版本会被移除）。
+pub const SUPPORTED_CHROME_MAJOR: u32 = 148;
 
 /// 下载并安装指定版本的 Chrome for Testing。
 ///
@@ -56,16 +58,16 @@ async fn ensure_browser_installed_version(version: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// 自动下载安装浏览器：优先保证版本与 wreq 的 TLS 指纹档位匹配。
+/// 自动下载安装浏览器：固定使用 `SUPPORTED_CHROME_MAJOR`（Chrome 148）。
 ///
-/// 目标主版本由环境变量 `WISP_CHROME_MAJOR` 指定（如 `132`/`147`），未设置时用
-/// `SUPPORTED_CHROME_MAJOR`。优先复用 `.browsers/` 中已安装的同主版本，避免重新下载
+/// 固定版本与 CF 快速路径 TLS 指纹档位（`Chrome148`）对齐，避免版本漂移导致的
+/// 指纹不自洽与排查困难。优先复用 `.browsers/` 中已安装的同主版本，避免重新下载
 /// 该主版本下的其他小版本；查询/下载失败时回退到最新版。
 pub async fn ensure_browser_installed() -> Result<PathBuf> {
-    let major = chrome_major_from_env();
+    let major = SUPPORTED_CHROME_MAJOR;
     let install_root = get_install_root();
 
-    // 优先复用已安装的指定主版本（如 132/147），避免重新下载该主版本下的其他小版本。
+    // 优先复用已安装的固定主版本（148），避免重新下载该主版本下的其他小版本。
     if let Some(path) = find_installed_browser_for_major(&install_root, major)? {
         tracing::debug!("复用已安装的 Chrome {major}: {}", path.display());
         return Ok(path);
@@ -79,16 +81,6 @@ pub async fn ensure_browser_installed() -> Result<PathBuf> {
             ensure_browser_installed_version(&version).await
         }
     }
-}
-
-/// 目标 Chrome 主版本：优先取环境变量 `WISP_CHROME_MAJOR`（如 `132`/`147`），
-/// 未设置或非法时回退到 `SUPPORTED_CHROME_MAJOR`。
-fn chrome_major_from_env() -> u32 {
-    std::env::var("WISP_CHROME_MAJOR")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .filter(|m| *m >= 100)
-        .unwrap_or(SUPPORTED_CHROME_MAJOR)
 }
 
 #[cfg(test)]

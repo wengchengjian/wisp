@@ -109,7 +109,7 @@ pub(super) async fn get_version_for_major(major: u32) -> Result<String> {
             .split('.')
             .skip(1)
             .fold(0u64, |acc, s| acc * 10000 + s.parse().unwrap_or(0));
-        if best.as_ref().map_or(true, |(k, _)| key > *k) {
+        if best.as_ref().is_none_or(|(k, _)| key > *k) {
             best = Some((key, ver.to_string()));
         }
     }
