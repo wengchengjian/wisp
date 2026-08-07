@@ -1,6 +1,5 @@
 //! MCP 工具实现。
 
-pub(crate) mod adaptive;
 pub(crate) mod crawl;
 pub(crate) mod extract;
 pub(crate) mod fetch;
@@ -9,7 +8,6 @@ pub(crate) mod gateway;
 pub(crate) mod stealth;
 mod types;
 
-pub use adaptive::adaptive_scrape;
 pub use crawl::crawl_site;
 pub use extract::extract_css;
 pub use fetch::fetch_page;

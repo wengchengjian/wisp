@@ -8,15 +8,10 @@ use wisp_core::error::{Result, StorageError, WispError};
 use crate::FileStore;
 #[cfg(feature = "sqlite")]
 use crate::SqliteStore;
-use crate::models::{CachedResponse, ElementSnapshotRow};
+use crate::models::CachedResponse;
 
 const NS_CHECKPOINT: &str = "checkpoint";
-const NS_ELEMENT: &str = "element";
 const NS_RESPONSE: &str = "response";
-
-fn element_key(url: &str, key: &str) -> String {
-    format!("{url}|{key}")
-}
 
 fn response_key(method: &str, url: &str) -> String {
     format!("{method}|{url}")
@@ -69,27 +64,6 @@ pub trait Store: Send + Sync {
     /// 删除检查点。
     async fn delete_checkpoint(&self, name: &str) -> Result<()> {
         self.delete(NS_CHECKPOINT, name).await
-    }
-
-    // === Element Snapshot ===
-
-    /// 保存元素快照。
-    async fn save_element(&self, url: &str, key: &str, row: &ElementSnapshotRow) -> Result<()> {
-        let composite = element_key(url, key);
-        let bytes = serde_json::to_vec(row).map_err(|e| {
-            WispError::Storage(StorageError::General(format!("serialize element: {e}")))
-        })?;
-        self.set(NS_ELEMENT, &composite, &bytes).await
-    }
-
-    /// 加载元素快照。
-    async fn load_element(&self, url: &str, key: &str) -> Result<Option<ElementSnapshotRow>> {
-        let composite = element_key(url, key);
-        self.get(NS_ELEMENT, &composite)
-            .await?
-            .map(|v| serde_json::from_slice(&v))
-            .transpose()
-            .map_err(|e| WispError::Storage(StorageError::General(format!("parse element: {e}"))))
     }
 
     // === Response Cache ===

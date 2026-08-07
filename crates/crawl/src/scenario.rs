@@ -8,14 +8,14 @@ use std::sync::Arc;
 use wisp_core::FetchMode;
 use wisp_core::error::{Result, WispError};
 use wisp_fetcher::{FetchClient, FetchOptions, Request};
-use wisp_parser::{DEFAULT_TOLERANCE, Node};
+use wisp_parser::Node;
 use wisp_storage::{Store, open_store};
 
-use crate::{AdaptiveTracker, Engine, Items, MaxPages, SpiderBuilder};
+use crate::{Engine, Items, MaxPages, SpiderBuilder};
 
 /// 共享资源上下文：壳层创建的编排上下文。
 pub struct ScenarioContext<'a> {
-    /// Persistence store for checkpoint/adaptive snapshot tools.
+    /// Persistence store for checkpoint tools.
     pub store: &'a Arc<dyn Store>,
     /// Shared crawl Engine.
     pub engine: &'a Engine,
@@ -96,49 +96,6 @@ pub fn extract_css(html: &str, selector: &str, attr: Option<&str>) -> Result<Ext
         result.texts = nodes.iter().map(|n| n.text()).collect();
     }
     Ok(result)
-}
-
-/// 自适应抓取结果。
-pub struct ScrapeResult {
-    /// Target URL.
-    pub url: String,
-    /// Whether the element was found.
-    pub found: bool,
-    /// Extracted text.
-    pub text: Option<String>,
-    /// Extracted HTML.
-    pub html: Option<String>,
-}
-
-/// 自适应抓取：CSS 失败时用快照存储重定位。
-pub async fn adaptive_scrape(
-    ctx: &ScenarioContext<'_>,
-    url: &str,
-    selector: &str,
-    key: &str,
-    db_path: Option<&str>,
-) -> Result<ScrapeResult> {
-    let page = fetch_page_html(ctx, url, FetchMode::Http, &FetchOptions::default()).await?;
-    let doc = Node::from_html(&page.html);
-    let effective_store = ctx.get_or_open_store(db_path)?;
-    let tracker = AdaptiveTracker::new(effective_store);
-    let found = tracker
-        .css_adaptive(&doc, selector, key, &page.url, true, DEFAULT_TOLERANCE)
-        .await?;
-    match found {
-        Some(node) => Ok(ScrapeResult {
-            url: page.url,
-            found: true,
-            text: Some(node.text()),
-            html: Some(node.html()),
-        }),
-        None => Ok(ScrapeResult {
-            url: page.url,
-            found: false,
-            text: None,
-            html: None,
-        }),
-    }
 }
 
 /// 站点爬取选项。

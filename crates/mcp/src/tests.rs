@@ -30,13 +30,13 @@ fn test_context<'a>(
 }
 
 #[test]
-fn test_tools_list_has_five_tools() {
+fn test_tools_list_has_expected_tools() {
     let list = handle_tools_list();
     let tools = list.get("tools").unwrap().as_array().unwrap();
     #[cfg(feature = "stealth")]
-    assert_eq!(tools.len(), 5, "stealth feature 下应有 5 个工具");
+    assert_eq!(tools.len(), 4, "stealth feature 下应有 4 个工具");
     #[cfg(not(feature = "stealth"))]
-    assert_eq!(tools.len(), 4, "无 stealth feature 时应为 4 个工具");
+    assert_eq!(tools.len(), 3, "无 stealth feature 时应为 3 个工具");
     let names: Vec<&str> = tools
         .iter()
         .map(|t| t.get("name").unwrap().as_str().unwrap())
@@ -44,7 +44,6 @@ fn test_tools_list_has_five_tools() {
     assert!(names.contains(&"fetch_page"));
     assert!(names.contains(&"extract_css"));
     assert!(names.contains(&"crawl_site"));
-    assert!(names.contains(&"adaptive_scrape"));
     #[cfg(feature = "stealth")]
     assert!(names.contains(&"stealth_fetch"));
 }
@@ -100,29 +99,6 @@ async fn fetch_page_rejects_private_ip() {
     let result =
         crate::tools::call_tool("fetch_page", json!({ "url": "http://127.0.0.1/" }), &ctx).await;
     let err = result.expect_err("MCP fetch_page 应拒绝内网地址");
-    assert!(
-        err.to_string().contains("拒绝"),
-        "错误应来自 SSRF 校验: {err}"
-    );
-}
-
-#[tokio::test]
-async fn adaptive_scrape_rejects_private_ip() {
-    let store: Arc<dyn Store> = Arc::new(wisp_storage::MemoryStore::default());
-    let engine = Engine::infra()
-        .max_pages(100)
-        .obey_robots(false)
-        .build()
-        .unwrap();
-    let client = test_fetch_client();
-    let ctx = test_context(&store, &engine, &client);
-    let result = crate::tools::call_tool(
-        "adaptive_scrape",
-        json!({ "url": "http://127.0.0.1/", "selector": "p", "key": "k" }),
-        &ctx,
-    )
-    .await;
-    let err = result.expect_err("MCP adaptive_scrape 应拒绝内网地址");
     assert!(
         err.to_string().contains("拒绝"),
         "错误应来自 SSRF 校验: {err}"

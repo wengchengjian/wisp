@@ -4,8 +4,6 @@
     reason = "shared test helper may be unused per integration binary"
 )]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 async fn spawn_status_server_on(
     url_host: &str,
     status: u16,
@@ -57,40 +55,6 @@ pub async fn spawn_html_server(html: &'static str) -> String {
 /// MCP SSRF checks can resolve it to the local test listener.
 pub async fn spawn_localhost_html_server(html: &'static str) -> String {
     spawn_status_server_on("localhost", 200, "OK", html, "text/html; charset=utf-8").await
-}
-
-/// Start a server that returns `first` on the first request and `second` on
-/// later requests, useful for adaptive relocation tests over the same URL.
-pub async fn spawn_localhost_mutable_html_server(
-    first: &'static str,
-    second: &'static str,
-) -> String {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let state = AtomicUsize::new(0);
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            let state = state.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
-                let _ = socket.read(&mut buf).await;
-                let html = if state == 0 { first } else { second };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(),
-                    html
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-            });
-        }
-    });
-    format!("http://localhost:{}", addr.port())
 }
 
 /// Start a server that redirects every request to `location`.

@@ -68,13 +68,12 @@ impl Tool {
     }
 }
 
-/// 5 个工具覆盖核心场景；每个 spec 由对应工具模块提供。
+/// 核心工具集；每个 spec 由对应工具模块提供。
 pub static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
     vec![
         crate::tools::fetch::spec(),
         crate::tools::extract::spec(),
         crate::tools::crawl::spec(),
-        crate::tools::adaptive::spec(),
         #[cfg(feature = "stealth")]
         crate::tools::stealth::spec(),
     ]

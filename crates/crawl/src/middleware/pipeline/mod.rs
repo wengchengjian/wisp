@@ -2,12 +2,10 @@
 
 mod batch;
 mod filter;
-mod novel;
 mod output;
 
 pub use batch::BatchItemPipeline;
 pub use filter::FilterFieldsPipeline;
-pub use novel::NovelStorePipeline;
 pub use output::OutputWriterPipeline;
 
 #[cfg(test)]

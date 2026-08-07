@@ -62,7 +62,7 @@ pub use error::{
 
 pub use parser::{Node, NodeList, ResponseExt};
 pub use proxy::RotationStrategy;
-pub use storage::{CachedResponse, ElementSnapshotRow, FileStore, MemoryStore, Store};
+pub use storage::{CachedResponse, FileStore, MemoryStore, Store};
 
 #[cfg(feature = "sqlite")]
 pub use storage::SqliteStore;

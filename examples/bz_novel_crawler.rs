@@ -18,9 +18,9 @@
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use wisp::crawl::middleware::{NovelStorePipeline, OutputWriterPipeline};
-use wisp::crawl::stop::MaxPages;
 use wisp::crawl::Item;
+use wisp::crawl::middleware::OutputWriterPipeline;
+use wisp::crawl::stop::MaxPages;
 use wisp::{Engine, FetchClientConfig, FetchMode, OutputFormat, SpiderBuilder};
 
 /// 站点基址。
@@ -68,9 +68,12 @@ fn spiders(pages: usize) -> Vec<wisp::ClosureSpider> {
         // 列表页 Spider：爬取最新小说列表页，提取书名并 follow 到详情页。
         SpiderBuilder::new("list")
             .start_urls(list_urls(pages))
-            .on_links("default", &BOOK_SELECTORS, "detail", |_page, _idx, a| {
-                json!({ "book_title": a.text().trim() })
-            })
+            .on_links(
+                "default",
+                &BOOK_SELECTORS,
+                "detail",
+                |_page, _idx, a| json!({ "book_title": a.text().trim() }),
+            )
             .until(MaxPages(pages))
             .build(),
         // 详情页 Spider：提取分类与章节链接，携带书名/分类/章节名 follow 到正文页。
@@ -125,8 +128,8 @@ fn build_engine(pages: usize) -> Result<Engine, Box<dyn std::error::Error>> {
             ("Referer".into(), format!("{BASE}/")),
             ("Upgrade-Insecure-Requests".into(), "1".into()),
         ])
-        // 本地保存到 books/<category>/<book>/<chapter>.txt
-        .pipeline(Arc::new(NovelStorePipeline::new("books")))
+        // 本地保存到 books/<category>/<book>.txt（章节合并单文件）
+        .pipeline(Arc::new(novel_store::NovelStorePipeline::new("books")))
         .pipeline(Arc::new(OutputWriterPipeline::new_append(
             OutputFormat::Jsonl,
             &output,
@@ -170,4 +173,106 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     print_item_summary(&items);
     Ok(())
+}
+
+/// 小说本地保存管道：同一本书的所有章节合并写入一个文件。
+///
+/// 仅本示例使用，故内联在此而非进入库。每个 item 需包含 `category`、`book_title`、
+/// `chapter_title`、`content` 字段；同一本书追加写入 `root/<category>/<book>.txt`，
+/// 章节以 `========== 章节名 ==========` 分隔。
+mod novel_store {
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use wisp::crawl::Item;
+    use wisp::crawl::middleware::{CrawlContext, ItemPipeline};
+    use wisp::error::{Result, WispError};
+
+    pub struct NovelStorePipeline {
+        root: PathBuf,
+        /// book 相对路径 -> 文件缓冲写入器。全书写入需串行治理，用互斥锁保护。
+        writers: Mutex<HashMap<String, std::io::BufWriter<std::fs::File>>>,
+    }
+
+    impl NovelStorePipeline {
+        /// 创建小说保存管道，`root` 为顶层目录（如 `books`）。
+        pub fn new(root: impl Into<PathBuf>) -> Self {
+            Self {
+                root: root.into(),
+                writers: Mutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ItemPipeline for NovelStorePipeline {
+        async fn open(&self, _ctx: &CrawlContext) -> Result<()> {
+            std::fs::create_dir_all(&self.root).map_err(WispError::Io)?;
+            Ok(())
+        }
+
+        async fn process_item(
+            &self,
+            item: Item<Value>,
+            _ctx: &CrawlContext,
+        ) -> Result<Option<Item<Value>>> {
+            let v = item.value();
+            let category = v["category"].as_str().unwrap_or("未分类");
+            let book = v["book_title"].as_str().unwrap_or("未知小说");
+            let chapter = v["chapter_title"].as_str().unwrap_or("未知章节");
+            let content = v["content"].as_str().unwrap_or("");
+
+            let rel_category = sanitize(category);
+            let rel_book = sanitize(book);
+            let dir = self.root.join(&rel_category);
+            std::fs::create_dir_all(&dir).map_err(WispError::Io)?;
+
+            let key = format!("{rel_category}/{rel_book}");
+            let file = dir.join(format!("{rel_book}.txt"));
+
+            let mut writers = self
+                .writers
+                .lock()
+                .map_err(|_| WispError::Io(std::io::Error::other("novel writers poisoned")))?;
+            let writer = writers.entry(key).or_insert_with(|| {
+                let f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file)
+                    .expect("open novel file");
+                std::io::BufWriter::new(f)
+            });
+            writeln!(writer, "========== {chapter} ==========").map_err(WispError::Io)?;
+            writeln!(writer, "{content}").map_err(WispError::Io)?;
+            writeln!(writer).map_err(WispError::Io)?;
+            writer.flush().map_err(WispError::Io)?;
+
+            Ok(Some(item))
+        }
+
+        async fn close(&self, _ctx: &CrawlContext) -> Result<()> {
+            let mut writers = self
+                .writers
+                .lock()
+                .map_err(|_| WispError::Io(std::io::Error::other("novel writers poisoned")))?;
+            for w in writers.values_mut() {
+                w.flush().map_err(WispError::Io)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// 清理路径/文件名的非法字符。
+    fn sanitize(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                c if c.is_control() => '_',
+                c => c,
+            })
+            .collect()
+    }
 }

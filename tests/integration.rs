@@ -125,95 +125,9 @@ async fn test_screenshot_creates_file() {
     browser.close().await.unwrap();
 }
 
-/// Adaptive + crawl integration tests (no network required).
-mod adaptive_test {
-    use std::sync::Arc;
-    use wisp::crawl::AdaptiveTracker;
+/// Node DOM 导航集成测试（无网络依赖）。
+mod node_navigation_test {
     use wisp::parser::Node;
-    use wisp::storage::{MemoryStore, Store};
-
-    const PRODUCT_HTML: &str = r#"
-    <html><body>
-      <div class="products">
-        <div class="product" data-id="1">
-          <h3 class="title">Widget</h3>
-          <span class="price">$9.99</span>
-        </div>
-      </div>
-    </body></html>
-    "#;
-
-    const PRODUCT_HTML_V2: &str = r#"
-    <html><body>
-      <section class="catalog">
-        <article class="item" data-id="1">
-          <h3 class="name">Widget</h3>
-          <span class="cost">$9.99</span>
-        </article>
-      </section>
-    </body></html>
-    "#;
-
-    #[tokio::test]
-    async fn test_end_to_end_adaptive_relocation() {
-        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
-        let url = "https://shop.example.com/products";
-        let tracker = AdaptiveTracker::new(Arc::clone(&store));
-
-        // Phase 1: capture snapshot
-        let doc = Node::from_html(PRODUCT_HTML);
-        let node = tracker
-            .css_adaptive(&doc, ".title", "product-title", url, true, 0.5)
-            .await
-            .unwrap();
-        assert!(node.is_some());
-        assert_eq!(node.unwrap().text(), "Widget");
-
-        // Phase 2: site redesign, CSS fails, adaptive kicks in
-        let doc2 = Node::from_html(PRODUCT_HTML_V2);
-        let node2 = tracker
-            .css_adaptive(&doc2, ".title", "product-title", url, true, 0.5)
-            .await
-            .unwrap();
-        assert!(node2.is_some(), "adaptive should relocate after redesign");
-        assert_eq!(node2.unwrap().text(), "Widget");
-    }
-
-    #[tokio::test]
-    async fn test_dom_navigation_with_adaptive_snapshot() {
-        // 验证 Node 重构后 adaptive 仍正常工作，且 capture 用了导航 API
-        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
-        let url = "https://shop.example.com/products";
-        let tracker = AdaptiveTracker::new(Arc::clone(&store));
-
-        let html = r#"
-        <html><body>
-          <div class="products">
-            <div class="product" data-id="1">
-              <h3 class="title">Widget</h3>
-            </div>
-          </div>
-        </body></html>
-        "#;
-
-        let doc = Node::from_html(html);
-        let node = tracker
-            .css_adaptive(&doc, ".title", "product-title", url, true, 0.5)
-            .await
-            .unwrap();
-        assert!(node.is_some());
-        assert_eq!(node.unwrap().text(), "Widget");
-
-        // 验证 capture 用了导航 API：检查 snapshot 的 ancestor_path 包含 "div.products"
-        let saved = store
-            .load_element(url, "product-title")
-            .await
-            .unwrap()
-            .expect("snapshot should be saved");
-        let ancestor_path: Vec<String> =
-            serde_json::from_value(saved.ancestor_path).expect("ancestor_path 应为字符串数组");
-        assert!(ancestor_path.iter().any(|p| p.contains("products")));
-    }
 
     #[test]
     fn test_node_shares_document_after_select() {

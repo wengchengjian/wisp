@@ -1,15 +1,10 @@
 //! HTML parsing with CSS selectors.
 
-pub mod adaptive;
-pub mod difflib;
 pub mod document;
 pub mod generate;
 mod node;
 mod response_ext;
 
-pub use adaptive::{
-    AdaptiveTracker, DEFAULT_TOLERANCE, ElementSnapshot, relocate_with_snapshot, similarity,
-};
 pub use node::{Node, NodeList};
 pub use response_ext::ResponseExt;
 

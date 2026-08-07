@@ -181,33 +181,11 @@ async fn method_isolation() {
 #[tokio::test]
 async fn namespace_isolation() {
     let store = MockStore::new();
-    // checkpoint 和 element 同名 key 不冲突
+    // checkpoint 保存后可正常读取
     store.save_checkpoint("mykey", b"cp").await.unwrap();
-    let elem = ElementSnapshotRow {
-        tag: "div".into(),
-        attrs: serde_json::Value::Null,
-        text_preview: "hi".into(),
-        ancestor_path: serde_json::Value::Null,
-        sibling_tags: serde_json::Value::Null,
-        position_in_parent: 0,
-        parent_tag: "body".into(),
-        parent_attrs: serde_json::Value::Null,
-        captured_at: 0,
-    };
-    store
-        .save_element("http://x", "mykey", &elem)
-        .await
-        .unwrap();
     assert_eq!(
         store.load_checkpoint("mykey").await.unwrap().unwrap(),
         b"cp"
-    );
-    assert!(
-        store
-            .load_element("http://x", "mykey")
-            .await
-            .unwrap()
-            .is_some()
     );
 }
 
@@ -224,24 +202,5 @@ fn cached_response_json_snapshot() {
     insta::assert_snapshot!(
         "cached_response_json",
         serde_json::to_string_pretty(&resp).unwrap()
-    );
-}
-
-#[test]
-fn element_snapshot_row_json_snapshot() {
-    let row = ElementSnapshotRow {
-        tag: "div".into(),
-        attrs: serde_json::json!({ "class": "card" }),
-        text_preview: "hello".into(),
-        ancestor_path: serde_json::json!(["html", "body", "main"]),
-        sibling_tags: serde_json::json!(["section", "div"]),
-        position_in_parent: 1,
-        parent_tag: "main".into(),
-        parent_attrs: serde_json::json!({ "id": "content" }),
-        captured_at: 1_700_000_001,
-    };
-    insta::assert_snapshot!(
-        "element_snapshot_row_json",
-        serde_json::to_string_pretty(&row).unwrap()
     );
 }

@@ -19,7 +19,7 @@ fn test_mcp_tools_list_via_cli() {
         return;
     };
 
-    // 启动 wisp mcp serve，发 tools/list，验证响应含 5 个工具
+    // 启动 wisp mcp serve，发 tools/list，验证响应含 4 个工具
     let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
     let mut child = Command::new(&bin)
         .args(["mcp", "serve", "--db", ":memory:"])
@@ -46,7 +46,7 @@ fn test_mcp_tools_list_via_cli() {
     let tools = resp["result"]["tools"]
         .as_array()
         .expect("tools should be array");
-    assert_eq!(tools.len(), 5, "应有 5 个工具: {}", stdout);
+    assert_eq!(tools.len(), 4, "应有 4 个工具: {}", stdout);
 }
 
 #[test]

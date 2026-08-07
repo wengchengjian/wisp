@@ -35,26 +35,3 @@ impl CachedResponse {
         }
     }
 }
-
-/// Element snapshot 行（存储层不感知 `parser::Node`）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ElementSnapshotRow {
-    /// 元素标签名。
-    pub tag: String,
-    /// 元素属性。
-    pub attrs: serde_json::Value,
-    /// 文本预览。
-    pub text_preview: String,
-    /// 祖先路径。
-    pub ancestor_path: serde_json::Value,
-    /// 兄弟标签。
-    pub sibling_tags: serde_json::Value,
-    /// 在父节点中的位置。
-    pub position_in_parent: i64,
-    /// 父节点标签。
-    pub parent_tag: String,
-    /// 父节点属性。
-    pub parent_attrs: serde_json::Value,
-    /// 捕获时间（Unix 秒）。
-    pub captured_at: i64,
-}
