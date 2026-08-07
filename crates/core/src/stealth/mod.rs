@@ -6,7 +6,8 @@
 #[derive(Debug, Clone)]
 pub struct TurnstileConfig {
     /// 首次点击前的被动等待（等 Turnstile widget 加载）。
-    /// 默认 500ms。网络慢可调高，快可调低。
+    /// 默认 1200ms。调大可避免第一次点击落在未就绪控件上（预热点击），
+    /// 减少总点击次数；网络慢可再调高，快可调低。
     pub passive_wait_ms: u64,
     /// 点击间隔（第一次点击失败后重试间隔）。
     /// 默认 2000ms。
@@ -35,7 +36,7 @@ pub struct TurnstileConfig {
 impl Default for TurnstileConfig {
     fn default() -> Self {
         Self {
-            passive_wait_ms: 200,
+            passive_wait_ms: 1200,
             click_interval_ms: 1500,
             poll_interval_ms: 100,
             mouse_steps: 3,
