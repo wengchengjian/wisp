@@ -66,20 +66,30 @@ fn find_in_path(names: &[String]) -> Option<PathBuf> {
 /// Resolve the browser executable path from options.
 ///
 /// 查找顺序：
-/// 1. `options.executable_path`（用户显式指定）
-/// 2. Windows 常见安装路径
-/// 3. `which::which` 查找系统 PATH 中的浏览器
-/// 4. **自动下载安装 Chrome for Testing**（若以上都失败）
+/// 1. `options.executable_path`（用户显式指定，信任其版本）
+/// 2. **自动下载/使用 Chrome for Testing**（wreq 支持的版本，保证 TLS 指纹与 HTTP
+///    快速路径一致）。不再主动探测本地浏览器——因为 `chrome --version` 探测在 Windows
+///    上会**拉起本地浏览器进程**（副作用，用户会看到多余浏览器窗口），且本地 Chrome
+///    多为最新版（>wreq 可模拟上限），指纹不自洽。下载版本失败时才回退本地浏览器。
 pub async fn resolve_executable(options: &LaunchOptions) -> Result<PathBuf> {
     if let Some(path) = resolve_explicit_path(options)? {
         return Ok(path);
     }
-    let names = browser_names(options);
-    if let Some(path) = find_windows_browser() {
-        return Ok(path);
+
+    // 优先使用下载的 Chrome for Testing（wreq 支持版本）
+    match crate::installer::ensure_browser_installed().await {
+        Ok(path) => Ok(path),
+        Err(e) => {
+            // 下载失败（如网络不可用）回退到本地浏览器，但不做版本探测（避免拉起进程）
+            tracing::warn!("下载 Chrome for Testing 失败: {e}，回退到本地浏览器");
+            let names = browser_names(options);
+            if let Some(path) = find_windows_browser() {
+                return Ok(path);
+            }
+            if let Some(path) = find_in_path(&names) {
+                return Ok(path);
+            }
+            Err(e)
+        }
     }
-    if let Some(path) = find_in_path(&names) {
-        return Ok(path);
-    }
-    crate::installer::ensure_browser_installed().await
 }

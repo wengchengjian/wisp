@@ -3,7 +3,6 @@
 use super::*;
 
 use crate::cookie::BrowserCookieJar;
-use wisp_core::cookie::Cookie;
 
 impl StealthStrategy {
     pub(super) async fn inject_cf_cookies(&self, page: &mut Page, domain: Option<&str>, url: &str) {
@@ -48,14 +47,14 @@ impl StealthStrategy {
             page.session_id().to_string(),
         );
         let cookies = browser_jar.get(&parsed).await;
-        let cookies_to_save: Vec<Cookie> = cookies
-            .into_iter()
-            .filter(|c| c.name.starts_with("cf_") || c.name.starts_with("__cf"))
-            .collect();
-        if cookies_to_save.is_empty() {
+        // 保存浏览器的全部 cookie（而非仅 cf_*/__cf），否则会漏掉 CF 必带的
+        // `_cfuvid`（Cloudflare Unique Visitor ID，不以 cf_/__cf 开头），
+        // 导致 HTTP 快速路径复用 cookie 时被 CF 拒（403）。
+        // 旧版 banzhu（CfManager）用 `all_cookies`（含 _cfuvid）也证明了需保存完整 cookie。
+        if cookies.is_empty() {
             return;
         }
-        self.cookie_jar.set_batch(cookies_to_save).await;
+        self.cookie_jar.set_batch(cookies).await;
         self.cookie_jar.set_session_ua(domain, Some(&ua_str)).await;
         tracing::info!("BrowserWork[+CF]: {url} 保存 CF cookie（domain={domain}）");
     }

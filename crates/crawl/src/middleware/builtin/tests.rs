@@ -41,7 +41,7 @@ fn make_ctx() -> CrawlContext {
         spider_name: "test".into(),
         fetch_mode: FetchMode::Http,
         max_concurrent: 8,
-        max_pages: 1000,
+        max_pages: Some(1000),
         obey_robots: false,
         pages_crawled: 0,
         errors: 0,

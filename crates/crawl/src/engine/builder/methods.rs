@@ -19,9 +19,9 @@ impl EngineBuilder {
         self
     }
 
-    /// 设置最大爬取页数。
+    /// 设置最大爬取页数（引擎级兜底）。不调用则无上限，由「队列空 + 停止条件」自然结束。
     pub fn max_pages(mut self, n: usize) -> Self {
-        self.config.max_pages = n;
+        self.config.max_pages = Some(n);
         self
     }
 

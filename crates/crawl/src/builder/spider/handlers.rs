@@ -58,13 +58,14 @@ impl SpiderBuilder {
     /// ```
     pub fn on_page<F, Fut>(mut self, label: &str, handler: F) -> Self
     where
-        F: Fn(Page) -> Fut + Clone + Send + Sync + 'static,
+        F: Fn(Page) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Page> + Send + 'static,
     {
+        // 在闭包体（非 async 块）调用 handler 产生 future，async 块只 await 这个
+        // 已产生的 future。这样 async 块不会捕获 handler 本身 → 无需 Clone。
         let boxed: Handler = Arc::new(move |resp| {
-            let handler = handler.clone();
-            let page = Page::new(resp);
-            Box::pin(async move { handler(page).await.finish() })
+            let fut = handler(Page::new(resp));
+            Box::pin(async move { fut.await.finish() })
         });
         self.handlers.insert(label.to_string(), boxed);
         self

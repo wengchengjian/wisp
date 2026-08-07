@@ -24,7 +24,7 @@ mod tests {
             spider_name: "test".into(),
             fetch_mode: FetchMode::Http,
             max_concurrent: 1,
-            max_pages: 1,
+            max_pages: Some(1),
             obey_robots: false,
             pages_crawled: 0,
             errors: 0,

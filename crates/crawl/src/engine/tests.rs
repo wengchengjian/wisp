@@ -15,7 +15,7 @@ fn test_engine_config(fetch_mode: FetchMode, max_retries: u32) -> crate::engine:
         max_retries,
         max_concurrent: 8,
         obey_robots: false,
-        max_pages: 100,
+        max_pages: Some(100),
         max_refetch_rounds: 5,
         checkpoint_interval: 0,
         ..Default::default()

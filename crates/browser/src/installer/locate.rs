@@ -11,6 +11,7 @@ pub(crate) fn get_install_root() -> PathBuf {
 }
 
 /// 在安装目录中查找已安装的浏览器
+#[allow(dead_code)] // 仅测试中使用
 pub(crate) fn find_installed_browser(install_root: &Path) -> Result<Option<PathBuf>> {
     if !install_root.exists() {
         return Ok(None);

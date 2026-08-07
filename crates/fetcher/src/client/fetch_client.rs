@@ -171,7 +171,22 @@ impl FetchClient {
             .headers
             .insert("Cookie".to_string(), cookie_header.clone());
         if let Some(ua) = self.cookie_jar.ua(&url_parsed).await {
-            http_req.headers.insert("User-Agent".to_string(), ua);
+            http_req
+                .headers
+                .insert("User-Agent".to_string(), ua.clone());
+            // 对齐 sec-ch-ua 相关头：wreq 内置 Chrome149 档复用了 v132 的 3-brand
+            // sec-ch-ua（含 `Not)A;Brand`）且平台可能为 macOS，与真实浏览器 2-brand / Windows
+            // 不一致。cf_clearance 绑定签发时的 UA/session，回放时若 sec-ch-ua 与 UA 不匹配，
+            // CF 会判定会话无效而 403。故按 cookie_jar 保存的真实浏览器 UA 动态对齐。
+            if let Some((schua, platform, mobile)) = chrome_sec_ch_ua(&ua) {
+                http_req.headers.insert("sec-ch-ua".to_string(), schua);
+                http_req
+                    .headers
+                    .insert("sec-ch-ua-platform".to_string(), platform);
+                http_req
+                    .headers
+                    .insert("sec-ch-ua-mobile".to_string(), mobile);
+            }
         }
         // 补全浏览器导航特征头，尽量贴近签发 cf_clearance 时的浏览器请求，
         // 减少 CF 因「非浏览器请求」判定 cf_clearance 无效而 403。
@@ -183,6 +198,10 @@ impl FetchClient {
             .headers
             .entry("Sec-Fetch-Mode".to_string())
             .or_insert_with(|| "navigate".to_string());
+        http_req
+            .headers
+            .entry("Sec-Fetch-User".to_string())
+            .or_insert_with(|| "?1".to_string());
         http_req
             .headers
             .entry("Sec-Fetch-Dest".to_string())
@@ -422,6 +441,38 @@ impl FetchClient {
     }
 }
 
+/// 从浏览器 UA 解析 Chrome 主版本与平台，构造与 UA 一致的 sec-ch-ua 头。
+///
+/// wreq 内置 Chrome149 档复用了 v132 的 3-brand sec-ch-ua（含 `Not)A;Brand`），
+/// 且平台默认 macOS，与真实浏览器 2-brand / Windows 不一致。`cf_clearance` 绑定
+/// 签发时的 UA，回放时若 sec-ch-ua 与 UA 不匹配，CF 会判定会话无效。
+///
+/// 返回 `(sec-ch-ua, sec-ch-ua-platform, sec-ch-ua-mobile)`；无法解析版本时返回 `None`。
+fn chrome_sec_ch_ua(ua: &str) -> Option<(String, String, String)> {
+    let major = ua.split("Chrome/").nth(1)?.split('.').next()?;
+    if major.is_empty() {
+        return None;
+    }
+    let platform = if ua.contains("Windows") {
+        "Windows"
+    } else if ua.contains("Mac OS X") {
+        "macOS"
+    } else if ua.contains("Android") {
+        "Android"
+    } else if ua.contains("iPhone") {
+        "iOS"
+    } else if ua.contains("Linux") {
+        "Linux"
+    } else {
+        "Windows"
+    };
+    Some((
+        format!(r#""Chromium";v="{major}", "Google Chrome";v="{major}""#),
+        format!("\"{platform}\""),
+        "?0".to_string(),
+    ))
+}
+
 /// 在 wreq 内置的 Chrome 档位里，选出「≤ major 的最大档位」。
 ///
 /// 通过 Debug 变体名（如 `Chrome149`）解析各档版本号，遍历 `Profile::VARIANTS`，
@@ -555,6 +606,34 @@ mod tests {
         // 低于最低档（Chrome100）：视为选不到，回归 Chrome149 默认。
         assert_eq!(select_chrome_profile(99), Profile::Chrome149);
         assert_eq!(select_chrome_profile(0), Profile::Chrome149);
+    }
+
+    #[test]
+    fn chrome_sec_ch_ua_matches_browser_ua() {
+        // 真实 Chrome 149 Windows：2-brand、平台 Windows、非移动。
+        let (schua, platform, mobile) = chrome_sec_ch_ua(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.155 Safari/537.36",
+        )
+        .expect("应能解析 Windows UA");
+        assert_eq!(schua, r#""Chromium";v="149", "Google Chrome";v="149""#);
+        assert_eq!(platform, "\"Windows\"");
+        assert_eq!(mobile, "?0");
+
+        // macOS 平台识别。
+        let (_, platform, _) = chrome_sec_ch_ua(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+        )
+        .expect("应能解析 macOS UA");
+        assert_eq!(platform, "\"macOS\"");
+
+        // 版本号取自 UA 中的主版本。
+        let (schua, _, _) =
+            chrome_sec_ch_ua("Mozilla/5.0 ... Chrome/120.0.1 Safari/537.36").expect("应能解析版本");
+        assert_eq!(schua, r#""Chromium";v="120", "Google Chrome";v="120""#);
+
+        // 非 Chrome UA 无法解析 → None。
+        assert!(chrome_sec_ch_ua("curl/8.0").is_none());
+        assert!(chrome_sec_ch_ua("").is_none());
     }
 
     /// 集成测试：浏览器启动成功 → 自动探测版本 → 自动选档。

@@ -14,8 +14,8 @@ pub struct EngineConfig {
     pub transport: FetchClientConfig,
     /// 最大并发数。
     pub max_concurrent: usize,
-    /// 最大爬取页数（引擎级兜底）。
-    pub max_pages: usize,
+    /// 最大爬取页数（引擎级兜底）。`None` 表示不限制，由「队列空 + 停止条件」自然结束。
+    pub max_pages: Option<usize>,
     /// 抓取模式。
     pub fetch_mode: FetchMode,
     /// 是否遵守 robots.txt。
@@ -49,7 +49,7 @@ impl Default for EngineConfig {
         Self {
             transport: FetchClientConfig::default(),
             max_concurrent: 8,
-            max_pages: 1000,
+            max_pages: None,
             fetch_mode: FetchMode::Auto,
             obey_robots: true,
             max_retries: 3,

@@ -83,7 +83,9 @@ async fn scheduling_decision(
         .iter()
         .map(|s| s.pages.load(Ordering::SeqCst))
         .sum();
-    if total_pages + ctx.state.run.global_in_flight.load(Ordering::SeqCst) >= ctx.config.max_pages {
+    if let Some(max_pages) = ctx.config.max_pages
+        && total_pages + ctx.state.run.global_in_flight.load(Ordering::SeqCst) >= max_pages
+    {
         return Some(done_or_wait(
             ctx.state.run.global_in_flight.load(Ordering::SeqCst),
         ));

@@ -18,37 +18,64 @@ mod locate;
 mod version;
 
 pub use locate::get_platform_id;
-pub(crate) use locate::{find_installed_browser, get_install_root};
+pub(crate) use locate::{find_executable_in_dir, get_install_root};
 
 use download::download_and_install;
 use std::path::PathBuf;
-use version::get_latest_version;
+use version::{get_latest_version, get_version_for_major};
 use wisp_core::error::Result;
 
-pub async fn ensure_browser_installed() -> Result<PathBuf> {
+/// wreq-util 能精确模拟 TLS 指纹的最高 Chrome 主版本。
+/// HTTP 快速路径（CF 复用）依赖「浏览器版本 ≤ 该值」，否则指纹不自洽会被 CF 拒。
+/// 注：不要设太低（如 137），Chrome for Testing 旧版本会从 Google Cloud Storage
+/// 移除导致无法下载；使用 149（wreq 支持的最高档位，仍可下载）。
+pub const SUPPORTED_CHROME_MAJOR: u32 = 149;
+
+/// 下载并安装指定版本的 Chrome for Testing。
+///
+/// `version` 形如 `149.0.0.0`（Chrome for Testing 版本号）。安装目录带版本号，
+/// 因此不同版本可共存，重复调用不会重复下载同一版本。
+async fn ensure_browser_installed_version(version: &str) -> Result<PathBuf> {
     let install_root = get_install_root();
 
-    // 检查是否已安装
-    if let Some(path) = find_installed_browser(&install_root)? {
-        tracing::debug!("Chrome for Testing 已安装: {}", path.display());
+    // 检查该版本是否已安装
+    let version_dir = install_root.join(format!("chrome-{version}"));
+    if version_dir.exists()
+        && let Some(path) = find_executable_in_dir(&version_dir)?
+    {
+        tracing::debug!("Chrome for Testing {version} 已安装: {}", path.display());
         return Ok(path);
     }
 
     // 下载安装
-    tracing::info!("未检测到浏览器，开始下载 Chrome for Testing...");
-    let version = get_latest_version().await?;
-    let path = download_and_install(&version, &install_root).await?;
-    tracing::info!(
-        "Chrome for Testing {} 安装完成: {}",
-        version,
-        path.display()
-    );
+    tracing::info!("开始下载 Chrome for Testing {version}...");
+    let path = download_and_install(version, &install_root).await?;
+    tracing::info!("Chrome for Testing {version} 安装完成: {}", path.display());
     Ok(path)
+}
+
+/// 自动下载安装浏览器：优先保证版本与 wreq 的 TLS 指纹档位匹配。
+///
+/// 下载 `SUPPORTED_CHROME_MAJOR` 对应版本（如 Chrome 149），确保 CF 快速路径的
+/// TLS 指纹与浏览器一致。查询/下载该版本失败时回退到最新版。
+pub async fn ensure_browser_installed() -> Result<PathBuf> {
+    // 优先使用 wreq 支持的版本，确保 CF 快速路径的 TLS 指纹与浏览器一致
+    match get_version_for_major(SUPPORTED_CHROME_MAJOR).await {
+        Ok(version) => ensure_browser_installed_version(&version).await,
+        Err(e) => {
+            tracing::warn!(
+                "获取 Chrome {} 版本失败: {e}，回退到最新版",
+                SUPPORTED_CHROME_MAJOR
+            );
+            let version = get_latest_version().await?;
+            ensure_browser_installed_version(&version).await
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::locate::find_executable_in_dir;
+    use super::locate::{find_executable_in_dir, find_installed_browser};
     use super::*;
     use std::path::Path;
 

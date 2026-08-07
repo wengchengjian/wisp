@@ -185,19 +185,42 @@ impl Inner {
 #[async_trait]
 impl CookieJar for CfCookieJar {
     async fn get(&self, url: &Url) -> Vec<Cookie> {
-        let Some(domain) = url.host_str() else {
+        let Some(host) = url.host_str() else {
             return Vec::new();
         };
-        // 按完整主机名匹配存在缺陷：父域 cookie 会漏。此处保持与 moka 按写入 key 查询，
-        // 因为 CF 会话以「实际访问的主机」为 key 写入，读取时用同一 host 即可命中。
-        let Some(session) = self.get_session(domain) else {
-            return Vec::new();
-        };
-        session
-            .cookies
-            .iter()
-            .filter_map(|v| Self::value_to_cookie(v, domain))
-            .collect()
+        // 逐级匹配父域：CF 会话 cookie 常存于父域 key（如 `.bz444.com`），
+        // 仅按完整 host（`www.bz444.com`）精确查询会漏，导致 HTTP 快速路径
+        // 复用 cf_clearance 时误判「无 cookie」→ 回退浏览器。
+        // 生成候选 key：www.bz444.com → .bz444.com → bz444.com。
+        let mut candidates: Vec<String> = Vec::new();
+        candidates.push(host.to_string());
+        if !host.starts_with('.') {
+            candidates.push(format!(".{host}"));
+        }
+        // 逐级父域（去掉最左段）
+        let mut parts: Vec<&str> = host.split('.').collect();
+        while parts.len() > 2 {
+            parts.remove(0);
+            let parent = parts.join(".");
+            candidates.push(parent.clone());
+            candidates.push(format!(".{parent}"));
+        }
+
+        let mut merged: Vec<Cookie> = Vec::new();
+        for key in candidates {
+            let Some(session) = self.get_session(&key) else {
+                continue;
+            };
+            for v in &session.cookies {
+                if let Some(c) = Self::value_to_cookie(v, &key) {
+                    // 去重：同 name 只保留第一个匹配（更精确的域优先）
+                    if !merged.iter().any(|m| m.name == c.name) {
+                        merged.push(c);
+                    }
+                }
+            }
+        }
+        merged
     }
 
     async fn set(&self, cookie: Cookie) {

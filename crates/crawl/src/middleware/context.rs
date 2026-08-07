@@ -13,8 +13,8 @@ pub struct CrawlContext {
     pub fetch_mode: FetchMode,
     /// 最大并发数
     pub max_concurrent: usize,
-    /// 最大爬取页数
-    pub max_pages: usize,
+    /// 最大爬取页数（`None` 表示无上限）
+    pub max_pages: Option<usize>,
     /// 是否遵守 robots.txt
     pub obey_robots: bool,
     /// 已爬取页数（只读快照）
