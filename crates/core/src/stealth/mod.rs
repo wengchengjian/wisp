@@ -26,6 +26,10 @@ pub struct TurnstileConfig {
     /// DOM 查询深度（pierce shadow DOM）。
     /// 默认 10。调低更快但可能找不到 iframe。
     pub dom_depth: u32,
+    /// 是否启用拟人化点击（贝塞尔轨迹 + 随机步数/间隔/偏移）。
+    /// 默认 false（快速机械化，适合低检测风险站点）。
+    /// 开启后点击间隔、鼠标移动、按下停留均随机化，降低被 CF 行为检测的概率。
+    pub human_mode: bool,
 }
 
 impl Default for TurnstileConfig {
@@ -38,6 +42,7 @@ impl Default for TurnstileConfig {
             mouse_step_delay_ms: 5,
             click_hold_ms: 30,
             dom_depth: 10,
+            human_mode: false,
         }
     }
 }

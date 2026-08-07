@@ -15,6 +15,20 @@ impl<'a> ChallengeSolver<'a> {
         Self { page }
     }
 
+    /// 轻量判断页面是否仍处于 CF 挑战占位页（"请稍候"/"Just a moment" 等）。
+    ///
+    /// 仅读取 document.title，不走完整 DOM 遍历，降低被 CF 反爬识别的风险。
+    async fn is_pending_challenge(&self) -> Result<bool> {
+        let js = r#"(() => {
+            const t = document.title || '';
+            return t.includes('请稍候') || t.includes('请稍後') ||
+                   t.includes('Just a moment') || t.includes('Attention Required') ||
+                   t.includes('正在进行安全验证');
+        })()"#;
+        let result = self.page.evaluate(js).await?;
+        Ok(result.as_bool().unwrap_or(false))
+    }
+
     /// Detect and automatically solve any Cloudflare challenge.
     /// Loops: re-detects challenge type and handles transitions (e.g., JS shield -> Turnstile).
     pub async fn solve(&self, timeout: Duration) -> Result<()> {
@@ -38,8 +52,18 @@ impl<'a> ChallengeSolver<'a> {
             }
 
             let challenge = self.detect().await?;
+            tracing::info!("solve_cf: challenge={challenge:?}");
             match challenge {
-                ChallengeType::None => return Ok(()),
+                ChallengeType::None => {
+                    // 无已知挑战标记，但页面仍处于"请稍候"占位页时，说明挑战进行中
+                    //（turnstile 尚未渲染 / JS 挑战自动跳转中）。等待其完成后重新检测，
+                    // 避免过早提取挑战占位页。仅轻量读 title，降低被 CF 识别的风险。
+                    if self.is_pending_challenge().await? {
+                        tokio::time::sleep(Duration::from_millis(1500)).await;
+                    } else {
+                        return Ok(());
+                    }
+                }
                 ChallengeType::JsChallenge => {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }

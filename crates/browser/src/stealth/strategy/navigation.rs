@@ -14,8 +14,12 @@ impl StealthStrategy {
     ) -> Result<u16> {
         let t_cf = std::time::Instant::now();
         let solver = ChallengeSolver::new(page);
+        // 将 human_mode 同步到 turnstile 解解决器：开启时使用拟人点击（贝塞尔轨迹、
+        // 随机步数/间隔/偏移），关闭时快速机械化点击。默认按 StealthConfig 传递。
+        let mut turnstile = self.turnstile.clone();
+        turnstile.human_mode = self.human_mode;
         solver
-            .solve_with_config(self.challenge_timeout, &self.turnstile)
+            .solve_with_config(self.challenge_timeout, &turnstile)
             .await?;
         tracing::trace!(elapsed_ms = t_cf.elapsed().as_millis(), url = %url, "solve_cf timing");
         if nav_status == 200 {

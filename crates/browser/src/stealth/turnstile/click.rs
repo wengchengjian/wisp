@@ -6,6 +6,9 @@ use std::time::Duration;
 use crate::page::Page;
 use wisp_core::stealth::TurnstileConfig;
 
+use rand::rngs::{SmallRng, SysRng};
+use rand::{RngExt, SeedableRng};
+
 async fn turnstile_iframe_node(page: &Page, cfg: &TurnstileConfig) -> Option<u32> {
     let doc = page
         .cmd(
@@ -45,7 +48,33 @@ fn turnstile_click_position(round: u32, x: f64, y: f64, h: f64) -> (f64, f64) {
     positions[idx]
 }
 
-async fn move_mouse_to(page: &Page, cfg: &TurnstileConfig, round: u32, cx: f64, cy: f64) {
+/// 拟人化鼠标移动：从随机起点沿贝塞尔曲线移动到目标，步数与每步延迟随机。
+/// 相比固定直线移动，轨迹更接近真实用户，降低被 CF 行为检测的概率。
+async fn move_mouse_human(page: &Page, cx: f64, cy: f64) {
+    let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
+    let start_x = rng.random_range(cx - 90.0..cx - 30.0);
+    let start_y = rng.random_range(cy - 60.0..cy - 10.0);
+    let cp1_x = start_x + (cx - start_x) * 0.3 + rng.random_range(-40.0..40.0);
+    let cp1_y = start_y + (cy - start_y) * 0.3 + rng.random_range(-40.0..40.0);
+    let cp2_x = start_x + (cx - start_x) * 0.7 + rng.random_range(-25.0..25.0);
+    let cp2_y = start_y + (cy - start_y) * 0.7 + rng.random_range(-25.0..25.0);
+    let steps = rng.random_range(10..=22);
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        let x = cubic_bezier(start_x, cp1_x, cp2_x, cx, t);
+        let y = cubic_bezier(start_y, cp1_y, cp2_y, cy, t);
+        let _ = page
+            .cmd(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": x, "y": y, "modifiers": 0, "buttons": 0 }),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(rng.random_range(4..=18))).await;
+    }
+}
+
+/// 快速直线移动（非 human_mode）：固定步数与延迟，追求速度。
+async fn move_mouse_fast(page: &Page, cfg: &TurnstileConfig, round: u32, cx: f64, cy: f64) {
     let steps = cfg.mouse_steps;
     let sx = cx - 50.0 + ((round as f64 % 7.0) - 3.0) * 15.0;
     let sy = cy - 40.0 + ((round as f64 % 5.0) - 2.0) * 12.0;
@@ -65,13 +94,26 @@ async fn move_mouse_to(page: &Page, cfg: &TurnstileConfig, round: u32, cx: f64, 
 }
 
 async fn press_and_release_turnstile(page: &Page, cfg: &TurnstileConfig, cx: f64, cy: f64) {
+    // 拟人化：点击前随机停留，按下位置加随机小偏移，避免每次都精确命中中心。
+    let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
+    if cfg.human_mode {
+        tokio::time::sleep(Duration::from_millis(rng.random_range(40..=160))).await;
+    }
+    let (bx, by) = if cfg.human_mode {
+        (
+            cx + rng.random_range(-2.0..2.0),
+            cy + rng.random_range(-2.0..2.0),
+        )
+    } else {
+        (cx, cy)
+    };
     let _ = page
         .cmd(
             "Input.dispatchMouseEvent",
             json!({
                 "type": "mousePressed",
-                "x": cx,
-                "y": cy,
+                "x": bx,
+                "y": by,
                 "button": "left",
                 "clickCount": 1,
                 "modifiers": 0,
@@ -79,14 +121,19 @@ async fn press_and_release_turnstile(page: &Page, cfg: &TurnstileConfig, cx: f64
             }),
         )
         .await;
-    tokio::time::sleep(Duration::from_millis(cfg.click_hold_ms)).await;
+    let hold = if cfg.human_mode {
+        rng.random_range(45..=110)
+    } else {
+        cfg.click_hold_ms
+    };
+    tokio::time::sleep(Duration::from_millis(hold)).await;
     let _ = page
         .cmd(
             "Input.dispatchMouseEvent",
             json!({
                 "type": "mouseReleased",
-                "x": cx,
-                "y": cy,
+                "x": bx,
+                "y": by,
                 "button": "left",
                 "clickCount": 1,
                 "modifiers": 0,
@@ -120,7 +167,11 @@ pub(super) async fn try_click_turnstile_cdp(
             cy
         );
     }
-    move_mouse_to(page, cfg, round, cx, cy).await;
+    if cfg.human_mode {
+        move_mouse_human(page, cx, cy).await;
+    } else {
+        move_mouse_fast(page, cfg, round, cx, cy).await;
+    }
     press_and_release_turnstile(page, cfg, cx, cy).await;
     true
 }
@@ -181,4 +232,10 @@ fn find_turnstile_node(node: &Value) -> Option<u32> {
         return Some(id);
     }
     None
+}
+
+/// Cubic bezier interpolation used by the human-like mouse path.
+fn cubic_bezier(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+    let u = 1.0 - t;
+    u * u * u * p0 + 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t * p3
 }

@@ -7,16 +7,18 @@ use wisp_core::error::Result;
 const DETECTION_JS: &str = r#"(() => {
     const title = document.title || '';
     const body = document.body ? document.body.innerHTML : '';
-    function findInShadows() {
-        const els = document.querySelectorAll('*');
-        for (const el of els) {
-            if (el.shadowRoot) {
-                if (el.shadowRoot.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
-                    el.shadowRoot.querySelector('iframe[id*="cf-chl"]')) return true;
-            }
+    function hasTurnstileInTree(root) {
+        if (root.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+            root.querySelector('iframe[id*="cf-chl"]') ||
+            root.querySelector('.cf-turnstile')) {
+            return true;
+        }
+        for (const el of root.querySelectorAll('*')) {
+            if (el.shadowRoot && hasTurnstileInTree(el.shadowRoot)) return true;
         }
         return false;
     }
+    function findInShadows() { return hasTurnstileInTree(document); }
     if (document.querySelector('.cf-turnstile') ||
         document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
         document.querySelector('iframe[id*="cf-chl"]') ||

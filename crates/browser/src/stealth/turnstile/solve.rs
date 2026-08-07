@@ -5,6 +5,8 @@ use std::time::Duration;
 use super::check::check_bypassed;
 use super::click::try_click_turnstile_cdp;
 use crate::page::Page;
+use rand::rngs::{SmallRng, SysRng};
+use rand::{RngExt, SeedableRng};
 use wisp_core::error::{Result, WispError};
 use wisp_core::stealth::TurnstileConfig;
 
@@ -53,7 +55,15 @@ async fn maybe_click_turnstile(
     last_click: tokio::time::Instant,
 ) -> (u32, tokio::time::Instant) {
     let passive_wait = Duration::from_millis(cfg.passive_wait_ms);
-    let click_interval = Duration::from_millis(cfg.click_interval_ms);
+    // human_mode 下点击间隔随机化（基准 click_interval 上叠加随机抖动），
+    // 避免固定周期点击被视作自动化行为。
+    let base = Duration::from_millis(cfg.click_interval_ms);
+    let click_interval = if cfg.human_mode {
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG failed");
+        base + Duration::from_millis(rng.random_range(0..=900))
+    } else {
+        base
+    };
     if elapsed <= passive_wait || last_click.elapsed() < click_interval {
         return (click_count, last_click);
     }
