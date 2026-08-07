@@ -114,6 +114,12 @@ impl Page {
         self
     }
 
+    /// 直接加入一个任意 follow 请求（如 POST 请求，无法用链接式 `follow` 表达）。
+    pub fn follow_request(&mut self, req: CrawlRequest) -> &mut Self {
+        self.follows.push(req);
+        self
+    }
+
     /// 已生成的 follows。
     pub fn follows(&self) -> &[CrawlRequest] {
         &self.follows

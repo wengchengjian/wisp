@@ -64,15 +64,17 @@ fn handler_spider() -> ClosureSpider {
         )
         .on_links("detail", &CHAPTER_SELECTORS, "chapter", |page, idx, a| {
             json!({
-                    "title": page.meta_str("title"),
-                    "author": page.select_one(".txt ul:nth-child(1)")
-                        .map(|n| n.text().trim().to_string())
-                        .unwrap_or_default(),
-                    "chapter_title": a.text().trim(),
-                    "chapter_index": idx,
-                })
+                "title": page.meta_str("title"),
+                "author": page.select_one(".txt ul:nth-child(1)")
+                    .map(|n| n.text().trim().to_string())
+                    .unwrap_or_default(),
+                "chapter_title": a.text().trim(),
+                "chapter_index": idx,
+            })
         })
-        .on_content("chapter", &CONTENT_SELECTORS, |text| async move { clean_content(text) })
+        .on_content("chapter", &CONTENT_SELECTORS, |text| async move {
+            clean_content(text)
+        })
         .until(MaxPages(100))
         .build()
 }
@@ -102,7 +104,9 @@ fn multi_spiders() -> Vec<ClosureSpider> {
             .until(MaxPages(10))
             .build(),
         SpiderBuilder::new("chapter")
-            .on_content("chapter", &CONTENT_SELECTORS, |text| async move { clean_content(text) })
+            .on_content("chapter", &CONTENT_SELECTORS, |text| async move {
+                clean_content(text)
+            })
             .build(),
     ]
 }

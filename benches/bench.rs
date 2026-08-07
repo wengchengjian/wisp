@@ -422,13 +422,13 @@ fn novel_spiders(base: &str, book_limit: usize) -> Vec<ClosureSpider> {
         SpiderBuilder::new("detail")
             .on_links("detail", &["a.name"], "chapter", |page, idx, a| {
                 json!({
-                        "title": page.meta_str("title"),
-                        "author": page.select_one(".txt ul:nth-child(1)")
-                            .map(|n| n.text().trim().to_string())
-                            .unwrap_or_default(),
-                        "chapter_title": a.text().trim(),
-                        "chapter_index": idx,
-                    })
+                    "title": page.meta_str("title"),
+                    "author": page.select_one(".txt ul:nth-child(1)")
+                        .map(|n| n.text().trim().to_string())
+                        .unwrap_or_default(),
+                    "chapter_title": a.text().trim(),
+                    "chapter_index": idx,
+                })
             })
             .until(MaxPages(book_limit))
             .build(),

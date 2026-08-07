@@ -74,13 +74,7 @@ impl SpiderBuilder {
     ///
     /// 适合“列表页只负责发现链接”的流程；需要同时产出 item 或诊断时用
     /// [`Self::on_page`]。`meta_for` 为同步闭包，返回该链接携带的 meta。
-    pub fn on_links<F>(
-        self,
-        label: &str,
-        selectors: &[&str],
-        callback: &str,
-        meta_for: F,
-    ) -> Self
+    pub fn on_links<F>(self, label: &str, selectors: &[&str], callback: &str, meta_for: F) -> Self
     where
         F: Clone + Sync + Fn(&Page, usize, &Node) -> Value + Send + 'static,
     {

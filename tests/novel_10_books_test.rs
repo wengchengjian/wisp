@@ -78,31 +78,40 @@ async fn handler_mode_crawls_ten_books() {
     let base = spawn_novel_server().await;
     let spider = SpiderBuilder::new("handler")
         .start_urls(vec![base.clone()])
-        .on_page("default", on_page!(page, {
-            page.follow_links_n(
-                &["a.book"],
-                "detail",
-                10,
-                |_page, _i, a| serde_json::json!({ "title": a.text().trim() }),
-            )
-            .await;
-            page
-        }))
-        .on_page("detail", on_page!(page, {
-            let title = page.meta_str("title");
-            page.follow_links(&["a.chapter"], "chapter", move |_page, _i, a| {
-                serde_json::json!({
+        .on_page(
+            "default",
+            on_page!(page, {
+                page.follow_links_n(
+                    &["a.book"],
+                    "detail",
+                    10,
+                    |_page, _i, a| serde_json::json!({ "title": a.text().trim() }),
+                )
+                .await;
+                page
+            }),
+        )
+        .on_page(
+            "detail",
+            on_page!(page, {
+                let title = page.meta_str("title");
+                page.follow_links(&["a.chapter"], "chapter", move |_page, _i, a| {
+                    serde_json::json!({
                         "title": title,
                         "chapter_title": a.text().trim(),
                     })
-            })
-            .await;
-            page
-        }))
-        .on_page("chapter", on_page!(page, {
-            page.item(serde_json::json!({ "title": page.meta_str("title") }));
-            page
-        }))
+                })
+                .await;
+                page
+            }),
+        )
+        .on_page(
+            "chapter",
+            on_page!(page, {
+                page.item(serde_json::json!({ "title": page.meta_str("title") }));
+                page
+            }),
+        )
         .until(MaxPages(100))
         .build();
     let (_, items) = engine().run(spider).await.unwrap();
@@ -114,35 +123,44 @@ async fn spider_mode_crawls_ten_books() {
     let base = spawn_novel_server().await;
     let home = SpiderBuilder::new("home")
         .start_urls(vec![base.clone()])
-        .on_page("default", on_page!(page, {
-            page.follow_links(
-                &["a.book"],
-                "detail",
-                |_page, _i, a| serde_json::json!({ "title": a.text().trim() }),
-            )
-            .await;
-            page
-        }))
+        .on_page(
+            "default",
+            on_page!(page, {
+                page.follow_links(
+                    &["a.book"],
+                    "detail",
+                    |_page, _i, a| serde_json::json!({ "title": a.text().trim() }),
+                )
+                .await;
+                page
+            }),
+        )
         .build();
     let detail = SpiderBuilder::new("detail")
-        .on_page("detail", on_page!(page, {
-            let title = page.meta_str("title");
-            page.follow_links(&["a.chapter"], "chapter", move |_page, _i, a| {
-                serde_json::json!({
+        .on_page(
+            "detail",
+            on_page!(page, {
+                let title = page.meta_str("title");
+                page.follow_links(&["a.chapter"], "chapter", move |_page, _i, a| {
+                    serde_json::json!({
                         "title": title,
                         "chapter_title": a.text().trim(),
                     })
-            })
-            .await;
-            page
-        }))
+                })
+                .await;
+                page
+            }),
+        )
         .until(MaxPages(10))
         .build();
     let chapter = SpiderBuilder::new("chapter")
-        .on_page("chapter", on_page!(page, {
-            page.item(serde_json::json!({ "title": page.meta_str("title") }));
-            page
-        }))
+        .on_page(
+            "chapter",
+            on_page!(page, {
+                page.item(serde_json::json!({ "title": page.meta_str("title") }));
+                page
+            }),
+        )
         .build();
     let (_, items) = engine()
         .run_many(vec![home, detail, chapter])

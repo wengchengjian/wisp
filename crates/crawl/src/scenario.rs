@@ -168,11 +168,9 @@ pub async fn crawl_site_by_css(
                 )
                 .await;
             } else {
-                page.follow_links(
-                    &["a[href]"],
-                    "default",
-                    |_page, _idx, _a| serde_json::json!(null),
-                )
+                page.follow_links(&["a[href]"], "default", |_page, _idx, _a| {
+                    serde_json::json!(null)
+                })
                 .await;
             }
             page

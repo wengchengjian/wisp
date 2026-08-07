@@ -230,7 +230,9 @@ async fn test_callback_empty_handler_returns_empty() {
     // 只注册 on()，无 "default" handler，无 callback 匹配时返回空
     let spider = SpiderBuilder::new("empty")
         .start_urls(vec!["https://example.com/"])
-        .on("only", |_resp| async move { (vec![json!({"hit": "only"})], vec![]) })
+        .on("only", |_resp| async move {
+            (vec![json!({"hit": "only"})], vec![])
+        })
         .build();
 
     // callback=None，无 "default" handler → 返回空

@@ -237,15 +237,18 @@ async fn run_stops_at_max_pages_by_callback() {
 
     let spider = SpiderBuilder::new("callback-stop")
         .start_urls(vec![url])
-        .on_page("default", on_page!(page, {
-            page.follow_links(
-                &["a"],
-                "detail",
-                |_page, _idx, a| serde_json::json!({ "title": a.text().trim() }),
-            )
-            .await;
-            page
-        }))
+        .on_page(
+            "default",
+            on_page!(page, {
+                page.follow_links(
+                    &["a"],
+                    "detail",
+                    |_page, _idx, a| serde_json::json!({ "title": a.text().trim() }),
+                )
+                .await;
+                page
+            }),
+        )
         .on_page("detail", |page: Page| async move { page })
         .until(MaxPagesByCallback::new("detail", 2))
         .build();

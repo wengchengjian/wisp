@@ -44,9 +44,9 @@ async fn page_basic_flow() {
     page.item(json!({"title": page.meta_str("title")}));
     page.follow_links(&[".missing", ".item"], "detail", |_page, idx, a| {
         json!({
-                "idx": idx,
-                "label": a.text().trim(),
-            })
+            "idx": idx,
+            "label": a.text().trim(),
+        })
     })
     .await;
 
@@ -76,9 +76,9 @@ async fn follow_links_n_only_takes_first_n() {
     let mut page = Page::new(resp);
     page.follow_links_n(&[".book"], "detail", 2, |_page, idx, a| {
         json!({
-                "idx": idx,
-                "title": a.text().trim(),
-            })
+            "idx": idx,
+            "title": a.text().trim(),
+        })
     })
     .await;
 
@@ -92,21 +92,16 @@ async fn follow_links_n_only_takes_first_n() {
 async fn on_page_routes_and_passes_meta() {
     let spider = SpiderBuilder::new("pipeline")
         .start_urls(vec!["https://example.com/".to_string()])
-        .on_page("default", move |mut page: Page| {
-            async move {
-                let title = page
-                    .select_one("h1")
-                    .map(|n| n.text())
-                    .unwrap_or_default();
-                page.item(json!({"page": title}));
-                page.follow_links(&["a"], "detail", |_page, _idx, a| {
-                    json!({
-                            "title": a.text().trim(),
-                        })
+        .on_page("default", move |mut page: Page| async move {
+            let title = page.select_one("h1").map(|n| n.text()).unwrap_or_default();
+            page.item(json!({"page": title}));
+            page.follow_links(&["a"], "detail", |_page, _idx, a| {
+                json!({
+                    "title": a.text().trim(),
                 })
-                .await;
-                page
-            }
+            })
+            .await;
+            page
         })
         .on_page("detail", move |mut page: Page| async move {
             page.item(json!({"title": page.meta_str("title")}));
@@ -144,9 +139,7 @@ async fn on_links_preset_uses_first_nonempty_selector() {
             "default",
             &[".missing", ".item"],
             "detail",
-            |_page, idx, a| {
-                json!({"idx": idx, "text": a.text().trim()})
-            },
+            |_page, idx, a| json!({"idx": idx, "text": a.text().trim()}),
         )
         .build();
 
@@ -180,9 +173,13 @@ fn page_item_value_avoids_reserialization() {
 async fn on_links_n_preset_limits_follows() {
     let spider = SpiderBuilder::new("links-n")
         .start_urls(vec!["https://example.com/".to_string()])
-        .on_links_n("default", &[".item"], "detail", 1, |_page, idx, a| {
-            json!({"idx": idx, "text": a.text().trim()})
-        })
+        .on_links_n(
+            "default",
+            &[".item"],
+            "detail",
+            1,
+            |_page, idx, a| json!({"idx": idx, "text": a.text().trim()}),
+        )
         .build();
 
     let (_, follows) = spider

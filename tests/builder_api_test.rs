@@ -16,7 +16,9 @@ fn test_spider_builder_full_config() {
     let spider = SpiderBuilder::new("full-test")
         .start_urls(vec!["https://a.com/", "https://b.com/"])
         .allowed_domains(vec!["a.com", "b.com"])
-        .on("default", |_resp| async move { (vec![json!({"ok": true})], vec![]) })
+        .on("default", |_resp| async move {
+            (vec![json!({"ok": true})], vec![])
+        })
         .build();
 
     assert_eq!(spider.name(), "full-test");
