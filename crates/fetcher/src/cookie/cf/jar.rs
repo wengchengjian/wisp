@@ -238,11 +238,7 @@ impl CookieJar for CfCookieJar {
             "sameSite": cookie.same_site.clone().unwrap_or_else(|| "Lax".into()),
             "expires": cookie.expires,
         });
-        let mut session = self.get_session(&domain).unwrap_or_else(|| CfSession {
-            cookies: Vec::new(),
-            ua: String::new(),
-            saved_at: chrono::Utc::now().timestamp(),
-        });
+        let mut session = self.get_session(&domain).unwrap_or_default();
         // 替换同名 cookie
         session
             .cookies
@@ -270,13 +266,9 @@ impl CookieJar for CfCookieJar {
                 "sameSite": cookie.same_site.clone().unwrap_or_else(|| "Lax".into()),
                 "expires": cookie.expires,
             });
-            let session = by_domain.entry(domain.clone()).or_insert_with(|| {
-                self.get_session(&domain).unwrap_or_else(|| CfSession {
-                    cookies: Vec::new(),
-                    ua: String::new(),
-                    saved_at: chrono::Utc::now().timestamp(),
-                })
-            });
+            let session = by_domain
+                .entry(domain.clone())
+                .or_insert_with(|| self.get_session(&domain).unwrap_or_default());
             session
                 .cookies
                 .retain(|c| c.get("name").and_then(|n| n.as_str()) != Some(&cookie.name));
@@ -323,14 +315,30 @@ impl CookieJar for CfCookieJar {
     }
 
     async fn set_session_ua(&self, domain: &str, ua: Option<&str>) {
-        let mut session = self.get_session(domain).unwrap_or_else(|| CfSession {
-            cookies: Vec::new(),
-            ua: String::new(),
-            saved_at: chrono::Utc::now().timestamp(),
-        });
+        let mut session = self.get_session(domain).unwrap_or_default();
         match ua {
             Some(ua) => session.ua = ua.to_string(),
             None => session.ua.clear(),
+        }
+        session.saved_at = chrono::Utc::now().timestamp();
+        self.insert_session(domain.to_string(), session);
+    }
+
+    async fn sec_ch_ua(&self, url: &Url) -> Option<String> {
+        let domain = url.host_str()?;
+        let sec_ch_ua = self.get_session(domain)?.sec_ch_ua;
+        if sec_ch_ua.is_empty() {
+            None
+        } else {
+            Some(sec_ch_ua)
+        }
+    }
+
+    async fn set_session_sec_ch_ua(&self, domain: &str, sec_ch_ua: Option<&str>) {
+        let mut session = self.get_session(domain).unwrap_or_default();
+        match sec_ch_ua {
+            Some(v) => session.sec_ch_ua = v.to_string(),
+            None => session.sec_ch_ua.clear(),
         }
         session.saved_at = chrono::Utc::now().timestamp();
         self.insert_session(domain.to_string(), session);

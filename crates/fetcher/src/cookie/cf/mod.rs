@@ -184,6 +184,7 @@ mod tests {
             CfSession {
                 cookies: Vec::new(),
                 ua: "Mozilla/5.0 Chrome/136".into(),
+                sec_ch_ua: String::new(),
                 saved_at: chrono::Utc::now().timestamp(),
             },
         );
@@ -276,6 +277,26 @@ mod tests {
         let jar2 = CfCookieJar::new(dir.path(), Duration::from_mins(1));
         let cookies = jar2.get(&url).await;
         assert_eq!(cookies.len(), 1, "touch 刷新后重新加载应保留会话");
+    }
+
+    #[tokio::test]
+    async fn cf_sec_ch_ua_roundtrip() {
+        let (jar, _dir) = make_jar();
+        let url = make_url("https://example.com/");
+        assert!(jar.sec_ch_ua(&url).await.is_none(), "无会话时返回 None");
+
+        jar.set_session_sec_ch_ua(
+            "example.com",
+            Some(r#""Not/A)Brand";v="99", "Chromium";v="148""#),
+        )
+        .await;
+        assert_eq!(
+            jar.sec_ch_ua(&url).await.as_deref(),
+            Some(r#""Not/A)Brand";v="99", "Chromium";v="148""#)
+        );
+
+        jar.set_session_sec_ch_ua("example.com", None).await;
+        assert!(jar.sec_ch_ua(&url).await.is_none(), "清空后返回 None");
     }
 
     /// touch 对未命中 URL（无对应会话）应静默 no-op。

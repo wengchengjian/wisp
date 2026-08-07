@@ -89,6 +89,25 @@ impl CookieJar for CompositeCookieJar {
         let _ = (domain, ua);
     }
 
+    async fn sec_ch_ua(&self, url: &Url) -> Option<String> {
+        #[cfg(feature = "stealth")]
+        {
+            return self.cf.sec_ch_ua(url).await;
+        }
+        #[cfg(not(feature = "stealth"))]
+        {
+            let _ = url;
+            None
+        }
+    }
+
+    async fn set_session_sec_ch_ua(&self, domain: &str, sec_ch_ua: Option<&str>) {
+        #[cfg(feature = "stealth")]
+        self.cf.set_session_sec_ch_ua(domain, sec_ch_ua).await;
+        #[cfg(not(feature = "stealth"))]
+        let _ = (domain, sec_ch_ua);
+    }
+
     async fn touch(&self, url: &Url) {
         // HTTP jar（wreq）无 TTL，不需要续期；只需续期 CF 会话的 moka TTL。
         #[cfg(feature = "stealth")]

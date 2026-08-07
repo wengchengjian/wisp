@@ -174,19 +174,33 @@ impl FetchClient {
             http_req
                 .headers
                 .insert("User-Agent".to_string(), ua.clone());
-            // 对齐 sec-ch-ua 相关头：wreq 内置档位默认平台可能是 macOS，与真实浏览器
-            // Windows 不一致。cf_clearance 绑定签发时的 UA/session，回放时若 sec-ch-ua 与
-            // UA 不匹配，CF 会判定会话无效而 403。故按 cookie_jar 保存的真实浏览器 UA
-            // 动态对齐（3-brand、Google Chrome 在前，与真实 Chrome 119+ 一致）。
-            if let Some((schua, platform, mobile)) = chrome_sec_ch_ua(&ua) {
+            // sec-ch-ua 必须用浏览器签发的真实值：CF 在签发 cf_clearance 时绑定浏览器
+            // 实际发送的 Client Hints，回放时若 brand 顺序/GREASE 值不一致会被判定会话
+            // 无效（403）。不能手动构造（不同 Chrome 版本/平台值不同），须用 Stealth 侧
+            // 捕获的真实 sec-ch-ua（保存于 cf jar）。
+            if let Some(schua) = self.cookie_jar.sec_ch_ua(&url_parsed).await {
                 http_req.headers.insert("sec-ch-ua".to_string(), schua);
-                http_req
-                    .headers
-                    .insert("sec-ch-ua-platform".to_string(), platform);
-                http_req
-                    .headers
-                    .insert("sec-ch-ua-mobile".to_string(), mobile);
             }
+            // 平台/移动标识在持久化会话中未单独保存；用 UA 推断，保持与浏览器一致。
+            let platform = if ua.contains("Windows") {
+                "Windows"
+            } else if ua.contains("Mac OS X") {
+                "macOS"
+            } else if ua.contains("Android") {
+                "Android"
+            } else if ua.contains("iPhone") {
+                "iOS"
+            } else if ua.contains("Linux") {
+                "Linux"
+            } else {
+                "Windows"
+            };
+            http_req
+                .headers
+                .insert("sec-ch-ua-platform".to_string(), format!("\"{platform}\""));
+            http_req
+                .headers
+                .insert("sec-ch-ua-mobile".to_string(), "?0".to_string());
         }
         // 补全浏览器导航特征头，尽量贴近签发 cf_clearance 时的浏览器请求，
         // 减少 CF 因「非浏览器请求」判定 cf_clearance 无效而 403。
@@ -442,40 +456,6 @@ impl FetchClient {
     }
 }
 
-/// 从浏览器 UA 解析 Chrome 主版本与平台，构造与 UA 一致的 sec-ch-ua 头。
-///
-/// `cf_clearance` 绑定签发时的 UA，回放时若 sec-ch-ua 与 UA 不匹配，CF 会判定会话无效。
-/// 真实 Chrome 119+ 的 sec-ch-ua 是 3-brand 且 `"Google Chrome"` 在前（如
-/// `"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"`），
-/// 与 wreq 内置 Chrome149 档一致。旧版 wisp 曾误用 2-brand（`Chromium` 在前），
-/// 与真实浏览器不符导致 HTTP 复用 403，此处统一修正为 3-brand。
-///
-/// 返回 `(sec-ch-ua, sec-ch-ua-platform, sec-ch-ua-mobile)`；无法解析版本时返回 `None`。
-fn chrome_sec_ch_ua(ua: &str) -> Option<(String, String, String)> {
-    let major = ua.split("Chrome/").nth(1)?.split('.').next()?;
-    if major.is_empty() {
-        return None;
-    }
-    let platform = if ua.contains("Windows") {
-        "Windows"
-    } else if ua.contains("Mac OS X") {
-        "macOS"
-    } else if ua.contains("Android") {
-        "Android"
-    } else if ua.contains("iPhone") {
-        "iOS"
-    } else if ua.contains("Linux") {
-        "Linux"
-    } else {
-        "Windows"
-    };
-    Some((
-        format!(r#""Google Chrome";v="{major}", "Chromium";v="{major}", "Not)A;Brand";v="24""#),
-        format!("\"{platform}\""),
-        "?0".to_string(),
-    ))
-}
-
 #[cfg(feature = "browser")]
 impl Drop for FetchClient {
     fn drop(&mut self) {
@@ -557,40 +537,6 @@ mod tests {
             Profile::Chrome148,
             "CF 快速路径应固定 Chrome148，不做动态选档"
         );
-    }
-
-    #[test]
-    fn chrome_sec_ch_ua_matches_browser_ua() {
-        // 真实 Chrome 149 Windows：3-brand（Google Chrome 在前）、平台 Windows、非移动。
-        let (schua, platform, mobile) = chrome_sec_ch_ua(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.155 Safari/537.36",
-        )
-        .expect("应能解析 Windows UA");
-        assert_eq!(
-            schua,
-            r#""Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24""#
-        );
-        assert_eq!(platform, "\"Windows\"");
-        assert_eq!(mobile, "?0");
-
-        // macOS 平台识别。
-        let (_, platform, _) = chrome_sec_ch_ua(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
-        )
-        .expect("应能解析 macOS UA");
-        assert_eq!(platform, "\"macOS\"");
-
-        // 版本号取自 UA 中的主版本。
-        let (schua, _, _) =
-            chrome_sec_ch_ua("Mozilla/5.0 ... Chrome/120.0.1 Safari/537.36").expect("应能解析版本");
-        assert_eq!(
-            schua,
-            r#""Google Chrome";v="120", "Chromium";v="120", "Not)A;Brand";v="24""#
-        );
-
-        // 非 Chrome UA 无法解析 → None。
-        assert!(chrome_sec_ch_ua("curl/8.0").is_none());
-        assert!(chrome_sec_ch_ua("").is_none());
     }
 
     /// 集成测试：浏览器启动成功 → 固定指纹档位不变（Chrome148）。

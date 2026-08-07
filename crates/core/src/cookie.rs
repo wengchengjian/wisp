@@ -118,6 +118,21 @@ pub trait CookieJar: Send + Sync {
         let _ = (domain, ua);
     }
 
+    /// 获取与 cookie 会话绑定的 sec-ch-ua 头（如 CF 会话）。
+    ///
+    /// 返回浏览器实际发送的完整 sec-ch-ua 值（如 `"Not/A)Brand";v="99", "Chromium";v="148"`）。
+    /// 默认返回 `None`；`CfCookieJar` 返回签发 cookie 时浏览器捕获的真实值，
+    /// 供 HTTP 快速路径保持 cookie 与 Client Hints 一致性。
+    async fn sec_ch_ua(&self, url: &Url) -> Option<String> {
+        let _ = url;
+        None
+    }
+
+    /// 设置与某域名 cookie 会话绑定的 sec-ch-ua 头（默认 no-op）。
+    async fn set_session_sec_ch_ua(&self, domain: &str, sec_ch_ua: Option<&str>) {
+        let _ = (domain, sec_ch_ua);
+    }
+
     /// 刷新某 URL 对应会话的活跃时间（默认 no-op）。
     ///
     /// 用途：HTTP 快速路径携带 CF cookie 复用成功时续期会话 TTL，避免 jar 的
