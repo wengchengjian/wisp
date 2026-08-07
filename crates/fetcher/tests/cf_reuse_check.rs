@@ -6,16 +6,26 @@
 use std::time::Duration;
 
 use wisp_fetcher::{FetchClient, FetchClientConfig, FetchMode, Request};
+use wisp_http::Config as HttpConfig;
 
 #[tokio::test]
 async fn check_cf_reuse_on_bz444() {
     // 使用 banzhu 的 cf_sessions.json（含 bz444 的 cf_clearance）
-    let mut config = FetchClientConfig::default();
-    config.cf_data_dir = std::path::PathBuf::from("f:/project/banzhu-rs/wisp-data");
-    config.http.timeout = Duration::from_secs(30);
-    // cf_sessions.json 里的 cookie 可能已保存一段时间；调大 TTL 以加载未过期的旧 cookie，
-    // 验证「父域匹配 + 指纹对齐」后 HTTP 复用是否真正通过。
-    config.cf_cookie_ttl = Duration::from_secs(7200); // 2 小时
+    let config = FetchClientConfig {
+        cf_data_dir: std::path::PathBuf::from("f:/project/banzhu-rs/wisp-data"),
+        http: HttpConfig {
+            timeout: Duration::from_secs(30),
+            // cf_clearance 绑定签发时的出口 IP：浏览器通过 127.0.0.1:7897 签发，
+            // HTTP 复用必须走同一代理，否则 CF 判定 IP 不匹配而 403。
+            proxy: Some("http://127.0.0.1:7897".to_string()),
+            ..Default::default()
+        },
+        // cf_sessions.json 里的 cookie 可能已保存一段时间；调大 TTL 以加载未过期的旧 cookie，
+        // 验证「父域匹配 + 指纹对齐」后 HTTP 复用是否真正通过。
+        // cf_clearance 本身未过期（expires 是未来时间），但 TTL 需 > saved_at_age 才能加载。
+        cf_cookie_ttl: Duration::from_secs(12 * 3600), // 12 小时，确保加载
+        ..Default::default()
+    };
 
     // 初始化 tracing，让 try_http_with_session_cookie 打印实际 cookie/UA/status
     let _ = tracing_subscriber::fmt()
