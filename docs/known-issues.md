@@ -193,10 +193,9 @@
 
 
 ### P2：按风险与 ROI 推进
-1. cargo-fuzz：先覆盖 HTML parser、robots、URL、SSRF、proxy config，1-2 个 target 起步。
-2. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
-3. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
-4. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
+1. cargo-mutants：只对核心引擎做突变测试，评估现有测试有效性；不纳入常规 CI。
+2. 性能工具：已有 Criterion bench，补充 `profile.bench`、Codspeed/Criterion 对比基线，按需使用 cargo-flamegraph / cargo-llvm-lines。
+3. MSRV 验证：用 cargo-msrv 测出真实最低版本，再对齐 10 个 crate 的 `rust-version`，不只依赖声明值。
 
 ### 明确不采纳
 - cargo-semver-checks / cargo-public-api：wisp 仍处快速 API 变动阶段，暂不做。
