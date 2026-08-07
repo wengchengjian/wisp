@@ -18,7 +18,9 @@ mod locate;
 mod version;
 
 pub use locate::get_platform_id;
-pub(crate) use locate::{find_executable_in_dir, get_install_root};
+pub(crate) use locate::{
+    find_executable_in_dir, find_installed_browser_for_major, get_install_root,
+};
 
 use download::download_and_install;
 use std::path::PathBuf;
@@ -56,21 +58,37 @@ async fn ensure_browser_installed_version(version: &str) -> Result<PathBuf> {
 
 /// 自动下载安装浏览器：优先保证版本与 wreq 的 TLS 指纹档位匹配。
 ///
-/// 下载 `SUPPORTED_CHROME_MAJOR` 对应版本（如 Chrome 149），确保 CF 快速路径的
-/// TLS 指纹与浏览器一致。查询/下载该版本失败时回退到最新版。
+/// 目标主版本由环境变量 `WISP_CHROME_MAJOR` 指定（如 `132`/`147`），未设置时用
+/// `SUPPORTED_CHROME_MAJOR`。优先复用 `.browsers/` 中已安装的同主版本，避免重新下载
+/// 该主版本下的其他小版本；查询/下载失败时回退到最新版。
 pub async fn ensure_browser_installed() -> Result<PathBuf> {
-    // 优先使用 wreq 支持的版本，确保 CF 快速路径的 TLS 指纹与浏览器一致
-    match get_version_for_major(SUPPORTED_CHROME_MAJOR).await {
+    let major = chrome_major_from_env();
+    let install_root = get_install_root();
+
+    // 优先复用已安装的指定主版本（如 132/147），避免重新下载该主版本下的其他小版本。
+    if let Some(path) = find_installed_browser_for_major(&install_root, major)? {
+        tracing::debug!("复用已安装的 Chrome {major}: {}", path.display());
+        return Ok(path);
+    }
+
+    match get_version_for_major(major).await {
         Ok(version) => ensure_browser_installed_version(&version).await,
         Err(e) => {
-            tracing::warn!(
-                "获取 Chrome {} 版本失败: {e}，回退到最新版",
-                SUPPORTED_CHROME_MAJOR
-            );
+            tracing::warn!("获取 Chrome {major} 版本失败: {e}，回退到最新版");
             let version = get_latest_version().await?;
             ensure_browser_installed_version(&version).await
         }
     }
+}
+
+/// 目标 Chrome 主版本：优先取环境变量 `WISP_CHROME_MAJOR`（如 `132`/`147`），
+/// 未设置或非法时回退到 `SUPPORTED_CHROME_MAJOR`。
+fn chrome_major_from_env() -> u32 {
+    std::env::var("WISP_CHROME_MAJOR")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|m| *m >= 100)
+        .unwrap_or(SUPPORTED_CHROME_MAJOR)
 }
 
 #[cfg(test)]
