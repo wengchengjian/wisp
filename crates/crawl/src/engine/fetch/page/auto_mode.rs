@@ -77,12 +77,19 @@ pub(super) async fn fetch_stealth_override(
     super::fetch_page_inner(fetch_client, req, FetchMode::Stealth).await
 }
 
-/// Auto 模式：先尝试 HTTP+cookie，再查规则缓存，最后 HTTP 先行等待中间件升级。
+/// Auto 模式：先尝试 HTTP+cookie，再查规则缓存，最后按需走浏览器挑战。
+///
+/// 首次访问（无 cookie 也无规则缓存）**直接走 Stealth**，而非先发裸 HTTP 再等
+/// StealthUpgrade 升级：裸 HTTP 的 wreq TLS/HTTP2 指纹会被 CF 标记为自动化请求，
+/// 污染本 IP/UA 的信任评分（HTTP 前置请求污染），导致后续 Stealth 挑战难以通过。
+/// 直接走 Stealth 通过后 cookie 写入共享 seam，后续请求命中 `try_http_with_cf_cookie`
+/// 即可降级回 HTTP 复用。
 pub(super) async fn fetch_auto(
     fetch_client: &wisp_fetcher::FetchClient,
     req: &CrawlRequest,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
 ) -> Result<Response> {
+    // 1. 快速路径：已有 CF 会话 cookie → HTTP 复用（降级）。
     if let Some(resp) = try_http_with_cf_cookie(fetch_client, req).await? {
         tracing::info!(
             "AutoMode: HTTP+cookie 成功 (status={}), 跳过浏览器",
@@ -90,10 +97,12 @@ pub(super) async fn fetch_auto(
         );
         return Ok(resp);
     }
+    // 2. 规则缓存：该 URL 已学习明确模式 → 直接按该模式抓取。
     if let Some(cached_mode) = rule_engine.lock().await.resolve(&req.url) {
         return super::fetch_page_inner(fetch_client, req, cached_mode).await;
     }
-    super::fetch_page_inner(fetch_client, req, FetchMode::Http).await
+    // 3. 首次访问：直接走 Stealth，跳过 HTTP 前置请求，避免污染 CF 信任评分。
+    super::fetch_page_inner(fetch_client, req, FetchMode::Stealth).await
 }
 
 #[cfg(test)]

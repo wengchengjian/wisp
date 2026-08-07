@@ -43,8 +43,12 @@ impl CookieJar for CompositeCookieJar {
         let mut cookies = self.http.get(url).await;
         #[cfg(feature = "stealth")]
         cookies.extend(self.cf.get(url).await);
+        // 按 cookie 名去重：同一 cf_clearance 可能因父域匹配（.bz444 与 www.bz444）
+        // 存在于不同 domain 的 session，若按 (name,domain,path) 去重会漏判，导致
+        // Cookie 头重复拼接（如 `cf_clearance=x; cf_clearance=x`）。HTTP Cookie 按
+        // 名读取，同名只应保留一个。
         let mut seen = HashSet::new();
-        cookies.retain(|c| seen.insert((c.name.clone(), c.domain.clone(), c.path.clone())));
+        cookies.retain(|c| seen.insert(c.name.clone()));
         cookies
     }
 

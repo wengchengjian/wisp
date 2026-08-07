@@ -423,8 +423,10 @@ impl FetchClient {
         let launch_options = LaunchOptions {
             headless: config.headless && !config.force_headed_offscreen,
             args: if config.force_headed_offscreen {
+                // 临时诊断：窗口显示在屏幕可见区域，便于观察 Turnstile 交互。
+                // 生产环境应改回 `--window-position=-32000,-32000`（offscreen）。
                 vec![
-                    "--window-position=-32000,-32000".to_string(),
+                    "--window-position=300,100".to_string(),
                     "--window-size=1280,800".to_string(),
                 ]
             } else {

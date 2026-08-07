@@ -13,6 +13,9 @@ async fn check_cf_reuse_on_bz444() {
     let mut config = FetchClientConfig::default();
     config.cf_data_dir = std::path::PathBuf::from("f:/project/banzhu-rs/wisp-data");
     config.http.timeout = Duration::from_secs(30);
+    // cf_sessions.json 里的 cookie 可能已保存一段时间；调大 TTL 以加载未过期的旧 cookie，
+    // 验证「父域匹配 + 指纹对齐」后 HTTP 复用是否真正通过。
+    config.cf_cookie_ttl = Duration::from_secs(7200); // 2 小时
 
     // 初始化 tracing，让 try_http_with_session_cookie 打印实际 cookie/UA/status
     let _ = tracing_subscriber::fmt()
