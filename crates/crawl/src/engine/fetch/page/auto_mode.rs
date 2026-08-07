@@ -54,10 +54,6 @@ pub(super) async fn fetch_stealth_override(
     req: &CrawlRequest,
     cf_domain_locks: &dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 ) -> Result<Response> {
-    let domain = url::Url::parse(&req.url)
-        .ok()
-        .and_then(|u| u.host_str().map(|s| s.to_string()))
-        .unwrap_or_default();
     if let Some(resp) = try_http_with_cf_cookie(fetch_client, req).await? {
         tracing::info!(
             "AutoMode: 域名锁双重检测 - cookie已存在，HTTP成功 (status={})",
@@ -65,11 +61,28 @@ pub(super) async fn fetch_stealth_override(
         );
         return Ok(resp);
     }
+    fetch_stealth_locked(fetch_client, req, cf_domain_locks).await
+}
+
+/// 域名锁保护下的 Stealth 抓取：加锁 → 锁内再试 HTTP+cookie（等待期间其他并发任务
+/// 可能已完成挑战并写入共享 seam）→ 浏览器挑战。
+///
+/// Auto 首访 / 规则缓存命中 Stealth / Stealth override 三条路径统一走这里，
+/// 保证同一域名的浏览器挑战串行化，避免并发启动多个 Stealth 挑战被 CF 风控。
+async fn fetch_stealth_locked(
+    fetch_client: &wisp_fetcher::FetchClient,
+    req: &CrawlRequest,
+    cf_domain_locks: &dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+) -> Result<Response> {
+    let domain = url::Url::parse(&req.url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+        .unwrap_or_default();
     let lock = cf_domain_lock(cf_domain_locks, &domain);
     let _guard = lock.lock().await;
     if let Some(resp) = try_http_with_cf_cookie(fetch_client, req).await? {
         tracing::info!(
-            "AutoMode: 域名锁等待后 - HTTP+cookie 成功 (status={})",
+            "AutoMode: 域名锁等待后 - HTTP+cookie 成功 (status={}), 跳过浏览器",
             resp.status
         );
         return Ok(resp);
@@ -84,10 +97,14 @@ pub(super) async fn fetch_stealth_override(
 /// 污染本 IP/UA 的信任评分（HTTP 前置请求污染），导致后续 Stealth 挑战难以通过。
 /// 直接走 Stealth 通过后 cookie 写入共享 seam，后续请求命中 `try_http_with_cf_cookie`
 /// 即可降级回 HTTP 复用。
+///
+/// 需要浏览器挑战的路径（首访 / 规则缓存命中 Stealth）统一经
+/// [`fetch_stealth_locked`] 域名锁串行化，避免并发启动多个 Stealth 挑战触发 CF 风控。
 pub(super) async fn fetch_auto(
     fetch_client: &wisp_fetcher::FetchClient,
     req: &CrawlRequest,
     rule_engine: &Mutex<auto::ModeRuleEngine>,
+    cf_domain_locks: &dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 ) -> Result<Response> {
     // 1. 快速路径：已有 CF 会话 cookie → HTTP 复用（降级）。
     if let Some(resp) = try_http_with_cf_cookie(fetch_client, req).await? {
@@ -99,10 +116,13 @@ pub(super) async fn fetch_auto(
     }
     // 2. 规则缓存：该 URL 已学习明确模式 → 直接按该模式抓取。
     if let Some(cached_mode) = rule_engine.lock().await.resolve(&req.url) {
+        if cached_mode == FetchMode::Stealth {
+            return fetch_stealth_locked(fetch_client, req, cf_domain_locks).await;
+        }
         return super::fetch_page_inner(fetch_client, req, cached_mode).await;
     }
-    // 3. 首次访问：直接走 Stealth，跳过 HTTP 前置请求，避免污染 CF 信任评分。
-    super::fetch_page_inner(fetch_client, req, FetchMode::Stealth).await
+    // 3. 首次访问：经域名锁走 Stealth，跳过 HTTP 前置请求，避免污染 CF 信任评分。
+    fetch_stealth_locked(fetch_client, req, cf_domain_locks).await
 }
 
 #[cfg(test)]

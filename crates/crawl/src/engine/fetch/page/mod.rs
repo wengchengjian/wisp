@@ -27,7 +27,7 @@ pub(crate) async fn fetch_page(
             fetch_page_inner(fetch_client, req, override_mode).await?
         }
     } else if mode == FetchMode::Auto {
-        auto_mode::fetch_auto(fetch_client, req, rule_engine).await?
+        auto_mode::fetch_auto(fetch_client, req, rule_engine, cf_domain_locks).await?
     } else {
         fetch_page_inner(fetch_client, req, mode).await?
     };

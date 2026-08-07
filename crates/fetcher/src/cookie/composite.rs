@@ -88,4 +88,12 @@ impl CookieJar for CompositeCookieJar {
         #[cfg(not(feature = "stealth"))]
         let _ = (domain, ua);
     }
+
+    async fn touch(&self, url: &Url) {
+        // HTTP jar（wreq）无 TTL，不需要续期；只需续期 CF 会话的 moka TTL。
+        #[cfg(feature = "stealth")]
+        self.cf.touch(url).await;
+        #[cfg(not(feature = "stealth"))]
+        let _ = url;
+    }
 }

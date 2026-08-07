@@ -117,6 +117,14 @@ pub trait CookieJar: Send + Sync {
     async fn set_session_ua(&self, domain: &str, ua: Option<&str>) {
         let _ = (domain, ua);
     }
+
+    /// 刷新某 URL 对应会话的活跃时间（默认 no-op）。
+    ///
+    /// 用途：HTTP 快速路径携带 CF cookie 复用成功时续期会话 TTL，避免 jar 的
+    /// TTL（如 30 分钟）先于 cookie 实际有效期过期，导致 UA/sec-ch-ua 对齐信息
+    /// 丢失、无谓回退 Stealth 重新挑战。`CfCookieJar` 覆盖实现为更新 `saved_at`
+    /// 并重新插入以重启 moka TTL。
+    async fn touch(&self, _url: &Url) {}
 }
 
 /// 测试用 MockCookieJar — 内存实现，记录所有操作。

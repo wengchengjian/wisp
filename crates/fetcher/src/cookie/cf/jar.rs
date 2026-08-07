@@ -182,32 +182,34 @@ impl Inner {
     }
 }
 
+/// 生成候选 session key：完整 host → 前缀点 → 逐级父域（含前缀点）。
+///
+/// CF 会话 cookie 常存于父域 key（如 `.bz444.com`），仅按完整 host
+/// （`www.bz444.com`）精确查询会漏。`get` / `touch` 等按 URL 定位会话时共用。
+fn candidate_keys(host: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    candidates.push(host.to_string());
+    if !host.starts_with('.') {
+        candidates.push(format!(".{host}"));
+    }
+    let mut parts: Vec<&str> = host.split('.').collect();
+    while parts.len() > 2 {
+        parts.remove(0);
+        let parent = parts.join(".");
+        candidates.push(parent.clone());
+        candidates.push(format!(".{parent}"));
+    }
+    candidates
+}
+
 #[async_trait]
 impl CookieJar for CfCookieJar {
     async fn get(&self, url: &Url) -> Vec<Cookie> {
         let Some(host) = url.host_str() else {
             return Vec::new();
         };
-        // 逐级匹配父域：CF 会话 cookie 常存于父域 key（如 `.bz444.com`），
-        // 仅按完整 host（`www.bz444.com`）精确查询会漏，导致 HTTP 快速路径
-        // 复用 cf_clearance 时误判「无 cookie」→ 回退浏览器。
-        // 生成候选 key：www.bz444.com → .bz444.com → bz444.com。
-        let mut candidates: Vec<String> = Vec::new();
-        candidates.push(host.to_string());
-        if !host.starts_with('.') {
-            candidates.push(format!(".{host}"));
-        }
-        // 逐级父域（去掉最左段）
-        let mut parts: Vec<&str> = host.split('.').collect();
-        while parts.len() > 2 {
-            parts.remove(0);
-            let parent = parts.join(".");
-            candidates.push(parent.clone());
-            candidates.push(format!(".{parent}"));
-        }
-
         let mut merged: Vec<Cookie> = Vec::new();
-        for key in candidates {
+        for key in candidate_keys(host) {
             let Some(session) = self.get_session(&key) else {
                 continue;
             };
@@ -292,6 +294,25 @@ impl CookieJar for CfCookieJar {
         if let Some(domain) = url.host_str() {
             self.inner.mem.invalidate(domain);
             self.schedule_flush();
+        }
+    }
+
+    /// 续期会话：更新命中会话的 `saved_at` 并重新插入，重启 moka TTL。
+    ///
+    /// HTTP 快速路径复用 CF cookie 成功后调用，使会话 TTL 随实际活跃续期，
+    /// 避免 jar TTL（30 分钟）先于 cookie 真实有效期过期而丢失 UA/sec-ch-ua
+    /// 对齐信息、无谓回退 Stealth 重新挑战。
+    async fn touch(&self, url: &Url) {
+        let Some(host) = url.host_str() else {
+            return;
+        };
+        for key in candidate_keys(host) {
+            let Some(mut session) = self.get_session(&key) else {
+                continue;
+            };
+            session.saved_at = chrono::Utc::now().timestamp();
+            self.insert_session(key, session);
+            return;
         }
     }
 
