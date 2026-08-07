@@ -132,6 +132,8 @@ async fn test_engine_run_returns_items() {
         .fetch_client_config(fast_fetch_config())
         .max_pages(1)
         .obey_robots(false)
+        // 必须指定 FetchMode::Http，否则默认 Auto 模式会尝试启动 Chrome 嗅探，导致卡住
+        .fetch_mode(FetchMode::Http)
         .build()
         .unwrap();
     let (stats, items) = engine.run(PSpider { url: base }).await.unwrap();

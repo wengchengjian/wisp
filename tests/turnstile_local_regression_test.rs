@@ -60,6 +60,7 @@ async fn turnstile_solver_clicks_local_widget() {
         mouse_step_delay_ms: 1,
         click_hold_ms: 20,
         dom_depth: 10,
+        human_mode: false,
     };
     let resp = Fetcher::stealth()
         .headless(true)
