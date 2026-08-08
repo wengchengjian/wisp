@@ -51,10 +51,41 @@ impl EngineBuilder {
     }
 
     /// 设置检查点存储（定期保存爬取进度）。
+    ///
+    /// `interval` 为页数间隔（每 N 个完成页面保存一次）。默认已在 [`Engine::infra`] 启用。
     pub fn checkpoint(mut self, s: Arc<dyn wisp_storage::Store>, interval: usize) -> Self {
         self.draft.checkpoint_store = Some(s);
         self.config.checkpoint_interval = interval;
         self.config.checkpoint_enabled = true;
+        self
+    }
+
+    /// 设置检查点存储，同时指定页数间隔与时间间隔（任一满足即保存）。
+    ///
+    /// - `interval`: 页数间隔（每 N 个完成页面保存一次）
+    /// - `interval_secs`: 时间间隔（距上次保存超过该秒数也保存一次），用于慢速爬取
+    ///
+    /// 传 `Some(0)` 或 `None` 表示不启用时间间隔。
+    pub fn checkpoint_with_time(
+        mut self,
+        s: Arc<dyn wisp_storage::Store>,
+        interval: usize,
+        interval_secs: Option<u64>,
+    ) -> Self {
+        self.draft.checkpoint_store = Some(s);
+        self.config.checkpoint_interval = interval;
+        self.config.checkpoint_interval_secs = interval_secs;
+        self.config.checkpoint_enabled = true;
+        self
+    }
+
+    /// 关闭 checkpoint（断点续爬）。
+    ///
+    /// 默认 `Engine::infra()` 已启用 checkpoint（`./wisp-data`，每 100 页保存）。
+    /// 仅当明确不希望持久化进度（如一次性脚本、纯内存爬取）时调用。
+    pub fn no_checkpoint(mut self) -> Self {
+        self.draft.checkpoint_store = None;
+        self.config.checkpoint_enabled = false;
         self
     }
 

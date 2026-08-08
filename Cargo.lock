@@ -3405,6 +3405,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+ "url",
  "wisp-browser",
  "wisp-core",
  "wisp-crawl",

@@ -20,6 +20,23 @@ impl Page {
         self
     }
 
+    /// 跟随链接到指定 callback（带 meta + 显式优先级）。
+    ///
+    /// 用于覆盖默认的「深度优先即浅层优先」（BFS）：如小说正文页需要最高优先级，
+    /// 即使其 depth 最深。priority 越大越先被调度。
+    pub fn follow_meta_with_priority(
+        &mut self,
+        href: &str,
+        callback: &str,
+        meta: Value,
+        priority: i32,
+    ) -> &mut Self {
+        if let Some(req) = self.resp.follow_meta(href, meta) {
+            self.follows.push(req.with_callback(callback).with_priority(priority));
+        }
+        self
+    }
+
     /// 按选择器列表提取链接并生成 follow 请求。
     ///
     /// 使用第一个非空选择器；`meta_for` 接收元素索引与链接元素，

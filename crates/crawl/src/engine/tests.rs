@@ -93,6 +93,8 @@ fn make_ctx_with(
             control: Arc::new(crate::control::EngineControl::new()),
             cache_store: None,
             checkpoint_store: None,
+            last_checkpoint_at: Arc::new(tokio::sync::Mutex::new(None)),
+            checkpoint_saving: Arc::new(AtomicBool::new(false)),
             autoscale: None,
             event_bus: Arc::new(event_bus),
             ua_middleware: None,
@@ -207,6 +209,22 @@ async fn save_checkpoint_persists_seen_urls() {
     stats.pages.store(5, std::sync::atomic::Ordering::SeqCst);
     let spider = ctx.state.spiders.router.spiders[0].clone();
     maybe_persist_checkpoint(&ctx, &spider, &stats).await;
+
+    // checkpoint 保存已在后台 spawn：轮询等待保存完成（防重入标志复位）
+    let saving_flag = Arc::clone(&ctx.runtime.checkpoint_saving);
+    for _ in 0..200 {
+        if !saving_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            if store
+                .load_checkpoint("dummy")
+                .await
+                .expect("load checkpoint ok")
+                .is_some()
+            {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     let blob = store
         .load_checkpoint("dummy")

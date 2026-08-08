@@ -19,6 +19,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::Instrument;
 
@@ -95,6 +96,10 @@ pub(crate) struct EngineRuntime {
     pub cache_store: Option<Arc<dyn Store>>,
     /// checkpoint 存储（可选）。
     pub checkpoint_store: Option<Arc<dyn Store>>,
+    /// 上次 checkpoint 保存时间（用于时间间隔触发）。
+    pub last_checkpoint_at: Arc<Mutex<Option<Instant>>>,
+    /// checkpoint 保存进行中（防重入，避免并发全量快照重复）。
+    pub checkpoint_saving: Arc<AtomicBool>,
     /// 自适应并发池（可选）。
     pub autoscale: Option<Arc<AutoscaledPool>>,
     /// 引擎事件总线。
@@ -116,6 +121,10 @@ pub(crate) struct EngineRuntimeDraft {
     pub cache_store: Option<Arc<dyn Store>>,
     /// checkpoint 存储（可选）。
     pub checkpoint_store: Option<Arc<dyn Store>>,
+    /// 上次 checkpoint 保存时间（用于时间间隔触发）。
+    pub last_checkpoint_at: Arc<Mutex<Option<Instant>>>,
+    /// checkpoint 保存进行中（防重入，避免并发全量快照重复）。
+    pub checkpoint_saving: Arc<AtomicBool>,
     /// 自适应并发池（可选）。
     pub autoscale: Option<Arc<AutoscaledPool>>,
     /// 引擎事件总线。
@@ -135,6 +144,8 @@ impl EngineRuntimeDraft {
             fetch_client: None,
             cache_store: None,
             checkpoint_store: None,
+            last_checkpoint_at: Arc::new(Mutex::new(None)),
+            checkpoint_saving: Arc::new(AtomicBool::new(false)),
             autoscale: None,
             event_bus: EventBus::new(),
             ua_middleware: None,
@@ -152,6 +163,8 @@ impl EngineRuntimeDraft {
             control,
             cache_store: self.cache_store,
             checkpoint_store: self.checkpoint_store,
+            last_checkpoint_at: self.last_checkpoint_at,
+            checkpoint_saving: self.checkpoint_saving,
             autoscale: self.autoscale,
             event_bus: Arc::new(self.event_bus),
             ua_middleware: self.ua_middleware,

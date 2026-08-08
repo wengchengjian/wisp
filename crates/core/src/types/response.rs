@@ -148,9 +148,17 @@ impl Response {
     // === 导航 ===
 
     /// 从当前响应 URL 解析相对链接，创建 Crawl 请求（depth 自动 +1）。
+    ///
+    /// 优先级默认随深度递减（BFS）：depth 越深 priority 越低，浅层页面先抓。
+    /// 需要深度优先（如内容页优先于列表页）时，用返回的 `CrawlRequest::with_priority`
+    /// 覆盖为更高优先级。
     pub fn follow(&self, href: &str) -> Option<CrawlRequest> {
         let absolute = resolve_href(&self.url, href)?;
-        Some(CrawlRequest::get(&absolute).with_depth(self.request.depth + 1))
+        Some(
+            CrawlRequest::get(&absolute)
+                .with_depth(self.request.depth + 1)
+                .with_priority(-(self.request.depth as i32 + 1)),
+        )
     }
 
     /// 创建带 callback 的跟随请求（depth 自动 +1）。
@@ -159,7 +167,8 @@ impl Response {
         Some(
             CrawlRequest::get(&absolute)
                 .with_callback(callback)
-                .with_depth(self.request.depth + 1),
+                .with_depth(self.request.depth + 1)
+                .with_priority(-(self.request.depth as i32 + 1)),
         )
     }
 
@@ -169,7 +178,8 @@ impl Response {
         Some(
             CrawlRequest::get(&absolute)
                 .with_meta(meta)
-                .with_depth(self.request.depth + 1),
+                .with_depth(self.request.depth + 1)
+                .with_priority(-(self.request.depth as i32 + 1)),
         )
     }
 }

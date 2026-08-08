@@ -40,8 +40,11 @@ pub struct EngineConfig {
     pub cache_enabled: bool,
     /// 是否启用 checkpoint 持久化。
     pub checkpoint_enabled: bool,
-    /// checkpoint 保存间隔（页数）。
+    /// checkpoint 保存间隔（页数）。`stats.pages` 为其倍数时保存。
     pub checkpoint_interval: usize,
+    /// checkpoint 保存间隔（秒，可选）。自上次保存超过该秒数时也保存一次，
+    /// 用于慢速爬取（页数间隔长时间达不到）。`None` 表示仅按页数保存。
+    pub checkpoint_interval_secs: Option<u64>,
 }
 
 impl Default for EngineConfig {
@@ -63,6 +66,7 @@ impl Default for EngineConfig {
             cache_enabled: false,
             checkpoint_enabled: false,
             checkpoint_interval: 100,
+            checkpoint_interval_secs: None,
         }
     }
 }
